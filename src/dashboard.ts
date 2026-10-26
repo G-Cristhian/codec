@@ -19,13 +19,35 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { existsSync, readdirSync, readFileSync } from "fs";
-import { addProject, listProjects, type Project } from "./registry.js";
+import { tmpdir } from "os";
+import { addProject, getProject, listProjects, type Project } from "./registry.js";
+import {
+  addMember,
+  addSpecialist,
+  addTeam,
+  clonesOf,
+  editSpecialist,
+  getTeam,
+  listSpecialists,
+  listTeams,
+  removeSkillEverywhere,
+  removeSpecialist,
+  resolveMember,
+  setTeamProjects,
+  skillHolders,
+  type ResolvedMember,
+} from "./org.js";
+import { importSkill, importSkillFiles, listSkills } from "./skills.js";
+import { projectSkills, type GivenSkill } from "./inject.js";
 import {
   cleanRun,
   findRun,
   listRuns,
+  removeMemberChecked,
   removeProjectChecked,
+  removeTeamChecked,
   runOutput,
+  skillsUsed,
   startRun,
   stopRun,
   type RunStatus,
@@ -36,6 +58,7 @@ export const DEFAULT_PORT = 4777;
 export const HOST = "127.0.0.1";
 const LOG_LINES = 200;
 const MAX_BODY = 64 * 1024;
+const MAX_UPLOAD = 8 * 1024 * 1024; // skill folder upload (base64)
 
 // ---------- lanes ----------
 
@@ -137,7 +160,96 @@ function runSummary(r: RunStatus) {
     lane: laneOf(r),
     startedAt: r.startedAt,
     task: r.task,
+    team: r.team,
+    member: r.member,
+    specialist: r.specialist,
   };
+}
+
+/** Skills a member has, with source, plus what each of its projects ships itself. */
+function memberSkills(m: ResolvedMember): { name: string; source: string; project?: string }[] {
+  const out: { name: string; source: string; project?: string }[] = m.skills.map((s) => ({ ...s }));
+  for (const p of m.projects) {
+    const proj = getProject(p);
+    if (!proj || !existsSync(proj.path)) continue;
+    for (const s of projectSkills(proj.path, m.tool)) out.push({ name: s.name, source: "project", project: p });
+  }
+  return out;
+}
+
+function memberView(team: string, member: string, running: RunStatus[]) {
+  let r: ResolvedMember;
+  try {
+    r = resolveMember(team, member);
+  } catch (e) {
+    throw new HttpError(404, (e as Error).message);
+  }
+  return {
+    ...r,
+    skills: memberSkills(r),
+    working: running.filter((x) => x.team === team && x.member === member).map(runSummary),
+  };
+}
+
+export function teamsView() {
+  const running = listRuns({ state: "running" });
+  return listTeams().map((t) => ({
+    name: t.name,
+    projects: t.projects,
+    createdAt: t.createdAt,
+    members: t.members.map((m) => {
+      try {
+        return memberView(t.name, m.name, running);
+      } catch (e) {
+        return { team: t.name, member: m.name, kind: m.kind, specialist: m.specialist, error: (e as Error).message };
+      }
+    }),
+  }));
+}
+
+export function memberPage(team: string, member: string) {
+  const v = memberView(team, member, listRuns({ state: "running" }));
+  const runs = listRuns()
+    .filter((r) => r.team === team && r.member === member)
+    .reverse()
+    .map(runSummary);
+  return { ...v, runs };
+}
+
+export function specialistsView() {
+  return listSpecialists().map((s) => ({ ...s, clones: clonesOf(s.name) }));
+}
+
+/** The library, who has each skill, and an agents × skills grid. */
+export function skillsView() {
+  const skills = listSkills().map((s) => ({ name: s.name, description: s.description, files: s.files, ...skillHolders(s.name) }));
+  const rows: { kind: "specialist" | "member"; id: string; label: string; tool: string; skills: Record<string, string> }[] = [];
+  for (const sp of listSpecialists()) {
+    rows.push({
+      kind: "specialist",
+      id: sp.name,
+      label: `${sp.name} (${sp.specialty})`,
+      tool: sp.tool,
+      skills: Object.fromEntries(sp.skills.map((x) => [x, "own"])),
+    });
+  }
+  for (const t of listTeams()) {
+    for (const m of t.members) {
+      try {
+        const r = resolveMember(t.name, m.name);
+        rows.push({
+          kind: "member",
+          id: `${t.name}/${m.name}`,
+          label: `${t.name}/${m.name}` + (r.specialist ? ` (clone of ${r.specialist})` : " (worker)"),
+          tool: r.tool,
+          skills: Object.fromEntries(r.skills.map((x) => [x.name, x.source === "specialist" ? "via specialist" : "own"])),
+        });
+      } catch {
+        // broken member (its specialist was removed): skip in the grid
+      }
+    }
+  }
+  return { skills, grid: { skills: skills.map((s) => s.name), rows } };
 }
 
 export function homeView() {
@@ -149,6 +261,7 @@ export function homeView() {
     return { name: p.name, path: p.path, lanes };
   });
   return {
+    teamsCount: listTeams().length,
     agentsRunning: running.length,
     memoryBytes: agentMemoryBytes(running),
     projects,
@@ -161,7 +274,21 @@ export function projectView(name: string) {
   if (!project) throw new HttpError(404, `no project named "${name}"`);
   const lanes: Record<Lane, ReturnType<typeof runSummary>[]> = { working: [], needsYou: [], inReview: [], done: [] };
   for (const r of listRuns({ project: name }).reverse()) lanes[laneOf(r)].push(runSummary(r));
-  return { project, lanes };
+  // Who can be started here: members of every team assigned to this project.
+  const members = listTeams()
+    .filter((t) => t.projects.includes(name))
+    .flatMap((t) =>
+      t.members.map((m) => {
+        try {
+          const r = resolveMember(t.name, m.name);
+          return { ref: `${t.name}/${m.name}`, tool: r.tool, label: `${t.name}/${m.name}` + (r.specialty ? ` — ${r.specialty}` : " — worker") };
+        } catch {
+          return undefined;
+        }
+      }),
+    )
+    .filter(Boolean);
+  return { project, lanes, members };
 }
 
 export function runView(ref: string) {
@@ -175,6 +302,10 @@ export function runView(ref: string) {
     stoppedAt: r.stoppedAt,
     cleanedAt: r.cleanedAt,
     lostAt: r.lostAt,
+    model: r.model,
+    specialty: r.specialty,
+    skillsGiven: (r.skills ?? []) as GivenSkill[],
+    skillsUsed: skillsUsed(r.runId),
     log: runOutput(r.runId, LOG_LINES),
   };
 }
@@ -229,13 +360,13 @@ function cookie(req: IncomingMessage, name: string): string | undefined {
   return undefined;
 }
 
-function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX_BODY) {
+      if (size > limit) {
         reject(new HttpError(413, "request body too large"));
         req.destroy();
       } else chunks.push(c);
@@ -256,6 +387,8 @@ function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 const s = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const strs = (v: unknown): string[] | undefined =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : typeof v === "string" ? v.split(",") : undefined;
 
 export interface Dashboard {
   server: Server;
@@ -319,7 +452,7 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
 
     const parts = path.split("/").slice(2).map(decodeURIComponent); // after "/api/"
     const isGet = req.method === "GET";
-    const body = isGet ? {} : await readBody(req);
+    const body = isGet ? {} : await readBody(req, path === "/api/skills" ? MAX_UPLOAD : MAX_BODY);
     const need = (k: string): string => {
       const v = s(body[k]);
       if (!v || !v.trim()) throw new HttpError(400, `"${k}" is required`);
@@ -334,8 +467,63 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
     // POST /api/projects/:name/runs      {agent, task}
     // POST /api/runs/:id/stop
     // POST /api/runs/:id/clean           {force?, deleteBranch?}
-    const [a, b, c] = parts;
-    if (isGet && a === "state" && parts.length === 1) return sendJson(res, 200, homeView());
+    const [a, b, c, d2, e2] = parts;
+    const n = parts.length;
+    if (isGet && a === "state" && n === 1) return sendJson(res, 200, homeView());
+    if (isGet && a === "teams" && n === 1) return sendJson(res, 200, teamsView());
+    if (isGet && a === "specialists" && n === 1) return sendJson(res, 200, specialistsView());
+    if (isGet && a === "skills" && n === 1) return sendJson(res, 200, skillsView());
+    if (isGet && a === "members" && b && c && n === 3) return sendJson(res, 200, memberPage(b, c));
+
+    // Teams
+    if (!isGet && a === "teams" && n === 1) {
+      return sendJson(res, 201, addTeam({ name: s(body.name), projects: strs(body.projects) }));
+    }
+    if (!isGet && a === "teams" && b && n === 3 && c === "remove") return sendJson(res, 200, removeTeamChecked(b));
+    if (!isGet && a === "teams" && b && n === 3 && c === "projects") {
+      return sendJson(res, 200, setTeamProjects(b, strs(body.projects) ?? []));
+    }
+    if (!isGet && a === "teams" && b && n === 3 && c === "members") {
+      if (!getTeam(b)) throw new HttpError(404, `no team named "${b}"`);
+      const m = addMember(b, {
+        name: s(body.name),
+        specialist: s(body.specialist) || undefined,
+        tool: s(body.tool) || undefined,
+        model: s(body.model),
+        skills: strs(body.skills),
+      });
+      return sendJson(res, 201, m);
+    }
+    if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "remove" && n === 5) {
+      return sendJson(res, 200, removeMemberChecked(b, d2));
+    }
+
+    // Specialists
+    const specFields = () => ({
+      specialty: s(body.specialty),
+      tool: s(body.tool),
+      model: s(body.model),
+      instructions: s(body.instructions),
+      skills: strs(body.skills),
+    });
+    if (!isGet && a === "specialists" && n === 1) return sendJson(res, 201, addSpecialist({ name: s(body.name), ...specFields() }));
+    if (!isGet && a === "specialists" && b && c === "edit" && n === 3) return sendJson(res, 200, editSpecialist(b, specFields()));
+    if (!isGet && a === "specialists" && b && c === "remove" && n === 3) return sendJson(res, 200, removeSpecialist(b));
+
+    // Skills: import from a folder path on this computer, or from uploaded files.
+    if (!isGet && a === "skills" && n === 1) {
+      if (Array.isArray(body.files)) {
+        const files = (body.files as unknown[]).map((f) => {
+          const o = (f ?? {}) as Record<string, unknown>;
+          if (typeof o.path !== "string" || typeof o.content !== "string") throw new HttpError(400, "each file needs path and content");
+          return { path: o.path, content: o.content };
+        });
+        return sendJson(res, 201, importSkillFiles(files, tmpdir()));
+      }
+      return sendJson(res, 201, importSkill(need("path")));
+    }
+    if (!isGet && a === "skills" && b && c === "remove" && n === 3) return sendJson(res, 200, removeSkillEverywhere(b));
+
     if (isGet && a === "projects" && b && parts.length === 2) return sendJson(res, 200, projectView(b));
     if (isGet && a === "runs" && b && parts.length === 2) return sendJson(res, 200, runView(b));
     if (!isGet && a === "projects" && parts.length === 1) {
@@ -345,7 +533,10 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       return sendJson(res, 200, removeProjectChecked(b));
     }
     if (!isGet && a === "projects" && b && c === "runs" && parts.length === 3) {
-      return sendJson(res, 201, runSummary(startRun({ project: b, agent: need("agent"), task: need("task") })));
+      const member = s(body.member)?.trim() || undefined;
+      const agent = s(body.agent)?.trim() || undefined;
+      if (!member && !agent) throw new HttpError(400, '"member" or "agent" is required');
+      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task: need("task") })));
     }
     if (!isGet && a === "runs" && b && c === "stop" && parts.length === 3) {
       return sendJson(res, 200, runSummary(stopRun(findRunOr404(b).runId)));

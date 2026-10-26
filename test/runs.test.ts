@@ -134,7 +134,16 @@ describe("agent runs", () => {
   it("builds the real agent command lines", async () => {
     const { agentCommand } = await import("../src/runs.js");
     delete process.env.CODEC_AGENT_COMMAND;
-    expect(agentCommand("claude")).toBe(`claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")"`);
+    expect(agentCommand("claude")).toBe(
+      `claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")" --output-format stream-json --verbose`,
+    );
     expect(agentCommand("codex")).toBe(`codex exec --yolo "$(cat "$CODEC_TASK_FILE")"`);
+    expect(agentCommand("claude", { model: "opus", instructions: true })).toBe(
+      `claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")" --output-format stream-json --verbose` +
+        ` --model 'opus' --append-system-prompt "$(cat "$CODEC_RUN_DIR/instructions.md")"`,
+    );
+    expect(agentCommand("codex", { model: "gpt-6-astra", instructions: true })).toBe(
+      `codex exec --yolo -m 'gpt-6-astra' -c "developer_instructions=$(cat "$CODEC_RUN_DIR/instructions.toml")" "$(cat "$CODEC_TASK_FILE")"`,
+    );
   });
 });

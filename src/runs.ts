@@ -26,6 +26,19 @@ import { randomBytes } from "crypto";
 import { logEvent } from "./events.js";
 import { getProject, git, removeProject, type Project } from "./registry.js";
 import {
+  deleteMember,
+  deleteTeam,
+  dropProjectFromTeams,
+  getTeam,
+  parseMemberRef,
+  resolveMember,
+  type Member,
+  type ResolvedMember,
+  type Team,
+} from "./org.js";
+import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "./inject.js";
+import { renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
+import {
   eventsFile,
   pidAlive,
   readJson,
@@ -36,8 +49,8 @@ import {
   writeJsonAtomic,
 } from "./store.js";
 
-export const AGENTS = ["claude", "codex"] as const;
-export type Agent = (typeof AGENTS)[number];
+import { AGENTS, type Agent } from "./tools.js";
+export { AGENTS, type Agent };
 export type RunState = "running" | "done" | "failed" | "stopped";
 
 export interface RunRecord {
@@ -55,6 +68,16 @@ export interface RunRecord {
   stoppedAt?: string;
   lostAt?: string;
   cleanedAt?: string;
+  // Stage 3: who ran it. Absent on "unassigned worker" quick runs.
+  team?: string;
+  member?: string;
+  specialist?: string;
+  specialty?: string;
+  model?: string;
+  /** Exactly the skills the agent could see, with where each came from. */
+  skills?: GivenSkill[];
+  /** How output.log is written: plain text, or Claude Code's stream-json (rendered on read). */
+  outputFormat?: "text" | "claude-stream";
 }
 
 export interface RunStatus extends RunRecord {
@@ -73,12 +96,31 @@ const recordFile = (runId: string): string => join(runDir(runId), "run.json");
  * inside their own worktree, reading the task from $CODEC_TASK_FILE.
  * CODEC_AGENT_COMMAND overrides it (used by tests and demos with a fake agent).
  */
-export function agentCommand(agent: Agent): string {
+export function agentCommand(agent: Agent, opts: { model?: string; instructions?: boolean } = {}): string {
   const override = process.env.CODEC_AGENT_COMMAND;
   if (override) return override;
   const prompt = `"$(cat "$CODEC_TASK_FILE")"`;
-  if (agent === "claude") return `claude --dangerously-skip-permissions -p ${prompt}`;
-  return `codex exec --yolo ${prompt}`;
+  // Model names are validated (org.ts) to a shell-safe character set.
+  const model = opts.model ? `'${opts.model.replace(/'/g, "")}'` : "";
+  if (agent === "claude") {
+    return [
+      "claude --dangerously-skip-permissions -p",
+      prompt,
+      "--output-format stream-json --verbose", // structured, so Skill tool calls can be detected
+      model && `--model ${model}`,
+      opts.instructions && `--append-system-prompt "$(cat "$CODEC_RUN_DIR/instructions.md")"`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+  return [
+    "codex exec --yolo",
+    model && `-m ${model}`,
+    opts.instructions && `-c "developer_instructions=$(cat "$CODEC_RUN_DIR/instructions.toml")"`,
+    prompt,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 // Fixed wrapper; every variable part arrives through the environment, so
@@ -96,14 +138,40 @@ printf '{"ts":"%s","kind":"run.finish","runId":"%s","project":"%s","agent":"%s",
 exit "$code"
 `;
 
-export function startRun(input: { project: string; agent: string; task: string }): RunStatus {
-  if (!(AGENTS as readonly string[]).includes(input.agent)) {
-    throw new Error(`unknown agent "${input.agent}" (use: ${AGENTS.join(", ")})`);
-  }
-  const agent = input.agent as Agent;
+export interface StartInput {
+  project: string;
+  /** claude | codex. Required for an unassigned quick run; optional (must match) with a member. */
+  agent?: string;
+  task: string;
+  /** "team/member" — run as that team member, with its skills and instructions. */
+  member?: string;
+}
+
+export function startRun(input: StartInput): RunStatus {
   if (!input.task || !input.task.trim()) throw new Error("--task is required");
   const project = getProject(input.project);
   if (!project) throw new Error(`no project named "${input.project}" (see: codec project list)`);
+
+  let who: ResolvedMember | undefined;
+  if (input.member) {
+    const ref = parseMemberRef(input.member);
+    who = resolveMember(ref.team, ref.member);
+    if (!who.projects.includes(project.name)) {
+      throw new Error(
+        `team ${who.team} doesn't work on ${project.name} (its projects: ${who.projects.join(", ") || "none"})`,
+      );
+    }
+    if (input.agent && input.agent !== who.tool) {
+      throw new Error(`${who.team}/${who.member} uses ${who.tool}, not ${input.agent}`);
+    }
+  } else if (!input.agent) {
+    throw new Error("choose a team member (--member <team>/<member>) or a tool for an unassigned worker (--agent claude|codex)");
+  }
+  const agentName = who ? who.tool : input.agent!;
+  if (!(AGENTS as readonly string[]).includes(agentName)) {
+    throw new Error(`unknown agent "${agentName}" (use: ${AGENTS.join(", ")})`);
+  }
+  const agent = agentName as Agent;
   if (!existsSync(project.path)) throw new Error(`project path no longer exists: ${project.path}`);
 
   const runId = "run-" + randomBytes(4).toString("hex");
@@ -122,8 +190,25 @@ export function startRun(input: { project: string; agent: string; task: string }
     return head.out;
   });
 
-  const command = agentCommand(agent);
   mkdirSync(dir, { recursive: true });
+  let skills: GivenSkill[];
+  try {
+    skills = who ? injectSkills(worktree, agent, who.skills) : projectSkills(worktree, agent);
+  } catch (e) {
+    // Don't leave a half-prepared worktree behind.
+    withLock(`project-${project.name}`, () => {
+      git(project.path, ["worktree", "remove", "--force", worktree]);
+      git(project.path, ["branch", "-D", branch]);
+    });
+    throw e;
+  }
+  const instructions = instructionsText(who);
+  if (instructions) {
+    writeFileSync(join(dir, "instructions.md"), instructions);
+    // A TOML basic string for `codex -c developer_instructions=...`; JSON string escapes are valid TOML.
+    writeFileSync(join(dir, "instructions.toml"), JSON.stringify(instructions));
+  }
+  const command = agentCommand(agent, { model: who?.model, instructions: !!instructions });
   writeFileSync(join(dir, "task.txt"), input.task);
   writeFileSync(join(dir, "agent.sh"), command + "\n");
   writeFileSync(join(dir, "run.sh"), WRAPPER);
@@ -139,6 +224,13 @@ export function startRun(input: { project: string; agent: string; task: string }
     baseSha,
     command,
     startedAt: new Date().toISOString(),
+    team: who?.team,
+    member: who?.member,
+    specialist: who?.specialist,
+    specialty: who?.specialty,
+    model: who?.model,
+    skills,
+    outputFormat: agent === "claude" ? "claude-stream" : "text",
   };
   writeJsonAtomic(recordFile(runId), record);
 
@@ -176,7 +268,17 @@ export function startRun(input: { project: string; agent: string; task: string }
     throw new Error(`run ${runId} failed to persist — launch aborted`);
   }
 
-  logEvent("run.start", { runId, project: project.name, agent, branch, worktree, pid });
+  logEvent("run.start", {
+    runId,
+    project: project.name,
+    agent,
+    branch,
+    worktree,
+    pid,
+    team: who?.team,
+    member: who?.member,
+    skills: skills.map((s) => `${s.name}:${s.source}`),
+  });
   return getRunStatus(runId)!;
 }
 
@@ -336,12 +438,73 @@ export function cleanRun(ref: string, opts: { force?: boolean; deleteBranch?: bo
   return getRunStatus(run.runId)!;
 }
 
-/** Last `lines` lines of a run's output. */
+function rawOutput(runId: string): string {
+  const f = join(runDir(runId), "output.log");
+  return existsSync(f) ? readFileSync(f, "utf-8") : "";
+}
+
+/** Last `lines` lines of a run's output, as readable text. */
 export function runOutput(ref: string, lines = 50): string {
   const run = findRun(ref);
-  const f = join(runDir(run.runId), "output.log");
-  if (!existsSync(f)) return "";
-  return readFileSync(f, "utf-8").split("\n").slice(-lines - 1).join("\n");
+  let text = rawOutput(run.runId);
+  if (run.outputFormat === "claude-stream") text = renderClaudeStream(text);
+  return text.split("\n").slice(-lines - 1).join("\n");
+}
+
+export interface SkillUse {
+  name: string;
+  /** "detected": the agent really called the skill (Claude's Skill tool). "guess": inferred from text. */
+  how: "detected" | "guess";
+  evidence: string;
+}
+
+/**
+ * Which skills the agent used.
+ * claude: exact — every Skill tool call in its structured output.
+ * codex: best-effort guess — it read the skill's SKILL.md, or named the skill.
+ */
+export function skillsUsed(ref: string): SkillUse[] {
+  const run = findRun(ref);
+  const raw = rawOutput(run.runId);
+  if (run.outputFormat === "claude-stream") {
+    return skillCallsFromClaudeStream(raw).map((name) => ({ name, how: "detected" as const, evidence: "Skill tool call" }));
+  }
+  const out: SkillUse[] = [];
+  for (const s of run.skills ?? []) {
+    const esc = s.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`skills/${esc}/SKILL\\.md`).test(raw)) {
+      out.push({ name: s.name, how: "guess", evidence: "its SKILL.md appears in the agent's output (likely read it)" });
+    } else if (new RegExp(`(^|[^A-Za-z0-9-])${esc}([^A-Za-z0-9-]|$)`).test(raw)) {
+      out.push({ name: s.name, how: "guess", evidence: "the skill's name appears in the agent's output" });
+    }
+  }
+  return out;
+}
+
+// ---------- removals that depend on running agents ----------
+
+function refuseIfRunning(what: string, running: RunStatus[]): void {
+  if (running.length) {
+    throw new Error(
+      `${what} has ${running.length} running agent(s): ${running.map((r) => r.runId).join(", ")} — stop them first`,
+    );
+  }
+}
+
+/** Remove a team, refusing while any of its members is working. */
+export function removeTeamChecked(name: string): Team {
+  if (!getTeam(name)) throw new Error(`no team named "${name}"`);
+  refuseIfRunning(`team ${name}`, listRuns({ state: "running" }).filter((r) => r.team === name));
+  return deleteTeam(name);
+}
+
+/** Remove a team member, refusing while it is working. */
+export function removeMemberChecked(team: string, member: string): Member {
+  refuseIfRunning(
+    `${team}/${member}`,
+    listRuns({ state: "running" }).filter((r) => r.team === team && r.member === member),
+  );
+  return deleteMember(team, member);
 }
 
 /**
@@ -350,11 +513,8 @@ export function runOutput(ref: string, lines = 50): string {
  */
 export function removeProjectChecked(name: string): Project {
   if (!getProject(name)) throw new Error(`no project named "${name}"`);
-  const running = listRuns({ project: name, state: "running" });
-  if (running.length) {
-    throw new Error(
-      `${name} has ${running.length} running agent(s): ${running.map((r) => r.runId).join(", ")} — stop them first`,
-    );
-  }
-  return removeProject(name);
+  refuseIfRunning(name, listRuns({ project: name, state: "running" }));
+  const p = removeProject(name);
+  dropProjectFromTeams(name);
+  return p;
 }

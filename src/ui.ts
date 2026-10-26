@@ -85,12 +85,41 @@ pre.log { background: #0b0d11; color: #d6dae3; border-radius: 10px; padding: 14p
 .headrow { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+nav { display: flex; gap: 4px; }
+nav a { padding: 5px 10px; border-radius: 6px; color: var(--muted); }
+nav a:hover { color: var(--text); } nav a.on { background: var(--panel2); color: var(--text); }
+a.link { color: var(--accent); } a.link:hover { text-decoration: underline; }
+.summary { display: flex; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+.card.stat { min-width: 140px; color: var(--muted); } .card.stat b { color: var(--text); font-size: 20px; margin-right: 4px; }
+.stackcards { display: flex; flex-direction: column; gap: 12px; }
+.card.block { padding: 14px 16px; }
+.card.block .sub { margin: 2px 0 10px; }
+table.inner { margin: 8px 0; }
+details { margin-top: 8px; } summary { cursor: pointer; color: var(--accent); }
+form.stack { display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-top: 8px; }
+.row2 { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.checks { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; }
+label.check { cursor: pointer; white-space: nowrap; }
+button.small { padding: 3px 10px; font-size: 12px; }
+.actions.tight { margin: 0; }
+.kv.compact { grid-template-columns: 100px 1fr; padding: 10px; margin-top: 6px; }
+.pill.guess { color: var(--needs); }
+table.grid2 th.c, table.grid2 td.c { text-align: center; }
+.dot.own { color: var(--done); } .dot.via { color: var(--review); }
+.row.top { margin-top: 8px; }
 @media (max-width: 900px) { .board { grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
 <header>
   <h1><a href="#/">Codec</a></h1>
+  <nav>
+    <a href="#/" data-page="projects">Projects</a>
+    <a href="#/teams" data-page="teams">Teams</a>
+    <a href="#/specialists" data-page="specialists">Specialists</a>
+    <a href="#/skills" data-page="skills">Skills</a>
+  </nav>
+  <span class="stat"><b id="teamsN">–</b>teams</span>
   <span class="stat"><b id="running">–</b>agents running</span>
   <span class="stat"><b id="memory">–</b>memory in use</span>
   <span class="err" id="err"></span>
@@ -156,17 +185,82 @@ function mem(bytes) {
 function snippet(t, n = 90) { t = t.replace(/\\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "…" : t; }
 function stateText(r) { return r.state === "failed" && r.exitCode !== undefined ? "failed (exit " + r.exitCode + ")" : r.state; }
 
+// ---------- form state: survives the 2-second re-render ----------
+// Every input with an id keeps its value, checked state, focus and caret
+// across re-renders of the same page. Changing page starts fresh.
+let lastRoute = "";
+function snapshot() {
+  const vals = {};
+  for (const el of app.querySelectorAll("input[id], select[id], textarea[id]")) {
+    if (el.type === "file") continue;
+    vals[el.id] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  const a = document.activeElement;
+  const focus = a && a.id && app.contains(a) ? { id: a.id, s: a.selectionStart, e: a.selectionEnd } : null;
+  return { vals, focus };
+}
+function restore(snap) {
+  for (const [id, v] of Object.entries(snap.vals)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.type === "checkbox") el.checked = v;
+    else if (el.tagName === "SELECT") { if ([...el.options].some((o) => o.value === v)) el.value = v; }
+    else el.value = v;
+  }
+  if (snap.focus) {
+    const el = document.getElementById(snap.focus.id);
+    if (el) { el.focus(); try { if (snap.focus.s !== null) el.setSelectionRange(snap.focus.s, snap.focus.e); } catch (e) {} }
+  }
+}
+function render(...kids) {
+  const route = location.hash;
+  const snap = route === lastRoute ? snapshot() : { vals: {}, focus: null };
+  const scroll = window.scrollY;
+  app.replaceChildren(...kids);
+  restore(snap);
+  if (route === lastRoute) window.scrollTo(0, scroll);
+  lastRoute = route;
+}
+// Clear a form's fields after a successful submit (so the snapshot is empty too).
+function clearForm(form) { form.reset(); for (const el of form.querySelectorAll("input, textarea")) if (el.type !== "checkbox") el.value = ""; }
+
+async function act(fn, btn) {
+  if (btn) btn.disabled = true;
+  try { await fn(); showError(""); return true; }
+  catch (err) { showError(err.message); return false; }
+  finally { if (btn) btn.disabled = false; refresh(); }
+}
+
+function checks(prefix, names, selected) {
+  if (!names.length) return h("span.muted", { text: "none available" });
+  return h("span.checks", {}, names.map((n) => h("label.check", {},
+    h("input", { type: "checkbox", id: prefix + n, value: n, checked: selected && selected.includes(n) }), " " + n)));
+}
+function checked(form, prefix) {
+  return [...form.querySelectorAll("input[type=checkbox]")].filter((c) => c.id.startsWith(prefix) && c.checked).map((c) => c.value);
+}
+function whoText(r) { return r.team ? r.team + "/" + r.member : "unassigned worker"; }
+function memberHref(team, member) { return "#/member/" + enc(team) + "/" + enc(member); }
+function sourceText(s) {
+  if (s.source === "project") return "from the project" + (s.project ? " (" + s.project + ")" : "");
+  if (s.source === "specialist") return "from the specialist";
+  return "its own";
+}
+function crumbs(...items) {
+  const out = [h("a", { href: "#/", text: "Projects" })];
+  for (const it of items) { out.push(" / "); out.push(typeof it === "string" ? it : it); }
+  return h("div.crumbs", {}, out);
+}
+
 // ---------- screens ----------
 async function home(seq) {
   const s = await api("state");
   if (seq !== renderSeq) return;
-  const keep = document.activeElement && document.activeElement.id === "addpath" ? document.activeElement.value : null;
   const addForm = h("form.row", { onsubmit: async (e) => {
       e.preventDefault();
       const path = e.target.elements.path.value.trim();
       if (!path) return;
-      try { await api("projects", { path }); e.target.reset(); showError(""); refresh(); }
-      catch (err) { showError(err.message); }
+      if (await act(() => api("projects", { path }))) clearForm(e.target);
     } },
     h("input", { type: "text", name: "path", id: "addpath", placeholder: "/path/to/a/git/repository" }),
     h("button.primary", { type: "submit", text: "Add project" }));
@@ -175,56 +269,67 @@ async function home(seq) {
     h("div.sub", { text: p.path }),
     h("div.counts", ...LANES.map(([k, label]) => h("span.pill." + k, { text: label + " " + p.lanes[k] })))));
   const rows = s.runs.map((r) => h("tr.click", { onclick: () => go("#/run/" + r.runId) },
-    h("td", { text: r.project }), h("td", { text: r.agent }),
+    h("td", { text: r.project }), h("td", { text: whoText(r) }), h("td", { text: r.agent }),
     h("td", {}, h("span.state." + r.state, { text: stateText(r) })),
     h("td", { text: when(r.startedAt) }), h("td.task", { text: snippet(r.task), title: r.task }),
     h("td.mono", { text: r.runId })));
-  app.replaceChildren(
+  render(
+    h("div.summary", {},
+      h("a.card.stat", { href: "#/teams" }, h("b", { text: String(s.teamsCount) }), s.teamsCount === 1 ? " team" : " teams"),
+      h("div.card.stat", {}, h("b", { text: String(s.projects.length) }), s.projects.length === 1 ? " project" : " projects"),
+      h("div.card.stat", {}, h("b", { text: String(s.agentsRunning) }), " agents running")),
     h("h2", { text: "Projects" }),
     s.projects.length ? h("div.grid", {}, cards) : h("p.muted", { text: "No projects yet — add a git repository below." }),
     h("h2", { text: "Add a project" }), addForm,
     h("h2", { text: "All runs" }),
     s.runs.length
-      ? h("table", {}, h("tr", {}, ["Project", "Agent", "State", "Started", "Task", "Run"].map((t) => h("th", { text: t }))), rows)
+      ? h("table", {}, h("tr", {}, ["Project", "Who", "Tool", "State", "Started", "Task", "Run"].map((t) => h("th", { text: t }))), rows)
       : h("p.muted", { text: "No runs yet." }));
-  if (keep !== null) { const i = document.getElementById("addpath"); i.value = keep; i.focus(); }
 }
 
-let draft = { agent: "claude", task: "" };
 async function project(seq, name) {
   const v = await api("projects/" + enc(name));
   if (seq !== renderSeq) return;
-  const focused = document.activeElement && document.activeElement.id === "task";
   const lanes = LANES.map(([k, label]) => h("div.lane." + k, {},
     h("h3", {}, h("span", { text: label }), h("span", { text: String(v.lanes[k].length) })),
     v.lanes[k].length ? v.lanes[k].map((r) => h("a.card", { href: "#/run/" + r.runId },
-      h("div", {}, h("b", { text: r.agent }), " ", h("span.state." + r.state, { text: "· " + stateText(r) })),
+      h("div", {}, h("b", { text: whoText(r) }), " ", h("span.muted", { text: "(" + r.agent + ")" }), " ",
+        h("span.state." + r.state, { text: "· " + stateText(r) })),
+      r.team ? h("div.sub", { text: "team " + r.team + (r.specialist ? " · " + r.specialist : "") }) : null,
       h("div.task", { text: snippet(r.task, 200) }),
       h("div.sub", { text: when(r.startedAt) + " · " + r.runId }))) : h("div.empty", { text: "nothing here" })));
-  const agentSel = h("select", { id: "agent", onchange: (e) => (draft.agent = e.target.value) },
-    ["claude", "codex"].map((a) => h("option", { value: a, selected: a === draft.agent, text: a })));
-  const task = h("textarea", { id: "task", placeholder: "What should the agent do?", oninput: (e) => (draft.task = e.target.value) });
-  task.value = draft.task;
+  const whoSel = h("select", { id: "p-who" },
+    v.members.length
+      ? h("optgroup", { label: "Team members" }, v.members.map((m) => h("option", { value: "m:" + m.ref, text: m.label + " (" + m.tool + ")" })))
+      : null,
+    h("optgroup", { label: "Unassigned worker" },
+      h("option", { value: "a:claude", text: "unassigned worker — claude" }),
+      h("option", { value: "a:codex", text: "unassigned worker — codex" })));
+  const task = h("textarea", { id: "p-task", placeholder: "What should the agent do?" });
   const form = h("form.row", { onsubmit: async (e) => {
       e.preventDefault();
-      if (!draft.task.trim()) return;
+      const t = task.value;
+      if (!t.trim()) return;
+      const who = whoSel.value;
+      const body = who.startsWith("m:") ? { member: who.slice(2), task: t } : { agent: who.slice(2), task: t };
       const btn = e.target.querySelector("button"); btn.disabled = true;
       try {
-        const r = await api("projects/" + enc(name) + "/runs", { agent: draft.agent, task: draft.task });
-        draft.task = ""; showError(""); go("#/run/" + r.runId);
+        const r = await api("projects/" + enc(name) + "/runs", body);
+        clearForm(e.target); showError(""); go("#/run/" + r.runId);
       } catch (err) { showError(err.message); btn.disabled = false; }
-    } }, agentSel, task, h("button.primary", { type: "submit", text: "Start agent" }));
+    } }, whoSel, task, h("button.primary", { type: "submit", text: "Start agent" }));
   const remove = h("button.danger", { text: "Remove project", onclick: async () => {
       if (!confirm("Remove " + name + " from Codec? The repository itself is not touched.")) return;
       try { await api("projects/" + enc(name) + "/remove", {}); showError(""); go("#/"); }
       catch (err) { showError(err.message); }
     } });
-  app.replaceChildren(
-    h("div.crumbs", {}, h("a", { href: "#/", text: "Projects" }), " / " + name),
+  render(
+    crumbs(name),
     h("div.headrow", {}, h("div", {}, h("div.title", {}, h("b", { text: name })), h("div.sub.muted", { text: v.project.path })), remove),
-    h("h2", { text: "Start an agent" }), form,
+    h("h2", { text: "Start an agent" }),
+    v.members.length ? null : h("p.muted", {}, "No team works on this project yet — ", h("a.link", { href: "#/teams", text: "assign a team" }), ", or start an unassigned worker."),
+    form,
     h("h2", { text: "Board" }), h("div.board", {}, lanes));
-  if (focused) { const t = document.getElementById("task"); t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
 }
 
 async function run(seq, id) {
@@ -251,34 +356,288 @@ async function run(seq, id) {
         refresh();
       } }));
   }
+  const given = r.skillsGiven || [];
+  const used = r.skillsUsed || [];
+  const givenTable = given.length
+    ? h("table", {}, h("tr", {}, ["Skill", "Source", "Description"].map((t) => h("th", { text: t }))),
+        given.map((s) => h("tr", {}, h("td", { text: s.name }), h("td", { text: sourceText(s) + (s.note ? " — " + s.note : "") }),
+          h("td.task", { text: s.description || "", title: s.description || "" }))))
+    : h("p.muted", { text: "No skills were given to this run." });
+  const usedBox = used.length
+    ? h("table", {}, h("tr", {}, ["Skill", "How we know", "Evidence"].map((t) => h("th", { text: t }))),
+        used.map((u) => h("tr", {}, h("td", { text: u.name }),
+          h("td", {}, u.how === "guess" ? h("span.pill.guess", { text: "guess" }) : h("span.pill.done", { text: "detected" })),
+          h("td.task", { text: u.evidence || "", title: u.evidence || "" }))))
+    : h("p.muted", { text: r.agent === "codex"
+        ? "None spotted. Codex doesn't report skill use, so this is a best-effort guess from its output."
+        : (r.state === "running" ? "None yet." : "The agent didn't call any skill.") });
   const log = h("pre.log", { text: r.log || "(no output yet)" });
-  app.replaceChildren(
-    h("div.crumbs", {}, h("a", { href: "#/", text: "Projects" }), " / ",
-      h("a", { href: "#/project/" + enc(r.project), text: r.project }), " / " + r.runId),
+  render(
+    crumbs(h("a", { href: "#/project/" + enc(r.project), text: r.project }), r.runId),
     h("div.kv", {},
       h("div", { text: "Task" }), h("div.fulltask", { text: r.task }),
       h("div", { text: "State" }), h("div", {}, h("span.state." + r.state, { text: stateText(r) })),
-      h("div", { text: "Agent" }), h("div", { text: r.agent }),
+      h("div", { text: "Who" }), h("div", {}, r.team ? h("a.link", { href: memberHref(r.team, r.member), text: r.team + "/" + r.member }) : "unassigned worker"),
+      r.team ? h("div", { text: "Team" }) : null, r.team ? h("div", { text: r.team }) : null,
+      r.specialist ? h("div", { text: "Specialist" }) : null,
+      r.specialist ? h("div", { text: r.specialist + (r.specialty ? " — " + r.specialty : "") }) : null,
+      h("div", { text: "Tool" }), h("div", { text: r.agent + (r.model ? " (model " + r.model + ")" : "") }),
       h("div", { text: "Started" }), h("div", { text: when(r.startedAt) }),
       h("div", { text: "Branch" }), h("div.mono", { text: r.branch }),
       h("div", { text: "Worktree" }), h("div.mono", { text: r.cleanedAt ? r.worktree + "  (cleaned)" : r.worktree })),
     actions,
+    h("h2", { text: "Skills given" }), givenTable,
+    h("h2", { text: "Skills used" }), usedBox,
     h("h2", { text: "Output (last 200 lines)" }), log);
   log.scrollTop = stick ? log.scrollHeight : old.scrollTop;
 }
 
+async function teams(seq) {
+  const [ts, st, specs, sk] = await Promise.all([api("teams"), api("state"), api("specialists"), api("skills")]);
+  if (seq !== renderSeq) return;
+  const projectNames = st.projects.map((p) => p.name);
+  const skillNames = sk.skills.map((s) => s.name);
+  const create = h("form.stack", { onsubmit: async (e) => {
+      e.preventDefault();
+      const name = e.target.querySelector("#t-new-name").value.trim();
+      const projects = checked(e.target, "t-new-p-");
+      if (await act(() => api("teams", { name, projects }), e.target.querySelector("button"))) clearForm(e.target);
+    } },
+    h("div.row2", {}, h("input", { type: "text", id: "t-new-name", placeholder: "team name, e.g. alpha" }),
+      h("button.primary", { type: "submit", text: "Create team" })),
+    h("div", {}, h("span.muted", { text: "Works on: " }), checks("t-new-p-", projectNames)));
+  const cards = ts.map((t) => {
+    const key = "t-" + t.name + "-";
+    const memberRows = t.members.map((m) => h("tr", {},
+      h("td", {}, h("a.link", { href: memberHref(t.name, m.member), text: m.member })),
+      h("td", { text: m.error ? "broken: " + m.error : (m.kind === "clone" ? "copy of " + m.specialist + (m.specialty ? " (" + m.specialty + ")" : "") : "plain worker") }),
+      h("td", { text: m.tool || "" }),
+      h("td", { text: (m.skills || []).filter((s) => s.source !== "project").map((s) => s.name).join(", ") || "–" }),
+      h("td", {}, (m.working || []).length ? m.working.map((r) => h("a.link", { href: "#/run/" + r.runId, text: r.project + " · " + r.runId + " " })) : h("span.muted", { text: "idle" })),
+      h("td", {}, h("button.danger.small", { text: "Remove", onclick: async (e) => {
+          if (!confirm("Remove " + t.name + "/" + m.member + " from the team?")) return;
+          await act(() => api("teams/" + enc(t.name) + "/members/" + enc(m.member) + "/remove", {}), e.target);
+        } }))));
+    const whoOpts = h("select", { id: key + "kind" },
+      specs.length ? h("optgroup", { label: "Copy of a specialist" }, specs.map((s) => h("option", { value: "s:" + s.name, text: s.name + " (" + s.specialty + ", " + s.tool + ")" }))) : null,
+      h("optgroup", { label: "Plain worker" }, h("option", { value: "t:claude", text: "claude worker" }), h("option", { value: "t:codex", text: "codex worker" })));
+    const addMember = h("form.stack", { onsubmit: async (e) => {
+        e.preventDefault();
+        const kind = whoOpts.value;
+        const body = { name: e.target.querySelector("#" + CSS.escape(key + "mname")).value.trim() || undefined, skills: checked(e.target, key + "ms-") };
+        if (kind.startsWith("s:")) body.specialist = kind.slice(2); else body.tool = kind.slice(2);
+        if (await act(() => api("teams/" + enc(t.name) + "/members", body), e.target.querySelector("button"))) clearForm(e.target);
+      } },
+      h("div.row2", {}, whoOpts,
+        h("input", { type: "text", id: key + "mname", placeholder: "name (optional, e.g. tester-2)" }),
+        h("button.primary", { type: "submit", text: "Add member" })),
+      h("div", {}, h("span.muted", { text: "Extra skills: " }), checks(key + "ms-", skillNames)));
+    const editProjects = h("form.stack", { onsubmit: async (e) => {
+        e.preventDefault();
+        await act(() => api("teams/" + enc(t.name) + "/projects", { projects: checked(e.target, key + "p-") }), e.target.querySelector("button"));
+      } },
+      h("div", {}, h("span.muted", { text: "Works on: " }), checks(key + "p-", projectNames, t.projects), " ",
+        h("button.small", { type: "submit", text: "Save projects" })));
+    return h("div.card.block", {},
+      h("div.headrow", {}, h("div.title", { text: t.name }),
+        h("button.danger.small", { text: "Remove team", onclick: async (e) => {
+            if (!confirm("Remove team " + t.name + " and its " + t.members.length + " member(s)?")) return;
+            await act(() => api("teams/" + enc(t.name) + "/remove", {}), e.target);
+          } })),
+      h("div.sub", {}, "Projects: ", t.projects.length ? t.projects.map((p, i) => [i ? ", " : "", h("a.link", { href: "#/project/" + enc(p), text: p })]) : "none"),
+      t.members.length
+        ? h("table.inner", {}, h("tr", {}, ["Member", "Kind", "Tool", "Skills", "Working on", ""].map((x) => h("th", { text: x }))), memberRows)
+        : h("p.muted", { text: "No members yet." }),
+      h("details", {}, h("summary", { text: "Add a member" }), addMember),
+      h("details", {}, h("summary", { text: "Change projects" }), editProjects));
+  });
+  render(
+    crumbs("Teams"),
+    h("h2", { text: "Teams" }),
+    ts.length ? h("div.stackcards", {}, cards) : h("p.muted", { text: "No teams yet." }),
+    h("h2", { text: "Create a team" }),
+    projectNames.length ? create : h("p.muted", { text: "Add a project first — a team needs at least one project." }));
+}
+
+let editingSpec = null;
+function specForm(key, s, skillNames, onSubmit) {
+  return h("form.stack", { onsubmit: onSubmit },
+    h("div.row2", {},
+      s ? null : h("input", { type: "text", id: key + "name", placeholder: "name, e.g. tester" }),
+      h("input", { type: "text", id: key + "specialty", placeholder: "specialty, e.g. QA tester", value: s ? s.specialty : undefined }),
+      h("select", { id: key + "tool" }, ["claude", "codex"].map((t) => h("option", { value: t, text: t, selected: s && s.tool === t }))),
+      h("input", { type: "text", id: key + "model", placeholder: "model (optional)", value: s && s.model ? s.model : undefined })),
+    h("textarea", { id: key + "instr", placeholder: "Standing instructions (optional)" }, s ? s.instructions : null),
+    h("div", {}, h("span.muted", { text: "Skills: " }), checks(key + "sk-", skillNames, s ? s.skills : [])),
+    h("div", {}, h("button.primary", { type: "submit", text: s ? "Save" : "Create specialist" })));
+}
+function specValues(form, key) {
+  const q = (id) => form.querySelector("#" + CSS.escape(key + id));
+  return {
+    specialty: q("specialty").value.trim(), tool: q("tool").value, model: q("model").value.trim(),
+    instructions: q("instr").value, skills: checked(form, key + "sk-"),
+  };
+}
+
+async function specialists(seq) {
+  const [specs, sk] = await Promise.all([api("specialists"), api("skills")]);
+  if (seq !== renderSeq) return;
+  const skillNames = sk.skills.map((s) => s.name);
+  const cards = specs.map((s) => {
+    const key = "s-" + s.name + "-";
+    const editing = editingSpec === s.name;
+    return h("div.card.block", {},
+      h("div.headrow", {},
+        h("div", {}, h("div.title", { text: s.name }), h("div.sub", { text: s.specialty + " · " + s.tool + (s.model ? " · model " + s.model : "") })),
+        h("div.actions.tight", {},
+          h("button.small", { text: editing ? "Cancel" : "Edit", onclick: () => { editingSpec = editing ? null : s.name; refresh(); } }),
+          h("button.danger.small", { text: "Delete", onclick: async (e) => {
+              if (!confirm("Delete specialist " + s.name + "?")) return;
+              await act(() => api("specialists/" + enc(s.name) + "/remove", {}), e.target);
+            } }))),
+      editing
+        ? specForm(key, s, skillNames, async (e) => {
+            e.preventDefault();
+            if (await act(() => api("specialists/" + enc(s.name) + "/edit", specValues(e.target, key)), e.target.querySelector("button[type=submit]"))) editingSpec = null;
+          })
+        : h("div", {},
+            h("div.kv.compact", {},
+              h("div", { text: "Skills" }), h("div", { text: s.skills.join(", ") || "none" }),
+              h("div", { text: "Instructions" }), h("div.fulltask", { text: s.instructions || "none" }),
+              h("div", { text: "Clones" }),
+              h("div", {}, s.clones.length ? s.clones.map((c, i) => [i ? ", " : "", h("a.link", { href: memberHref(c.team, c.member), text: c.team + "/" + c.member })]) : "none yet"))));
+  });
+  const nk = "s-new-";
+  render(
+    crumbs("Specialists"),
+    h("h2", { text: "Specialists" }),
+    specs.length ? h("div.stackcards", {}, cards) : h("p.muted", { text: "No specialists yet." }),
+    h("h2", { text: "Create a specialist" }),
+    specForm(nk, null, skillNames, async (e) => {
+      e.preventDefault();
+      const body = { name: e.target.querySelector("#" + nk + "name").value.trim(), ...specValues(e.target, nk) };
+      if (await act(() => api("specialists", body), e.target.querySelector("button[type=submit]"))) clearForm(e.target);
+    }));
+}
+
+function readB64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ""));
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+
+async function skills(seq) {
+  const v = await api("skills");
+  if (seq !== renderSeq) return;
+  const rows = v.skills.map((s) => {
+    const holders = [...s.specialists.map((x) => "specialist " + x), ...s.members.map((x) => x)];
+    return h("tr", {},
+      h("td", {}, h("b", { text: s.name })),
+      h("td.task", { text: s.description, title: s.description }),
+      h("td", { text: holders.join(", ") || "nobody" }),
+      h("td", { text: String(s.files.length) }),
+      h("td", {}, h("button.danger.small", { text: "Remove", onclick: async (e) => {
+          const msg = "Remove skill " + s.name + " from the library?" +
+            (holders.length ? "\\n\\nIt will be taken away from: " + holders.join(", ") : "");
+          if (!confirm(msg)) return;
+          await act(() => api("skills/" + enc(s.name) + "/remove", {}), e.target);
+        } })));
+  });
+  const byPath = h("form.row", { onsubmit: async (e) => {
+      e.preventDefault();
+      const path = e.target.querySelector("#k-path").value.trim();
+      if (!path) return;
+      if (await act(() => api("skills", { path }), e.target.querySelector("button"))) clearForm(e.target);
+    } },
+    h("input", { type: "text", id: "k-path", placeholder: "/path/to/a/skill-folder (contains SKILL.md)" }),
+    h("button.primary", { type: "submit", text: "Import folder" }));
+  const upload = h("input", { type: "file", id: "k-upload", webkitdirectory: true, multiple: true, onchange: async (e) => {
+      const list = [...e.target.files];
+      if (!list.length) return;
+      await act(async () => {
+        const files = [];
+        for (const f of list) files.push({ path: f.webkitRelativePath || f.name, content: await readB64(f) });
+        await api("skills", { files });
+      });
+      e.target.value = "";
+    } });
+  const grid = v.grid.rows.length && v.grid.skills.length
+    ? h("table.grid2", {},
+        h("tr", {}, h("th", { text: "Agent" }), h("th", { text: "Tool" }), v.grid.skills.map((n) => h("th.c", { text: n }))),
+        v.grid.rows.map((r) => h("tr", {},
+          h("td", {}, r.kind === "member"
+            ? h("a.link", { href: memberHref(r.id.split("/")[0], r.id.split("/").slice(1).join("/")), text: r.label })
+            : h("span", { text: r.label })),
+          h("td", { text: r.tool }),
+          v.grid.skills.map((n) => h("td.c", { title: r.skills[n] || "" },
+            r.skills[n] ? h("span", { class: r.skills[n] === "own" ? "dot own" : "dot via", text: r.skills[n] === "own" ? "●" : "○" }) : "")))))
+    : h("p.muted", { text: "Nothing to show yet — create specialists or team members and give them skills." });
+  render(
+    crumbs("Skills"),
+    h("h2", { text: "Library" }),
+    v.skills.length
+      ? h("table", {}, h("tr", {}, ["Skill", "Description", "Who has it", "Files", ""].map((t) => h("th", { text: t }))), rows)
+      : h("p.muted", { text: "No skills yet." }),
+    h("h2", { text: "Import a skill" }),
+    byPath,
+    h("div.row.top", {}, h("span.muted", { text: "…or upload a skill folder from this computer: " }), upload),
+    h("h2", { text: "Who has which skill" }),
+    h("p.muted", { text: "● the agent's own skill   ○ comes from its specialist" }),
+    grid);
+}
+
+async function member(seq, team, name) {
+  const m = await api("members/" + enc(team) + "/" + enc(name));
+  if (seq !== renderSeq) return;
+  const runRow = (r) => h("tr.click", { onclick: () => go("#/run/" + r.runId) },
+    h("td", { text: r.project }), h("td", {}, h("span.state." + r.state, { text: stateText(r) })),
+    h("td", { text: when(r.startedAt) }), h("td.task", { text: snippet(r.task), title: r.task }), h("td.mono", { text: r.runId }));
+  const runTable = (list, empty) => list.length
+    ? h("table", {}, h("tr", {}, ["Project", "State", "Started", "Task", "Run"].map((t) => h("th", { text: t }))), list.map(runRow))
+    : h("p.muted", { text: empty });
+  const past = m.runs.filter((r) => r.state !== "running");
+  render(
+    crumbs(h("a", { href: "#/teams", text: "Teams" }), team, name),
+    h("div.kv", {},
+      h("div", { text: "Member" }), h("div", {}, h("b", { text: team + "/" + name })),
+      h("div", { text: "Kind" }), h("div", { text: m.kind === "clone" ? "copy of the " + m.specialist + " specialist (" + m.specialty + ")" : "plain worker" }),
+      h("div", { text: "Tool" }), h("div", { text: m.tool + (m.model ? " (model " + m.model + ")" : "") }),
+      h("div", { text: "Projects" }), h("div", {}, m.projects.map((p, i) => [i ? ", " : "", h("a.link", { href: "#/project/" + enc(p), text: p })])),
+      h("div", { text: "Instructions" }), h("div.fulltask", { text: m.instructions || "none" })),
+    h("h2", { text: "Skills" }),
+    m.skills.length
+      ? h("table", {}, h("tr", {}, ["Skill", "Source"].map((t) => h("th", { text: t }))),
+          m.skills.map((s) => h("tr", {}, h("td", { text: s.name }), h("td", { text: sourceText(s) }))))
+      : h("p.muted", { text: "No skills." }),
+    h("h2", { text: "Working on now" }), runTable(m.working, "Nothing right now."),
+    h("h2", { text: "Past tasks" }), runTable(past, "No finished tasks yet."));
+}
+
 // ---------- routing + polling ----------
 function go(hash) { if (location.hash === hash) refresh(); else location.hash = hash; }
+function markNav(page) {
+  for (const a of document.querySelectorAll("nav a")) a.classList.toggle("on", a.dataset.page === page);
+}
 async function refresh() {
   clearTimeout(timer);
   const seq = ++renderSeq;
   const parts = location.hash.replace(/^#\\/?/, "").split("/").map(decodeURIComponent);
   try {
+    let page = "projects";
     if (parts[0] === "project" && parts[1]) await project(seq, parts[1]);
     else if (parts[0] === "run" && parts[1]) await run(seq, parts[1]);
+    else if (parts[0] === "teams") { page = "teams"; await teams(seq); }
+    else if (parts[0] === "specialists") { page = "specialists"; await specialists(seq); }
+    else if (parts[0] === "skills") { page = "skills"; await skills(seq); }
+    else if (parts[0] === "member" && parts[1] && parts[2]) { page = "teams"; await member(seq, parts[1], parts[2]); }
     else await home(seq);
+    markNav(page);
     const s = await api("state");
     document.getElementById("running").textContent = s.agentsRunning;
+    document.getElementById("teamsN").textContent = s.teamsCount;
     document.getElementById("memory").textContent = mem(s.memoryBytes);
     if (document.getElementById("err").dataset.conn) { showError(""); delete document.getElementById("err").dataset.conn; }
   } catch (err) {

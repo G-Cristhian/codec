@@ -4,7 +4,35 @@
 
 import { addProject, listProjects } from "./registry.js";
 import { startDashboard } from "./dashboard.js";
-import { cleanRun, listRuns, removeProjectChecked, runOutput, startRun, stopRun, type RunStatus } from "./runs.js";
+import { readFileSync } from "fs";
+import {
+  cleanRun,
+  findRun,
+  listRuns,
+  removeMemberChecked,
+  removeProjectChecked,
+  removeTeamChecked,
+  runOutput,
+  skillsUsed,
+  startRun,
+  stopRun,
+  type RunStatus,
+} from "./runs.js";
+import {
+  addMember,
+  addSpecialist,
+  addTeam,
+  clonesOf,
+  editSpecialist,
+  listSpecialists,
+  listTeams,
+  removeSkillEverywhere,
+  removeSpecialist,
+  resolveMember,
+  setTeamProjects,
+  skillHolders,
+} from "./org.js";
+import { importSkill, listSkills } from "./skills.js";
 import { codecHome } from "./store.js";
 
 const HELP = `codec — run AI coding agents on many projects at once
@@ -15,13 +43,39 @@ Projects
   codec project remove <name>                unregister (the repo is not touched)
 
 Runs
+  codec run <project> --member <team>/<member> --task "<text>"
+                                             start a team member in a fresh worktree
   codec run <project> --agent claude|codex --task "<text>"
-                                             start an agent in a fresh worktree
+                                             start an unassigned worker
   codec status [--project <name>] [--json]   every run across all projects
   codec logs <run> [--lines N]               show a run's recent output
+  codec skills <run>                         skills a run was given and used
   codec stop <run>                           stop a running agent
   codec clean <run> [--force] [--delete-branch]
                                              remove a finished run's worktree
+
+Skills  (folders with a SKILL.md, Claude Code format)
+  codec skill add <folder>                   copy a skill into the library
+  codec skill list [--json]                  the library and who has each skill
+  codec skill remove <name>                  delete it and take it away from everyone
+
+Specialists  (agent templates)
+  codec specialist add <name> --specialty <text> --tool claude|codex
+        [--model <m>] [--instructions "<text>" | --instructions-file <f>] [--skills a,b]
+  codec specialist edit <name> [same options]
+  codec specialist list [--json]
+  codec specialist remove <name>             refused while it has clones in teams
+
+Teams
+  codec team add <name> --projects a,b       create a team working on these projects
+  codec team edit <name> --projects a,b      change its projects
+  codec team list [--json]                   teams, projects and members
+  codec team remove <name>                   refused while a member is working
+  codec team member add <team> --specialist <name> [--name <n>] [--skills a,b]
+                                             add a clone of a specialist
+  codec team member add <team> --tool claude|codex [--name <n>] [--model <m>] [--skills a,b]
+                                             add a plain worker
+  codec team member remove <team> <member>   refused while it is working
 
 Dashboard
   codec dashboard [--port N]                 local web page (default port 4777)
@@ -85,6 +139,20 @@ function localTime(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+function list(flags: Parsed["flags"], key: string): string[] | undefined {
+  const v = str(flags, key);
+  if (v === undefined) return undefined;
+  return v.split(",").map((x) => x.trim()).filter(Boolean);
+}
+
+function who(r: RunStatus): string {
+  return r.team ? `${r.team}/${r.member}` : "unassigned worker";
+}
+
+function skillList(r: RunStatus): string {
+  return r.skills?.length ? r.skills.map((x) => `${x.name} (${x.source})`).join(", ") : "none";
+}
+
 function stateLabel(r: RunStatus): string {
   if (r.state === "failed" && r.exitCode !== undefined) return `failed (exit ${r.exitCode})`;
   if (r.state === "failed" && r.lostAt) return "failed (lost)";
@@ -130,15 +198,141 @@ export function main(argv: string[]): number {
     }
 
     case "run": {
-      const usage = 'codec run <project> --agent claude|codex --task "<text>"';
+      const usage = 'codec run <project> (--member <team>/<member> | --agent claude|codex) --task "<text>"';
       const r = startRun({
         project: need(sub, usage),
-        agent: need(str(flags, "agent"), usage),
+        agent: str(flags, "agent"),
+        member: str(flags, "member"),
         task: need(str(flags, "task"), usage),
       });
-      out(`started ${r.runId}  ${r.agent} on ${r.project}`);
+      out(`started ${r.runId}  ${who(r)} (${r.agent}) on ${r.project}`);
       out(`  branch   ${r.branch}`);
       out(`  worktree ${r.worktree}`);
+      out(`  skills   ${skillList(r)}`);
+      return 0;
+    }
+
+    case "skill": {
+      if (sub === "add") {
+        const sk = importSkill(need(rest[0], "codec skill add <folder>"));
+        out(`added skill ${sk.name} — ${sk.description}`);
+      } else if (sub === "list") {
+        const skills = listSkills().map((sk) => ({ ...sk, ...skillHolders(sk.name) }));
+        if (flags.json) out(JSON.stringify(skills, null, 2));
+        else if (!skills.length) out("no skills yet — add one with: codec skill add <folder>");
+        else
+          out(
+            table([
+              ["SKILL", "SPECIALISTS", "MEMBERS (own)", "DESCRIPTION"],
+              ...skills.map((sk) => [
+                sk.name,
+                sk.specialists.join(", ") || "-",
+                sk.members.join(", ") || "-",
+                sk.description.length > 60 ? sk.description.slice(0, 59) + "…" : sk.description,
+              ]),
+            ]),
+          );
+      } else if (sub === "remove") {
+        const name = need(rest[0], "codec skill remove <name>");
+        const h = removeSkillEverywhere(name);
+        const from = [...h.specialists, ...h.members];
+        out(`removed skill ${name}${from.length ? ` (taken away from: ${from.join(", ")})` : ""}`);
+      } else throw new Error("usage: codec skill add|list|remove");
+      return 0;
+    }
+
+    case "specialist": {
+      const fields = () => ({
+        specialty: str(flags, "specialty"),
+        tool: str(flags, "tool"),
+        model: str(flags, "model"),
+        instructions: str(flags, "instructions-file")
+          ? readFileSync(str(flags, "instructions-file")!, "utf-8")
+          : str(flags, "instructions"),
+        skills: list(flags, "skills"),
+      });
+      if (sub === "add") {
+        const sp = addSpecialist({
+          name: need(rest[0], "codec specialist add <name> --specialty <text> --tool claude|codex"),
+          ...fields(),
+        });
+        out(`added specialist ${sp.name} (${sp.specialty}, ${sp.tool})`);
+      } else if (sub === "edit") {
+        const sp = editSpecialist(need(rest[0], "codec specialist edit <name> [options]"), fields());
+        out(`updated specialist ${sp.name}`);
+      } else if (sub === "list") {
+        const specs = listSpecialists().map((sp) => ({ ...sp, clones: clonesOf(sp.name) }));
+        if (flags.json) out(JSON.stringify(specs, null, 2));
+        else if (!specs.length) out("no specialists yet");
+        else
+          out(
+            table([
+              ["SPECIALIST", "SPECIALTY", "TOOL", "MODEL", "SKILLS", "CLONES"],
+              ...specs.map((sp) => [
+                sp.name,
+                sp.specialty,
+                sp.tool,
+                sp.model ?? "default",
+                sp.skills.join(", ") || "-",
+                sp.clones.map((c) => `${c.team}/${c.member}`).join(", ") || "-",
+              ]),
+            ]),
+          );
+      } else if (sub === "remove") {
+        removeSpecialist(need(rest[0], "codec specialist remove <name>"));
+        out(`removed specialist ${rest[0]}`);
+      } else throw new Error("usage: codec specialist add|edit|list|remove");
+      return 0;
+    }
+
+    case "team": {
+      if (sub === "member") {
+        const [action, team, member] = rest;
+        const addUsage = "codec team member add <team> (--specialist <name> | --tool claude|codex)";
+        const rmUsage = "codec team member remove <team> <member>";
+        if (action === "add") {
+          const m = addMember(need(team, addUsage), {
+            name: str(flags, "name"),
+            specialist: str(flags, "specialist"),
+            tool: str(flags, "tool"),
+            model: str(flags, "model"),
+            skills: list(flags, "skills"),
+          });
+          out(`added ${team}/${m.name} (${m.kind === "clone" ? `clone of ${m.specialist}` : `${m.tool} worker`})`);
+        } else if (action === "remove") {
+          removeMemberChecked(need(team, rmUsage), need(member, rmUsage));
+          out(`removed ${team}/${member}`);
+        } else throw new Error("usage: codec team member add|remove");
+      } else if (sub === "add") {
+        const t = addTeam({ name: need(rest[0], "codec team add <name> --projects a,b"), projects: list(flags, "projects") });
+        out(`added team ${t.name} (projects: ${t.projects.join(", ")})`);
+      } else if (sub === "edit") {
+        const t = setTeamProjects(need(rest[0], "codec team edit <name> --projects a,b"), list(flags, "projects") ?? []);
+        out(`team ${t.name} now works on: ${t.projects.join(", ")}`);
+      } else if (sub === "list") {
+        const teams = listTeams();
+        if (flags.json) out(JSON.stringify(teams, null, 2));
+        else if (!teams.length) out("no teams yet — create one with: codec team add <name> --projects <project>");
+        else {
+          const running = listRuns({ state: "running" });
+          for (const t of teams) {
+            out(`${t.name}  (projects: ${t.projects.join(", ") || "none"})`);
+            if (!t.members.length) out("  no members yet");
+            for (const m of t.members) {
+              const r = resolveMember(t.name, m.name);
+              const busy = running.filter((x) => x.team === t.name && x.member === m.name);
+              const kind = m.kind === "clone" ? `clone of ${m.specialist}` : "worker";
+              out(
+                `  ${m.name.padEnd(18)} ${kind.padEnd(22)} ${r.tool.padEnd(7)} skills: ${r.skills.map((x) => x.name).join(", ") || "-"}` +
+                  (busy.length ? `   working: ${busy.map((x) => x.runId).join(", ")}` : ""),
+              );
+            }
+          }
+        }
+      } else if (sub === "remove") {
+        removeTeamChecked(need(rest[0], "codec team remove <name>"));
+        out(`removed team ${rest[0]}`);
+      } else throw new Error("usage: codec team add|edit|list|remove|member");
       return 0;
     }
 
@@ -154,10 +348,11 @@ export function main(argv: string[]): number {
       }
       out(
         table([
-          ["RUN", "PROJECT", "AGENT", "STATE", "STARTED", "WORKTREE"],
+          ["RUN", "PROJECT", "WHO", "AGENT", "STATE", "STARTED", "WORKTREE"],
           ...runs.map((r) => [
             r.runId,
             r.project,
+            who(r),
             r.agent,
             stateLabel(r),
             localTime(r.startedAt),
@@ -167,6 +362,15 @@ export function main(argv: string[]): number {
       );
       const running = runs.filter((r) => r.state === "running").length;
       out(`\n${runs.length} run(s), ${running} running`);
+      return 0;
+    }
+
+    case "skills": {
+      const r = findRun(need(sub, "codec skills <run>"));
+      out(`given: ${skillList(r)}`);
+      const used = skillsUsed(r.runId);
+      const none = r.agent === "codex" ? "none spotted (codex: best-effort guess only)" : "none";
+      out(`used:  ${used.length ? used.map((u) => `${u.name}${u.how === "guess" ? " (guess)" : ""}`).join(", ") : none}`);
       return 0;
     }
 

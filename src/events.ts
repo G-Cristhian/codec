@@ -19,7 +19,17 @@ export type EventKind =
   | "run.finish" // agent exited on its own (fields: exitCode)
   | "run.stop" // user stopped the run
   | "run.lost" // agent died without recording an exit code (killed, reboot)
-  | "run.clean"; // worktree removed
+  | "run.clean" // worktree removed
+  | "skill.add"
+  | "skill.remove"
+  | "specialist.add"
+  | "specialist.edit"
+  | "specialist.remove"
+  | "team.add"
+  | "team.edit"
+  | "team.remove"
+  | "member.add"
+  | "member.remove";
 
 export interface CodecEvent {
   ts: string;
