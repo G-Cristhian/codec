@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+# planning docs never live in this repo
+codec-private/
+PLAN*.md
+*SPEC*.md
