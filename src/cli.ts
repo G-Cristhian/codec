@@ -2,8 +2,9 @@
  * cli.ts — the `codec` command.
  */
 
-import { addProject, getProject, listProjects, removeProject } from "./registry.js";
-import { cleanRun, listRuns, runOutput, startRun, stopRun, type RunStatus } from "./runs.js";
+import { addProject, listProjects } from "./registry.js";
+import { startDashboard } from "./dashboard.js";
+import { cleanRun, listRuns, removeProjectChecked, runOutput, startRun, stopRun, type RunStatus } from "./runs.js";
 import { codecHome } from "./store.js";
 
 const HELP = `codec — run AI coding agents on many projects at once
@@ -21,6 +22,9 @@ Runs
   codec stop <run>                           stop a running agent
   codec clean <run> [--force] [--delete-branch]
                                              remove a finished run's worktree
+
+Dashboard
+  codec dashboard [--port N]                 local web page (default port 4777)
 
 <run> can be the full id (run-1a2b3c4d) or a unique prefix (1a2b).
 Data folder: ${codecHome()}  (override with CODEC_HOME)
@@ -117,14 +121,7 @@ export function main(argv: string[]): number {
         }
       } else if (sub === "remove") {
         const name = need(rest[0], "codec project remove <name>");
-        if (!getProject(name)) throw new Error(`no project named "${name}"`);
-        const running = listRuns({ project: name, state: "running" });
-        if (running.length) {
-          throw new Error(
-            `${name} has ${running.length} running agent(s): ${running.map((r) => r.runId).join(", ")} — stop them first`,
-          );
-        }
-        removeProject(name);
+        removeProjectChecked(name);
         out(`removed ${name} (repository and existing worktrees untouched)`);
       } else {
         throw new Error("usage: codec project add|list|remove");
@@ -191,6 +188,23 @@ export function main(argv: string[]): number {
         deleteBranch: !!flags["delete-branch"],
       });
       out(`cleaned ${r.runId} — worktree removed; branch ${r.branch} ${flags["delete-branch"] ? "deleted" : "kept"}`);
+      return 0;
+    }
+
+    case "dashboard": {
+      const raw = str(flags, "port") ?? "4777";
+      const port = Number(raw);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid --port "${raw}"`);
+      startDashboard({ port }).then(
+        (d) => {
+          out(`Codec dashboard: ${d.url}`);
+          out("Local only (127.0.0.1). The link contains a secret token — don't share it. Ctrl+C to stop.");
+        },
+        (e: unknown) => {
+          process.stderr.write(`codec: ${e instanceof Error ? e.message : String(e)}\n`);
+          process.exitCode = 1;
+        },
+      );
       return 0;
     }
 

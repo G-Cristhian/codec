@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, openSync, closeSync, readdirSync, readFileSync, 
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { logEvent } from "./events.js";
-import { getProject, git } from "./registry.js";
+import { getProject, git, removeProject, type Project } from "./registry.js";
 import {
   eventsFile,
   pidAlive,
@@ -342,4 +342,19 @@ export function runOutput(ref: string, lines = 50): string {
   const f = join(runDir(run.runId), "output.log");
   if (!existsSync(f)) return "";
   return readFileSync(f, "utf-8").split("\n").slice(-lines - 1).join("\n");
+}
+
+/**
+ * Unregister a project, refusing while agents are still running on it.
+ * Shared by `codec project remove` and the dashboard.
+ */
+export function removeProjectChecked(name: string): Project {
+  if (!getProject(name)) throw new Error(`no project named "${name}"`);
+  const running = listRuns({ project: name, state: "running" });
+  if (running.length) {
+    throw new Error(
+      `${name} has ${running.length} running agent(s): ${running.map((r) => r.runId).join(", ")} — stop them first`,
+    );
+  }
+  return removeProject(name);
 }

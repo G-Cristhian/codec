@@ -45,6 +45,7 @@ describe("codec CLI (restart recovery)", () => {
     expect(r.stderr).toMatch(/no project named "ghost"/);
     expect(cli(["bogus"]).code).toBe(1);
     expect(cli(["help"]).stdout).toContain("codec run <project>");
+    expect(cli(["dashboard", "--port", "abc"]).stderr).toMatch(/invalid --port/);
   });
 
   it("refuses to remove a project with running agents", () => {
