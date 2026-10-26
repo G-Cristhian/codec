@@ -5,10 +5,27 @@
  * HTML, so task text or agent output can't inject markup.
  */
 
+/** localStorage key holding the user's theme choice ("light" | "dark"; absent = auto). */
+export const THEME_KEY = "codec-theme";
+
+/**
+ * Runs in <head> before first paint so a saved choice never flashes the
+ * wrong palette. Allowed by the page CSP (script-src 'unsafe-inline').
+ */
+const THEME_BOOT = `<script>try{var t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>`;
+
+const DARK_VARS = `color-scheme: dark;
+    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --text: #e6e8ee; --muted: #8b93a7;
+    --border: #2a2f3a; --accent: #6d8dff; --danger: #f06a6a;
+    --working: #6d8dff; --needs: #f0a050; --review: #a78bfa; --done: #3ccf8e;`;
+
+/** The locked page follows the OS theme (auto); it is shown before any login, so no stored choice. */
 export function renderLocked(): string {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Codec</title>
-<style>body{font:15px system-ui,sans-serif;background:#0f1115;color:#e6e6e6;display:grid;place-items:center;height:100vh;margin:0}
-code{background:#1c2029;padding:2px 6px;border-radius:4px}</style></head>
+<style>:root{color-scheme:light;--bg:#f6f7f9;--text:#1b1f27;--code:#eef0f4}
+@media (prefers-color-scheme: dark){:root{color-scheme:dark;--bg:#0f1115;--text:#e6e6e6;--code:#1c2029}}
+body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--text);display:grid;place-items:center;height:100vh;margin:0}
+code{background:var(--code);padding:2px 6px;border-radius:4px}</style></head>
 <body><div><h2>Codec dashboard</h2><p>Open the link printed by <code>codec dashboard</code> (it contains a secret token).</p></div></body></html>`;
 }
 
@@ -19,19 +36,26 @@ export function renderPage(token: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Codec</title>
+${THEME_BOOT}
 <style>
 :root {
+  color-scheme: light;
   --bg: #f6f7f9; --panel: #ffffff; --panel2: #eef0f4; --text: #1b1f27; --muted: #667085;
   --border: #dde1e8; --accent: #3b6cf6; --danger: #d14343;
   --working: #3b6cf6; --needs: #e0802a; --review: #8b5cf6; --done: #22a06b;
 }
+/* Dark: chosen explicitly, or auto (no data-theme) while the OS is dark. */
+:root[data-theme="dark"] {
+    ${DARK_VARS}
+}
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --text: #e6e8ee; --muted: #8b93a7;
-    --border: #2a2f3a; --accent: #6d8dff; --danger: #f06a6a;
-    --working: #6d8dff; --needs: #f0a050; --review: #a78bfa; --done: #3ccf8e;
+  :root:not([data-theme]) {
+    ${DARK_VARS}
   }
 }
+header .theme { margin-left: auto; }
+header .theme select { padding: 4px 8px; }
+header .err { margin-left: 0; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
 a { color: inherit; text-decoration: none; }
@@ -122,6 +146,13 @@ table.grid2 th.c, table.grid2 td.c { text-align: center; }
   <span class="stat"><b id="teamsN">–</b>teams</span>
   <span class="stat"><b id="running">–</b>agents running</span>
   <span class="stat"><b id="memory">–</b>memory in use</span>
+  <label class="theme muted">Theme
+    <select id="theme" aria-label="Theme">
+      <option value="auto">Auto</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </label>
   <span class="err" id="err"></span>
 </header>
 <main id="app"></main>
@@ -133,6 +164,24 @@ const LANES = [
 ];
 const app = document.getElementById("app");
 let timer = null;
+
+// Theme switch: Auto (follow the OS) / Light / Dark, remembered per browser.
+(function themeSwitch() {
+  const KEY = ${JSON.stringify(THEME_KEY)};
+  const sel = document.getElementById("theme");
+  const root = document.documentElement;
+  const cur = root.getAttribute("data-theme");
+  sel.value = cur === "light" || cur === "dark" ? cur : "auto";
+  sel.addEventListener("change", () => {
+    const v = sel.value;
+    if (v === "light" || v === "dark") root.setAttribute("data-theme", v);
+    else root.removeAttribute("data-theme");
+    try {
+      if (v === "light" || v === "dark") localStorage.setItem(KEY, v);
+      else localStorage.removeItem(KEY);
+    } catch (e) { /* storage blocked: the choice still applies to this tab */ }
+  });
+})();
 let renderSeq = 0;
 
 // ---------- tiny DOM helper: h("div.card", {onclick}, children...) ----------
