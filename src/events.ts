@@ -17,6 +17,7 @@ export type EventKind =
   | "project.remove"
   | "run.start" // worktree created + agent spawned
   | "run.finish" // agent exited on its own (fields: exitCode)
+  | "run.timeout" // time limit reached
   | "run.stop" // user stopped the run
   | "run.lost" // agent died without recording an exit code (killed, reboot)
   | "run.clean" // worktree removed
@@ -28,6 +29,7 @@ export type EventKind =
   | "team.add"
   | "team.edit"
   | "team.remove"
+  | "member.edit"
   | "member.add"
   | "member.remove";
 

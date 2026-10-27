@@ -16,6 +16,7 @@
  *    enough, so other websites can't forge actions).
  */
 
+import { checkTimeLimit, formatTimeLimit } from "./limits.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { existsSync, readdirSync, readFileSync } from "fs";
@@ -27,6 +28,7 @@ import {
   addTeam,
   clonesOf,
   editSpecialist,
+  editMember,
   getTeam,
   listSpecialists,
   listTeams,
@@ -156,6 +158,9 @@ function runSummary(r: RunStatus) {
     project: r.project,
     agent: r.agent,
     state: r.state,
+    stateText: r.state === "timed_out" ? `Stopped: took longer than ${formatTimeLimit(r.timeLimitMinutes)}` : r.state,
+    timeLimitMinutes: r.timeLimitMinutes,
+    deadline: r.deadline,
     exitCode: r.exitCode,
     lane: laneOf(r),
     startedAt: r.startedAt,
@@ -491,11 +496,16 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
         tool: s(body.tool) || undefined,
         model: s(body.model),
         skills: strs(body.skills),
+        timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes),
       });
       return sendJson(res, 201, m);
     }
     if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "remove" && n === 5) {
       return sendJson(res, 200, removeMemberChecked(b, d2));
+    }
+
+    if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "edit" && n === 5) {
+      return sendJson(res, 200, editMember(b, d2, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes) }));
     }
 
     // Specialists
@@ -505,6 +515,7 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       model: s(body.model),
       instructions: s(body.instructions),
       skills: strs(body.skills),
+      timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes),
     });
     if (!isGet && a === "specialists" && n === 1) return sendJson(res, 201, addSpecialist({ name: s(body.name), ...specFields() }));
     if (!isGet && a === "specialists" && b && c === "edit" && n === 3) return sendJson(res, 200, editSpecialist(b, specFields()));
@@ -536,7 +547,7 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       const member = s(body.member)?.trim() || undefined;
       const agent = s(body.agent)?.trim() || undefined;
       if (!member && !agent) throw new HttpError(400, '"member" or "agent" is required');
-      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task: need("task") })));
+      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task: need("task"), timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes) })));
     }
     if (!isGet && a === "runs" && b && c === "stop" && parts.length === 3) {
       return sendJson(res, 200, runSummary(stopRun(findRunOr404(b).runId)));

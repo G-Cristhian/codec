@@ -19,6 +19,8 @@
  * so restarting codec (or the whole terminal) loses nothing.
  */
 
+import { checkTimeLimit, DEFAULT_TIME_LIMIT_MINUTES } from "./limits.js";
+import { isOurProcess, ownsProcessGroup } from "./proc.js";
 import { spawn } from "child_process";
 import { existsSync, mkdirSync, openSync, closeSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -40,7 +42,6 @@ import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "
 import { renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
 import {
   eventsFile,
-  pidAlive,
   readJson,
   runsDir,
   sleepSync,
@@ -51,7 +52,7 @@ import {
 
 import { AGENTS, type Agent } from "./tools.js";
 export { AGENTS, type Agent };
-export type RunState = "running" | "done" | "failed" | "stopped";
+export type RunState = "running" | "done" | "failed" | "stopped" | "timed_out";
 
 export interface RunRecord {
   runId: string;
@@ -64,6 +65,8 @@ export interface RunRecord {
   baseSha: string;
   command: string;
   startedAt: string;
+  timeLimitMinutes?: number;
+  deadline?: string;
   pid?: number;
   stoppedAt?: string;
   lostAt?: string;
@@ -126,16 +129,74 @@ export function agentCommand(agent: Agent, opts: { model?: string; instructions?
 // Fixed wrapper; every variable part arrives through the environment, so
 // nothing user-supplied is ever spliced into shell source here.
 const WRAPPER = `# codec run wrapper (generated)
+# Separate jobs let the wrapper record the result after ending the agent's group.
+set -m
+agent_pid=
+timer_pid=
+cleanup_timer() {
+  if [ -n "$timer_pid" ]; then
+    exec {timer_fd}>&-
+    wait "$timer_pid" 2>/dev/null || true
+    timer_pid=
+  fi
+}
+finish() {
+  trap '' USR1 TERM INT HUP
+  cleanup_timer
+  printf '%s\\n' "$1" > "$CODEC_RUN_DIR/exit_code.tmp" && mv -f "$CODEC_RUN_DIR/exit_code.tmp" "$CODEC_RUN_DIR/exit_code"
+  printf '{"ts":"%s","kind":"run.finish","runId":"%s","project":"%s","agent":"%s","exitCode":%s}\\n' \\
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CODEC_RUN_ID" "$CODEC_PROJECT" "$CODEC_AGENT" "$1" >> "$CODEC_EVENTS_FILE"
+  exit "$1"
+}
+end_agent() {
+  [ -n "$agent_pid" ] || return
+  kill -TERM -- "-$agent_pid" 2>/dev/null || true
+  for ((i=0; i<50; i++)); do
+    kill -0 -- "-$agent_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$agent_pid" 2>/dev/null || true
+  wait "$agent_pid" 2>/dev/null || true
+}
+timeout_run() {
+  kill -0 "$agent_pid" 2>/dev/null || return
+  trap '' USR1 TERM INT HUP
+  cleanup_timer
+  if (set -C; printf '%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CODEC_RUN_DIR/timed_out") 2>/dev/null; then
+    printf '{"ts":"%s","kind":"run.timeout","runId":"%s","project":"%s","timeLimitMinutes":%s}\\n' \\
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CODEC_RUN_ID" "$CODEC_PROJECT" "$CODEC_TIME_LIMIT_MINUTES" >> "$CODEC_EVENTS_FILE"
+  fi
+  end_agent
+  finish 124
+}
+stop_run() {
+  trap '' USR1 TERM INT HUP
+  cleanup_timer
+  end_agent
+  if [ -f "$CODEC_RUN_DIR/timed_out" ]; then finish 124; else finish 143; fi
+}
+trap stop_run TERM INT HUP
+trap timeout_run USR1
 if cd "$CODEC_WORKTREE"; then
-  bash "$CODEC_RUN_DIR/agent.sh"
+  bash "$CODEC_RUN_DIR/agent.sh" &
+  agent_pid=$!
+  printf '%s\\n' "$agent_pid" > "$CODEC_RUN_DIR/agent_group"
+  wrapper_pid=$$
+  # A pipe held only by this wrapper: read times out at the deadline, and
+  # closing the pipe (including wrapper death) cancels it without any sleep.
+  exec {timer_fd}> >(
+    read -r -t "$CODEC_TIME_LIMIT_SECONDS"
+    result=$?
+    if [ "$result" -gt 128 ]; then kill -USR1 "$wrapper_pid" 2>/dev/null; fi
+  )
+  timer_pid=$!
+  printf '%s\\n' "$timer_pid" > "$CODEC_RUN_DIR/timer_pid"
+  wait "$agent_pid"
   code=$?
 else
   code=97
 fi
-printf '%s\\n' "$code" > "$CODEC_RUN_DIR/exit_code.tmp" && mv -f "$CODEC_RUN_DIR/exit_code.tmp" "$CODEC_RUN_DIR/exit_code"
-printf '{"ts":"%s","kind":"run.finish","runId":"%s","project":"%s","agent":"%s","exitCode":%s}\\n' \\
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CODEC_RUN_ID" "$CODEC_PROJECT" "$CODEC_AGENT" "$code" >> "$CODEC_EVENTS_FILE"
-exit "$code"
+finish "$code"
 `;
 
 export interface StartInput {
@@ -145,10 +206,12 @@ export interface StartInput {
   task: string;
   /** "team/member" — run as that team member, with its skills and instructions. */
   member?: string;
+  timeLimitMinutes?: number;
 }
 
 export function startRun(input: StartInput): RunStatus {
   if (!input.task || !input.task.trim()) throw new Error("--task is required");
+  const requestedLimit = checkTimeLimit(input.timeLimitMinutes);
   const project = getProject(input.project);
   if (!project) throw new Error(`no project named "${input.project}" (see: codec project list)`);
 
@@ -174,6 +237,9 @@ export function startRun(input: StartInput): RunStatus {
   const agent = agentName as Agent;
   if (!existsSync(project.path)) throw new Error(`project path no longer exists: ${project.path}`);
 
+  const timeLimitMinutes = requestedLimit ?? who?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES;
+  const startedAt = new Date().toISOString();
+  const deadline = new Date(Date.parse(startedAt) + timeLimitMinutes * 60_000).toISOString();
   const runId = "run-" + randomBytes(4).toString("hex");
   const branch = `codec/${runId}`;
   const worktree = join(worktreesDir(), project.name, runId);
@@ -223,7 +289,9 @@ export function startRun(input: StartInput): RunStatus {
     worktree,
     baseSha,
     command,
-    startedAt: new Date().toISOString(),
+    startedAt,
+    timeLimitMinutes,
+    deadline,
     team: who?.team,
     member: who?.member,
     specialist: who?.specialist,
@@ -243,6 +311,8 @@ export function startRun(input: StartInput): RunStatus {
       stdio: ["ignore", log, log],
       env: {
         ...process.env,
+        CODEC_TIME_LIMIT_MINUTES: String(timeLimitMinutes),
+        CODEC_TIME_LIMIT_SECONDS: String(Math.max(0.001, (Date.parse(deadline) - Date.now()) / 1000)),
         CODEC_RUN_ID: runId,
         CODEC_PROJECT: project.name,
         CODEC_AGENT: agent,
@@ -298,24 +368,16 @@ function readExitCode(runId: string): number | undefined {
 }
 
 /**
- * Is this run's wrapper process still alive? On Linux also confirm the pid
- * is really our wrapper (guards against pid reuse after a reboot, and
- * against zombies, whose cmdline is empty).
+ * Is this run's wrapper still alive? On Linux and macOS, verify its command
+ * and state to guard against reused process ids and zombies.
  */
 function processAlive(rec: RunRecord): boolean {
-  if (!rec.pid || !pidAlive(rec.pid)) return false;
-  const proc = `/proc/${rec.pid}/cmdline`;
-  if (existsSync("/proc/self/cmdline")) {
-    try {
-      return readFileSync(proc, "utf-8").includes(join(runDir(rec.runId), "run.sh"));
-    } catch {
-      return false;
-    }
-  }
-  return true;
+  if (!rec.pid) return false;
+  return isOurProcess(rec.pid, join(runDir(rec.runId), "run.sh"));
 }
 
 function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
+  if (existsSync(join(runDir(rec.runId), "timed_out"))) return "timed_out";
   if (rec.stoppedAt) return "stopped";
   if (exitCode !== undefined) return exitCode === 0 ? "done" : "failed";
   if (rec.lostAt) return "failed";
@@ -327,6 +389,23 @@ function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
 export function getRunStatus(runId: string): RunStatus | undefined {
   let rec = readRecord(runId);
   if (!rec) return undefined;
+  // Also recover overdue runs whose wrapper was lost while the machine slept.
+  if (rec.timeLimitMinutes !== undefined && rec.deadline && Date.now() > Date.parse(rec.deadline) + 30_000 &&
+      !rec.stoppedAt && !rec.lostAt && readExitCode(runId) === undefined &&
+      !existsSync(join(runDir(runId), "timed_out"))) {
+    withLock(`run-${runId}`, () => {
+      const fresh = readRecord(runId)!;
+      if (fresh.stoppedAt || fresh.lostAt || readExitCode(runId) !== undefined || existsSync(join(runDir(runId), "timed_out"))) return;
+      try {
+        writeFileSync(join(runDir(runId), "timed_out"), new Date().toISOString() + "\n", { flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+        throw error;
+      }
+      terminateRun(fresh);
+      logEvent("run.timeout", { runId, project: fresh.project, timeLimitMinutes: fresh.timeLimitMinutes });
+    });
+  }
   let exitCode = readExitCode(runId);
   let state = deriveState(rec, exitCode);
 
@@ -335,6 +414,7 @@ export function getRunStatus(runId: string): RunStatus | undefined {
     rec = withLock(`run-${runId}`, () => {
       const fresh = readRecord(runId)!;
       if (fresh.lostAt || fresh.stoppedAt || readExitCode(runId) !== undefined) return fresh;
+      terminateRun(fresh);
       const updated = { ...fresh, lostAt: new Date().toISOString() };
       writeJsonAtomic(recordFile(runId), updated);
       logEvent("run.lost", { runId, project: fresh.project, pid: fresh.pid });
@@ -383,16 +463,36 @@ function killGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** Confirm a saved group still contains this run before signaling it after a restart. */
+function ownsAgentGroup(rec: RunRecord, group: number): boolean {
+  return ownsProcessGroup(group, runDir(rec.runId));
+}
+
+/** End the wrapper and its separate agent/timer jobs, including after wrapper loss. */
+function terminateRun(rec: RunRecord): void {
+  const groups = ["agent_group"].flatMap((name) => {
+    try {
+      const id = Number(readFileSync(join(runDir(rec.runId), name), "utf-8").trim());
+      return Number.isSafeInteger(id) && id > 1 && ownsAgentGroup(rec, id) ? [id] : [];
+    } catch { return []; }
+  });
+  groups.forEach((id) => killGroup(id, "SIGTERM"));
+  if (rec.pid && processAlive(rec)) killGroup(rec.pid, "SIGTERM");
+  const until = Date.now() + 5000;
+  const groupsExist = () => groups.some((id) => ownsAgentGroup(rec, id));
+  while (((rec.pid && processAlive(rec)) || groupsExist()) && Date.now() < until) sleepSync(50);
+  // Descendants can outlive their parent, so escalation must not depend on the wrapper.
+  groups.filter((id) => ownsAgentGroup(rec, id)).forEach((id) => killGroup(id, "SIGKILL"));
+  if (rec.pid && processAlive(rec)) killGroup(rec.pid, "SIGKILL");
+  // Give the operating system a chance to finish ending the remaining jobs.
+  if (groups.length) sleepSync(50);
+}
+
 /** Stop a running agent (whole process group: wrapper, agent and children). */
 export function stopRun(ref: string): RunStatus {
   const run = findRun(ref);
   if (run.state !== "running") throw new Error(`${run.runId} is not running (state: ${run.state})`);
-  if (run.pid) {
-    killGroup(run.pid, "SIGTERM");
-    const deadline = Date.now() + 5000;
-    while (processAlive(run) && Date.now() < deadline) sleepSync(50);
-    if (processAlive(run)) killGroup(run.pid, "SIGKILL");
-  }
+  terminateRun(run);
   withLock(`run-${run.runId}`, () => {
     const fresh = readRecord(run.runId)!;
     writeJsonAtomic(recordFile(run.runId), { ...fresh, stoppedAt: new Date().toISOString() });

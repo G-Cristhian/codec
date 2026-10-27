@@ -83,7 +83,7 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 tr.click { cursor: pointer; } tr.click:hover td { background: var(--panel2); }
 td.task { max-width: 480px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .state { font-weight: 600; }
-.state.running { color: var(--working); } .state.failed, .state.stopped { color: var(--needs); } .state.done { color: var(--done); }
+.state.running { color: var(--working); } .state.timed_out, .state.failed, .state.stopped { color: var(--needs); } .state.done { color: var(--done); }
 .board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; align-items: start; }
 .lane { background: var(--panel2); border-radius: 10px; padding: 10px; min-height: 120px; }
 .lane h3 { margin: 2px 4px 10px; font-size: 13px; display: flex; justify-content: space-between; }
@@ -232,7 +232,24 @@ function mem(bytes) {
   return (bytes / 1024 ** 3).toFixed(2) + " GB";
 }
 function snippet(t, n = 90) { t = t.replace(/\\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "…" : t; }
-function stateText(r) { return r.state === "failed" && r.exitCode !== undefined ? "failed (exit " + r.exitCode + ")" : r.state; }
+function limitText(minutes) {
+  if (minutes === undefined) return "No time limit";
+  const seconds = Number((minutes * 60).toPrecision(8));
+  const value = seconds < 60 ? seconds : Number(minutes.toPrecision(8));
+  const unit = seconds < 60 ? "second" : "minute";
+  return value + " " + unit + (value === 1 ? "" : "s");
+}
+function limitInput(id, value, placeholder) {
+  return h("label", {}, "Time limit (minutes) ", h("input", {
+    type: "number", id, min: "0", max: "1440", step: "any",
+    value, placeholder: placeholder || "60 by default",
+  }));
+}
+function limitValue(form, id) {
+  const value = form.querySelector("#" + CSS.escape(id)).value;
+  return value === "" ? undefined : Number(value);
+}
+function stateText(r) { if (r.state === "timed_out") return r.stateText; return r.state === "failed" && r.exitCode !== undefined ? "failed (exit " + r.exitCode + ")" : r.state; }
 
 // ---------- form state: survives the 2-second re-render ----------
 // Every input with an id keeps its value, checked state, focus and caret
@@ -361,12 +378,13 @@ async function project(seq, name) {
       if (!t.trim()) return;
       const who = whoSel.value;
       const body = who.startsWith("m:") ? { member: who.slice(2), task: t } : { agent: who.slice(2), task: t };
+      body.timeLimitMinutes = limitValue(e.target, "p-time-limit");
       const btn = e.target.querySelector("button"); btn.disabled = true;
       try {
         const r = await api("projects/" + enc(name) + "/runs", body);
         clearForm(e.target); showError(""); go("#/run/" + r.runId);
       } catch (err) { showError(err.message); btn.disabled = false; }
-    } }, whoSel, task, h("button.primary", { type: "submit", text: "Start agent" }));
+    } }, whoSel, task, limitInput("p-time-limit", undefined, "Use member or specialist limit, else 60"), h("button.primary", { type: "submit", text: "Start agent" }));
   const remove = h("button.danger", { text: "Remove project", onclick: async () => {
       if (!confirm("Remove " + name + " from Codec? The repository itself is not touched.")) return;
       try { await api("projects/" + enc(name) + "/remove", {}); showError(""); go("#/"); }
@@ -431,6 +449,8 @@ async function run(seq, id) {
       r.specialist ? h("div", { text: "Specialist" }) : null,
       r.specialist ? h("div", { text: r.specialist + (r.specialty ? " — " + r.specialty : "") }) : null,
       h("div", { text: "Tool" }), h("div", { text: r.agent + (r.model ? " (model " + r.model + ")" : "") }),
+      h("div", { text: "Time limit" }), h("div", { text: limitText(r.timeLimitMinutes) }),
+      r.deadline ? h("div", { text: "Due by" }) : null, r.deadline ? h("div", { text: when(r.deadline) }) : null,
       h("div", { text: "Started" }), h("div", { text: when(r.startedAt) }),
       h("div", { text: "Branch" }), h("div.mono", { text: r.branch }),
       h("div", { text: "Worktree" }), h("div.mono", { text: r.cleanedAt ? r.worktree + "  (cleaned)" : r.worktree })),
@@ -473,13 +493,14 @@ async function teams(seq) {
     const addMember = h("form.stack", { onsubmit: async (e) => {
         e.preventDefault();
         const kind = whoOpts.value;
-        const body = { name: e.target.querySelector("#" + CSS.escape(key + "mname")).value.trim() || undefined, skills: checked(e.target, key + "ms-") };
+        const body = { timeLimitMinutes: limitValue(e.target, key + "limit"), name: e.target.querySelector("#" + CSS.escape(key + "mname")).value.trim() || undefined, skills: checked(e.target, key + "ms-") };
         if (kind.startsWith("s:")) body.specialist = kind.slice(2); else body.tool = kind.slice(2);
         if (await act(() => api("teams/" + enc(t.name) + "/members", body), e.target.querySelector("button"))) clearForm(e.target);
       } },
       h("div.row2", {}, whoOpts,
         h("input", { type: "text", id: key + "mname", placeholder: "name (optional, e.g. tester-2)" }),
         h("button.primary", { type: "submit", text: "Add member" })),
+      limitInput(key + "limit", undefined, "Use specialist limit, else 60"),
       h("div", {}, h("span.muted", { text: "Extra skills: " }), checks(key + "ms-", skillNames)));
     const editProjects = h("form.stack", { onsubmit: async (e) => {
         e.preventDefault();
@@ -516,6 +537,7 @@ function specForm(key, s, skillNames, onSubmit) {
       h("input", { type: "text", id: key + "specialty", placeholder: "specialty, e.g. QA tester", value: s ? s.specialty : undefined }),
       h("select", { id: key + "tool" }, ["claude", "codex"].map((t) => h("option", { value: t, text: t, selected: s && s.tool === t }))),
       h("input", { type: "text", id: key + "model", placeholder: "model (optional)", value: s && s.model ? s.model : undefined })),
+    limitInput(key + "limit", s ? s.timeLimitMinutes : undefined),
     h("textarea", { id: key + "instr", placeholder: "Standing instructions (optional)" }, s ? s.instructions : null),
     h("div", {}, h("span.muted", { text: "Skills: " }), checks(key + "sk-", skillNames, s ? s.skills : [])),
     h("div", {}, h("button.primary", { type: "submit", text: s ? "Save" : "Create specialist" })));
@@ -523,6 +545,7 @@ function specForm(key, s, skillNames, onSubmit) {
 function specValues(form, key) {
   const q = (id) => form.querySelector("#" + CSS.escape(key + id));
   return {
+    timeLimitMinutes: limitValue(form, key + "limit"),
     specialty: q("specialty").value.trim(), tool: q("tool").value, model: q("model").value.trim(),
     instructions: q("instr").value, skills: checked(form, key + "sk-"),
   };
@@ -551,6 +574,7 @@ async function specialists(seq) {
           })
         : h("div", {},
             h("div.kv.compact", {},
+              h("div", { text: "Time limit" }), h("div", { text: limitText(s.timeLimitMinutes === undefined ? 60 : s.timeLimitMinutes) }),
               h("div", { text: "Skills" }), h("div", { text: s.skills.join(", ") || "none" }),
               h("div", { text: "Instructions" }), h("div.fulltask", { text: s.instructions || "none" }),
               h("div", { text: "Clones" }),
@@ -654,8 +678,16 @@ async function member(seq, team, name) {
       h("div", { text: "Member" }), h("div", {}, h("b", { text: team + "/" + name })),
       h("div", { text: "Kind" }), h("div", { text: m.kind === "clone" ? "copy of the " + m.specialist + " specialist (" + m.specialty + ")" : "plain worker" }),
       h("div", { text: "Tool" }), h("div", { text: m.tool + (m.model ? " (model " + m.model + ")" : "") }),
+      h("div", { text: "Time limit" }), h("div", { text: limitText(m.timeLimitMinutes === undefined ? 60 : m.timeLimitMinutes) }),
       h("div", { text: "Projects" }), h("div", {}, m.projects.map((p, i) => [i ? ", " : "", h("a.link", { href: "#/project/" + enc(p), text: p })])),
       h("div", { text: "Instructions" }), h("div.fulltask", { text: m.instructions || "none" })),
+    h("form.row", { onsubmit: async (e) => {
+        e.preventDefault();
+        await act(() => api("teams/" + enc(team) + "/members/" + enc(name) + "/edit", {
+          timeLimitMinutes: limitValue(e.target, "m-time-limit"),
+        }), e.target.querySelector("button"));
+      } }, limitInput("m-time-limit", m.timeLimitMinutes, "Use specialist limit, else 60"),
+      h("button.primary", { type: "submit", text: "Save time limit" })),
     h("h2", { text: "Skills" }),
     m.skills.length
       ? h("table", {}, h("tr", {}, ["Skill", "Source"].map((t) => h("th", { text: t }))),

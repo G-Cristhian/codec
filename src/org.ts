@@ -16,6 +16,7 @@
  * while it works) live in runs.ts, next to the run engine.
  */
 
+import { checkTimeLimit } from "./limits.js";
 import { getProject, PROJECT_NAME_RE } from "./registry.js";
 import { logEvent } from "./events.js";
 import { deleteSkillFolder, getSkill } from "./skills.js";
@@ -26,6 +27,7 @@ export interface Specialist {
   name: string;
   specialty: string;
   tool: Agent;
+  timeLimitMinutes?: number;
   model?: string;
   instructions: string;
   skills: string[];
@@ -37,6 +39,7 @@ export interface Member {
   kind: "clone" | "worker";
   specialist?: string; // clones only
   tool?: Agent; // workers only (clones follow their specialist)
+  timeLimitMinutes?: number;
   model?: string; // workers only
   skills: string[]; // the member's own skills (for clones: extras on top of the specialist's)
   addedAt: string;
@@ -59,6 +62,7 @@ export interface ResolvedMember {
   specialist?: string;
   specialty?: string;
   tool: Agent;
+  timeLimitMinutes?: number;
   model?: string;
   instructions: string;
   skills: { name: string; source: Exclude<SkillSource, "project"> }[];
@@ -109,6 +113,7 @@ export interface SpecialistInput {
   name?: string;
   specialty?: string;
   tool?: string;
+  timeLimitMinutes?: number;
   model?: string;
   instructions?: string;
   skills?: string[];
@@ -121,6 +126,7 @@ export function addSpecialist(input: SpecialistInput): Specialist {
     specialty: (input.specialty ?? "").trim(),
     tool: checkTool(input.tool ?? ""),
     model: cleanModel(input.model),
+    timeLimitMinutes: checkTimeLimit(input.timeLimitMinutes),
     instructions: (input.instructions ?? "").trim(),
     skills: checkSkills(input.skills),
     createdAt: new Date().toISOString(),
@@ -145,6 +151,7 @@ export function editSpecialist(name: string, patch: Omit<SpecialistInput, "name"
     const cur = all[i];
     const next: Specialist = {
       ...cur,
+      timeLimitMinutes: patch.timeLimitMinutes !== undefined ? checkTimeLimit(patch.timeLimitMinutes) : cur.timeLimitMinutes,
       specialty: patch.specialty !== undefined ? patch.specialty.trim() : cur.specialty,
       tool: patch.tool !== undefined ? checkTool(patch.tool) : cur.tool,
       model: patch.model !== undefined ? cleanModel(patch.model) : cur.model,
@@ -269,12 +276,14 @@ export interface MemberInput {
   name?: string;
   specialist?: string; // set → clone of that specialist
   tool?: string; // plain worker
+  timeLimitMinutes?: number;
   model?: string;
   skills?: string[];
 }
 
 export function addMember(teamName: string, input: MemberInput): Member {
   const skills = checkSkills(input.skills);
+  const timeLimitMinutes = checkTimeLimit(input.timeLimitMinutes);
   const member = withLock("org", () => {
     const all = loadTeams();
     const team = all.find((t) => t.name === teamName);
@@ -314,11 +323,29 @@ export function addMember(teamName: string, input: MemberInput): Member {
       };
     }
     if (team.members.some((x) => x.name === m.name)) throw new Error(`team ${teamName} already has a member named "${m.name}"`);
+    m.timeLimitMinutes = timeLimitMinutes;
     team.members.push(m);
     saveTeams(all);
     return m;
   });
   logEvent("member.add", { team: teamName, member: member.name, kind: member.kind, specialist: member.specialist });
+  return member;
+}
+
+/** Update a member's time limit. Omitted values keep the current setting. */
+export function editMember(teamName: string, memberName: string, patch: { timeLimitMinutes?: number }): Member {
+  const limit = checkTimeLimit(patch.timeLimitMinutes);
+  const member = withLock("org", () => {
+    const all = loadTeams();
+    const team = all.find((t) => t.name === teamName);
+    if (!team) throw new Error(`no team named "${teamName}"`);
+    const m = team.members.find((m) => m.name === memberName);
+    if (!m) throw new Error(`team ${teamName} has no member named "${memberName}"`);
+    if (limit !== undefined) m.timeLimitMinutes = limit;
+    saveTeams(all);
+    return m;
+  });
+  logEvent("member.edit", { team: teamName, member: memberName });
   return member;
 }
 
@@ -367,6 +394,7 @@ export function resolveMember(teamName: string, memberName: string): ResolvedMem
       specialty: spec.specialty,
       tool: spec.tool,
       model: spec.model,
+      timeLimitMinutes: m.timeLimitMinutes ?? spec.timeLimitMinutes,
       instructions: spec.instructions,
       skills,
       projects: team.projects,
@@ -379,6 +407,7 @@ export function resolveMember(teamName: string, memberName: string): ResolvedMem
     kind: "worker",
     tool: m.tool!,
     model: m.model,
+    timeLimitMinutes: m.timeLimitMinutes,
     instructions: "",
     skills,
     projects: team.projects,

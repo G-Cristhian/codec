@@ -2,6 +2,7 @@
  * cli.ts — the `codec` command.
  */
 
+import { checkTimeLimit, formatTimeLimit } from "./limits.js";
 import { addProject, listProjects } from "./registry.js";
 import { startDashboard } from "./dashboard.js";
 import { readFileSync } from "fs";
@@ -43,9 +44,9 @@ Projects
   codec project remove <name>                unregister (the repo is not touched)
 
 Runs
-  codec run <project> --member <team>/<member> --task "<text>"
+  codec run <project> --member <team>/<member> --task "<text>" [--time-limit <minutes>]
                                              start a team member in a fresh worktree
-  codec run <project> --agent claude|codex --task "<text>"
+  codec run <project> --agent claude|codex --task "<text>" [--time-limit <minutes>]
                                              start an unassigned worker
   codec status [--project <name>] [--json]   every run across all projects
   codec logs <run> [--lines N]               show a run's recent output
@@ -61,7 +62,7 @@ Skills  (folders with a SKILL.md, Claude Code format)
 
 Specialists  (agent templates)
   codec specialist add <name> --specialty <text> --tool claude|codex
-        [--model <m>] [--instructions "<text>" | --instructions-file <f>] [--skills a,b]
+        [--model <m>] [--instructions "<text>" | --instructions-file <f>] [--skills a,b] [--time-limit <minutes>]
   codec specialist edit <name> [same options]
   codec specialist list [--json]
   codec specialist remove <name>             refused while it has clones in teams
@@ -71,14 +72,16 @@ Teams
   codec team edit <name> --projects a,b      change its projects
   codec team list [--json]                   teams, projects and members
   codec team remove <name>                   refused while a member is working
-  codec team member add <team> --specialist <name> [--name <n>] [--skills a,b]
+  codec team member add <team> --specialist <name> [--name <n>] [--skills a,b] [--time-limit <minutes>]
                                              add a clone of a specialist
-  codec team member add <team> --tool claude|codex [--name <n>] [--model <m>] [--skills a,b]
+  codec team member add <team> --tool claude|codex [--name <n>] [--model <m>] [--skills a,b] [--time-limit <minutes>]
                                              add a plain worker
   codec team member remove <team> <member>   refused while it is working
 
 Dashboard
   codec dashboard [--port N]                 local web page (default port 4777)
+
+Time limits: run > team member > specialist > 60 minutes. Positive minutes, up to 1440; fractions allowed.
 
 <run> can be the full id (run-1a2b3c4d) or a unique prefix (1a2b).
 Data folder: ${codecHome()}  (override with CODEC_HOME)
@@ -123,6 +126,11 @@ function str(flags: Parsed["flags"], key: string): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+function timeLimit(flags: Parsed["flags"]): number | undefined {
+  const value = str(flags, "time-limit");
+  return checkTimeLimit(value === undefined ? undefined : Number(value));
+}
+
 function need(value: string | undefined, usage: string): string {
   if (!value) throw new Error(`usage: ${usage}`);
   return value;
@@ -154,6 +162,7 @@ function skillList(r: RunStatus): string {
 }
 
 function stateLabel(r: RunStatus): string {
+  if (r.state === "timed_out") return `Stopped: took longer than ${formatTimeLimit(r.timeLimitMinutes)}`;
   if (r.state === "failed" && r.exitCode !== undefined) return `failed (exit ${r.exitCode})`;
   if (r.state === "failed" && r.lostAt) return "failed (lost)";
   return r.state;
@@ -204,11 +213,13 @@ export function main(argv: string[]): number {
         agent: str(flags, "agent"),
         member: str(flags, "member"),
         task: need(str(flags, "task"), usage),
+        timeLimitMinutes: timeLimit(flags),
       });
       out(`started ${r.runId}  ${who(r)} (${r.agent}) on ${r.project}`);
       out(`  branch   ${r.branch}`);
       out(`  worktree ${r.worktree}`);
       out(`  skills   ${skillList(r)}`);
+      out(`  time limit ${formatTimeLimit(r.timeLimitMinutes)}`);
       return 0;
     }
 
@@ -250,6 +261,7 @@ export function main(argv: string[]): number {
           ? readFileSync(str(flags, "instructions-file")!, "utf-8")
           : str(flags, "instructions"),
         skills: list(flags, "skills"),
+        timeLimitMinutes: timeLimit(flags),
       });
       if (sub === "add") {
         const sp = addSpecialist({
@@ -297,6 +309,7 @@ export function main(argv: string[]): number {
             tool: str(flags, "tool"),
             model: str(flags, "model"),
             skills: list(flags, "skills"),
+            timeLimitMinutes: timeLimit(flags),
           });
           out(`added ${team}/${m.name} (${m.kind === "clone" ? `clone of ${m.specialist}` : `${m.tool} worker`})`);
         } else if (action === "remove") {
@@ -348,13 +361,14 @@ export function main(argv: string[]): number {
       }
       out(
         table([
-          ["RUN", "PROJECT", "WHO", "AGENT", "STATE", "STARTED", "WORKTREE"],
+          ["RUN", "PROJECT", "WHO", "AGENT", "STATE", "TIME LIMIT", "STARTED", "WORKTREE"],
           ...runs.map((r) => [
             r.runId,
             r.project,
             who(r),
             r.agent,
             stateLabel(r),
+            formatTimeLimit(r.timeLimitMinutes),
             localTime(r.startedAt),
             r.cleanedAt ? "(cleaned)" : r.worktree,
           ]),
