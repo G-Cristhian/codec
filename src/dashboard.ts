@@ -18,7 +18,7 @@
 
 import { CodecError } from "./errors.js";
 import { S, wording } from "./strings.js";
-import { checkpointIdentity, getSettings, saveIdentity } from "./settings.js";
+import { checkpointIdentity, getSettings, saveSettings } from "./settings.js";
 import { ApiError, friendlyError } from "./friendly.js";
 import { hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking } from "./folders.js";
 import { createSetupChecker, type SetupOptions } from "./setup.js";
@@ -89,7 +89,9 @@ export function laneOf(run: RunStatus): Lane {
   if (run.state === "running") return "working";
   const cleaned = !!run.cleanedAt || !existsSync(run.worktree);
   if (cleaned) return "done";
-  if (run.state === "done") return "inReview";
+  if (run.reviewStatus === "unsaved" || run.reviewStatus === "unavailable") return "needsYou";
+  if (run.state === "done" && run.reviewStatus === "no_changes") return "done";
+  if (run.state === "done" && run.reviewStatus === "ready") return "inReview";
   return "needsYou";
 }
 
@@ -169,7 +171,8 @@ function runSummary(r: RunStatus) {
     project: r.project,
     agent: r.agent,
     state: r.state,
-    stateText: r.lostAt ? S.wording.lost : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
+    reviewStatus: r.reviewStatus,
+    stateText: r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
     lostAt: r.lostAt,
     timeLimitMinutes: r.timeLimitMinutes,
     deadline: r.deadline,
@@ -315,6 +318,9 @@ export function runView(ref: string) {
     lostAt: r.lostAt,
     model: r.model,
     actualModel: r.actualModel,
+    autoSaved: r.autoSaved,
+    coAuthorStripped: r.coAuthorStripped,
+    checkpointError: r.checkpointError,
     specialty: r.specialty,
     skillsGiven: (r.skills ?? []) as GivenSkill[],
     skillsUsed: skillsUsed(r.runId),
@@ -537,11 +543,15 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
-    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await checkSetup(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity() });
+    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await checkSetup(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), shouldOpen: !getSettings().setupFinished });
     if (isGet && a === "settings" && n === 1) return sendJson(res, 200, getSettings());
     if (!isGet && a === "settings" && n === 1) {
       const identity = body.identity as Record<string, unknown> | undefined;
-      return sendJson(res, 200, saveIdentity({ name: s(identity?.name) ?? "", email: s(identity?.email) ?? "" }));
+      if (body.setupFinished !== undefined && body.setupFinished !== true) throw new CodecError("bad_request", S.common.error);
+      return sendJson(res, 200, saveSettings({
+        identity: identity ? { name: s(identity.name) ?? "", email: s(identity.email) ?? "" } : body.setupFinished === true ? undefined : { name: "", email: "" },
+        setupFinished: body.setupFinished === true ? true : undefined,
+      }));
     }
     if (isGet && a === "folders" && n === 1) return sendJson(res, 200, listFolders(url.searchParams.get("path") ?? undefined));
     if (isGet && a === "remove-preview" && n === 1) return sendJson(res, 200, removePreview(url.searchParams.get("kind") ?? "", url.searchParams.get("name") ?? ""));

@@ -286,6 +286,7 @@ describe("Wave 2 wording and actions", () => {
   it.each([
     [undefined, undefined, "Default"],
     [undefined, "claude-haiku-5-5", "Default (claude-haiku-5-5)"],
+    [undefined, "gpt-6.1-sol", "Default (gpt-6.1-sol)"],
     ["chosen-model", "actual-model", "chosen-model"],
   ])("shows the task's model choice %s and detected model %s as %s", async (model, actualModel, expected) => {
     let tree: any[] = [];
@@ -317,6 +318,42 @@ describe("Wave 2 wording and actions", () => {
     form.props.onsubmit({ preventDefault() {} });
     await Promise.resolve();
     expect(api).toHaveBeenLastCalledWith("settings", { identity: { name: "Edited Owner", email: "edited@example.invalid" } });
+  });
+
+  it.each(["setup-continue", "setup-skip"])("%s finishes setup through the authenticated settings API", async (id) => {
+    let tree: any[] = [];
+    const location = { hash: "#/setup" };
+    const api = vi.fn(async () => ({ identity: { name: "", email: "" } }));
+    const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean) });
+    const { setup } = runtime({ location, messages: new Map(), setupState: { tools: [], ready: true },
+      overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; }, api,
+        act: async (_key: string, _trigger: unknown, action: () => Promise<void>) => action() } });
+    await setup(1);
+    const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
+    const action = nodes(tree).find((node) => node.props?.["data-testid"] === id);
+    await action.props.onclick({ currentTarget: {} });
+    expect(api).toHaveBeenLastCalledWith("settings", { setupFinished: true });
+    expect(location.hash).toBe("#/");
+    expect(page).toContain('if (setupState.shouldOpen && location.hash !== "#/setup")');
+  });
+
+  it.each([
+    ["unsaved", S.tasks.unsaved], ["no_changes", S.tasks.noChanges], ["unavailable", S.tasks.workspaceUnchecked],
+  ])("shows the %s task status", (reviewStatus, expected) => {
+    const { stateText } = runtime();
+    expect(stateText({ state: "done", reviewStatus })).toBe(expected);
+  });
+
+  it("shows the saved checkpoint note and unsaved work instructions on the task page", async () => {
+    let tree: any[] = [];
+    const record = { runId: "run-save", project: "site", task: "Check", agent: "codex", state: "done", autoSaved: true,
+      reviewStatus: "unsaved", skillsGiven: [], skillsUsed: [] };
+    const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean) });
+    const { run } = runtime({ messages: new Map(), enc: encodeURIComponent, overrides: { h: capture,
+      render: (_seq: number, ...kids: any[]) => { tree = kids; }, api: async () => record } });
+    await run(1, record.runId);
+    expect(tree).toContainEqual(expect.objectContaining({ props: { "data-testid": "task-auto-saved", text: S.tasks.autoSaved } }));
+    expect(tree).toContainEqual(expect.objectContaining({ props: { "data-testid": "task-unsaved", text: S.tasks.unsavedHelp } }));
   });
 
   it("keeps technical labels whole and names where retained roles and skills live", () => {

@@ -339,6 +339,9 @@ function toolPicker(id, selected) {
   return h("label.field", {}, S.common.tool, select);
 }
 function stateText(r) {
+  if (r.reviewStatus === "unsaved") return S.tasks.unsaved;
+  if (r.reviewStatus === "unavailable") return S.tasks.workspaceUnchecked;
+  if (r.reviewStatus === "no_changes") return S.tasks.noChanges;
   if (r.lostAt) return S.wording.lost;
   if (r.state === "timed_out") return r.stateText || fmt(S.tasks.timedOut, { limit: limitText(r.timeLimitMinutes) });
   const labels = { running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped, timed_out: S.tasks.timedOut };
@@ -494,7 +497,8 @@ async function setup(seq) {
   render(seq, h("section", { "data-testid": "setup-wizard" }, heading(S.setup.title), h("p", { text: S.setup.hint }),
     h("p", { text: working.length === 1 ? fmt(S.setup.oneReady, { tool: toolName(working[0].tool) }) : setupState.ready ? S.setup.ready : S.setup.notReady }), identityForm, rows,
     button("setup-check", S.setup.check, (e) => act("setup", e.currentTarget, async () => { setupState = await api("setup?fresh=1"); }, "")),
-    button("setup-continue", S.setup.continue, () => go("#/"), { disabled: !setupState.ready }), message("setup")));
+    button("setup-continue", S.setup.continue, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, ""), { disabled: !setupState.ready }),
+    button("setup-skip", S.setup.skip, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, "")), message("setup")));
 }
 function projectAddForm() {
   const key = "project-add";
@@ -729,6 +733,10 @@ async function run(seq, id) {
     }, extra, S.tasks.clean);
   }
   render(seq, crumbs(h("a", { href: "#/project/" + enc(r.project), text: r.project }), S.tasks.task), heading(S.tasks.details), hint(S.wording.helperIntro),
+    r.autoSaved ? h("p", { "data-testid": "task-auto-saved", text: S.tasks.autoSaved }) : null,
+    r.checkpointError ? h("p", { "data-testid": "task-checkpoint-error", text: S.errors[r.checkpointError] }) : null,
+    r.reviewStatus === "unsaved" ? h("p", { "data-testid": "task-unsaved", text: S.tasks.unsavedHelp }) : null,
+    r.reviewStatus === "unavailable" ? h("p", { "data-testid": "task-workspace-unchecked", text: S.tasks.workspaceUncheckedHelp }) : null,
     h("div.kv", {}, pairs.map((text) => h("div.fulltask", { text })),
       h("div", { text: ${scriptJSON(S.common.timeLimitLabel)} }), h("div", { text: limitText(r.timeLimitMinutes) })),
     h("div.actions", {}, r.state === "running" ? button("task-stop", S.tasks.stop, () => showDialog(S.tasks.stopTitle,
@@ -763,7 +771,7 @@ async function refresh() {
     if (seq !== renderSeq) return;
     if (!setupChecked) {
       setupChecked = true;
-      if (!setupState.ready && location.hash !== "#/setup") { go("#/setup"); return; }
+      if (setupState.shouldOpen && location.hash !== "#/setup") { go("#/setup"); return; }
     }
     const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
     let page = "projects";

@@ -89,7 +89,7 @@ export function addExcludes(worktree: string, patterns: string[]): string {
   return file;
 }
 
-/** The text handed to the agent as standing instructions (empty when there are none). */
+/** The text handed to every agent as standing instructions. */
 export function instructionsText(m: ResolvedMember | undefined, tool: Agent, skills: GivenSkill[]): string {
   const parts: string[] = [];
   if (skills.length) {
@@ -101,7 +101,8 @@ export function instructionsText(m: ResolvedMember | undefined, tool: Agent, ski
       { member: m.member, specialty: m.specialty ?? "", team: m.team, role: m.specialist ?? "" }));
     if (m.instructions) parts.push(`${S.helperInstructions.standing}\n${m.instructions}`);
   }
-  return parts.length ? parts.join("\n\n") + "\n" : "";
+  parts.push(S.helperInstructions.attribution);
+  return parts.join("\n\n") + "\n";
 }
 
 /**

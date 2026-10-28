@@ -117,6 +117,9 @@ describe("agent runs", () => {
     process.env.CODEC_AGENT_COMMAND = `echo change > dirty.txt`;
     const dirty = startRun({ project: "alpha", agent: "codex", task: "y" });
     await waitFor(dirty.runId);
+    // Successful runs save their leftovers; changes made later still need protection.
+    const { writeFileSync } = await import("fs");
+    writeFileSync(join(dirty.worktree, "dirty.txt"), "unsaved after exit");
     expect(() => cleanRun(dirty.runId)).toThrow(expect.objectContaining({ code: "uncommitted_changes" }));
     cleanRun(dirty.runId, { force: true, deleteBranch: true });
     expect(existsSync(dirty.worktree)).toBe(false);
@@ -135,11 +138,11 @@ describe("agent runs", () => {
     const { agentCommand } = await import("../src/runs.js");
     delete process.env.CODEC_AGENT_COMMAND;
     expect(agentCommand("claude")).toBe(
-      `claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")" --output-format stream-json --verbose`,
+      `claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")" --output-format stream-json --verbose --settings "$CODEC_RUN_DIR/claude-settings.json"`,
     );
     expect(agentCommand("codex")).toBe(`codex exec --yolo "$(cat "$CODEC_TASK_FILE")"`);
     expect(agentCommand("claude", { model: "opus", instructions: true })).toBe(
-      `claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")" --output-format stream-json --verbose` +
+      `claude --dangerously-skip-permissions -p "$(cat "$CODEC_TASK_FILE")" --output-format stream-json --verbose --settings "$CODEC_RUN_DIR/claude-settings.json"` +
         ` --model 'opus' --append-system-prompt "$(cat "$CODEC_RUN_DIR/instructions.md")"`,
     );
     expect(agentCommand("codex", { model: "gpt-6-astra", instructions: true })).toBe(

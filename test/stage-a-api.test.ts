@@ -253,6 +253,33 @@ describe("removal previews and runs", () => {
 });
 
 describe("setup API", () => {
+  it("opens setup for a fresh home even when both AI services are ready, and persists finishing across restarts", async () => {
+    expect((await get("/api/setup")).json).toMatchObject({ ready: true, shouldOpen: true });
+    expect((await get("/api/settings")).json.setupFinished).toBe(false);
+    expect((await call("POST", "/api/settings", { setupFinished: true }, { token: null, cookie: true })).status).toBe(401);
+    expect((await get("/api/setup")).json.shouldOpen).toBe(true);
+    expect((await post("/api/settings", { setupFinished: true })).json.setupFinished).toBe(true);
+    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf-8")).setupFinished).toBe(true);
+    await d.close();
+    d = await startDashboard({ port: 0, setup: { runner, findBinary: (tool) => tool } });
+    expect((await get("/api/setup")).json.shouldOpen).toBe(false);
+    const identity = { name: "Setup Owner", email: "setup@example.invalid" };
+    await post("/api/settings", { identity });
+    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: true });
+  });
+  it("treats an existing project as finished setup and remembers that after removal", async () => {
+    await project();
+    expect((await get("/api/setup")).json.shouldOpen).toBe(false);
+    expect((await post("/api/projects/alpha/remove")).status).toBe(200);
+    expect((await get("/api/setup")).json.shouldOpen).toBe(false);
+  });
+  it("treats existing helpers as finished setup without requiring projects", async () => {
+    await team();
+    expect((await post("/api/teams/Alpha/members", { name: "helper", tool: "codex" })).status).toBe(201);
+    expect((await post("/api/projects/alpha/remove")).status).toBe(200);
+    expect((await get("/api/setup")).json.shouldOpen).toBe(false);
+    expect((await get("/api/settings")).json.setupFinished).toBe(true);
+  });
   it("returns tools, readiness, cached results, and fresh rechecks", async () => {
     await d.close();
     const mock = vi.fn<CommandRunner>(runner);
@@ -340,11 +367,11 @@ describe("checkpoint identity settings API", () => {
   it("reads and saves the owner identity and uses it for starting checkpoints", async () => {
     vi.stubEnv("GIT_CONFIG_GLOBAL", join(tempDir(), "no-global-config"));
     vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
-    expect((await get("/api/settings")).json).toEqual({ identity: { name: "", email: "" } });
+    expect((await get("/api/settings")).json).toEqual({ identity: { name: "", email: "" }, setupFinished: false });
     expect((await get("/api/setup")).json.identityReady).toBe(false);
     const identity = { name: "Codec Owner", email: "owner@example.invalid" };
     expect(await post("/api/settings", { identity })).toMatchObject({ status: 200, json: { identity } });
-    expect((await get("/api/settings")).json).toEqual({ identity });
+    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: false });
     expect((await get("/api/setup")).json.identityReady).toBe(true);
     expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf-8"))).toEqual({ identity });
     const dir = tempDir();
@@ -352,7 +379,7 @@ describe("checkpoint identity settings API", () => {
     expect(git(dir, ["log", "-1", "--format=%an <%ae>|%cn <%ce>"]).out)
       .toBe("Codec Owner <owner@example.invalid>|Codec Owner <owner@example.invalid>");
     expect((await post("/api/settings", { identity: { name: "", email: "bad" } })).json.code).toBe("invalid_identity");
-    expect((await get("/api/settings")).json).toEqual({ identity });
+    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: true });
   });
   it("returns identity_missing with a Setup fix and starts successfully after it is saved", async () => {
     vi.stubEnv("GIT_CONFIG_GLOBAL", join(tempDir(), "no-global-config"));

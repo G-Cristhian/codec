@@ -3,10 +3,10 @@ import { spawnSync } from "child_process";
 import { join } from "path";
 import { CodecError } from "./errors.js";
 import { S } from "./strings.js";
-import { codecHome, readJson, withLock, writeJsonAtomic } from "./store.js";
+import { codecHome, projectsFile, readJson, specialistsFile, teamsFile, withLock, writeJsonAtomic } from "./store.js";
 
 export interface Identity { name: string; email: string }
-export interface Settings { identity: Identity }
+export interface Settings { identity: Identity; setupFinished: boolean }
 const settingsFile = () => join(codecHome(), "settings.json");
 
 function configIdentity(path?: string): Identity {
@@ -23,15 +23,24 @@ function valid(identity: Identity): boolean {
 }
 export function getSettings(): Settings {
   const saved = readJson<Partial<Settings>>(settingsFile(), {});
-  return { identity: saved.identity ?? configIdentity() };
+  const existingInstall = saved.setupFinished === undefined && (
+    readJson<{ projects: unknown[] }>(projectsFile(), { projects: [] }).projects.length > 0 ||
+    readJson<{ specialists: unknown[] }>(specialistsFile(), { specialists: [] }).specialists.length > 0 ||
+    readJson<{ teams: { members: unknown[] }[] }>(teamsFile(), { teams: [] }).teams.some((team) => team.members.length > 0));
+  if (existingInstall) return saveSettings({ setupFinished: true });
+  return { identity: saved.identity ?? configIdentity(), setupFinished: saved.setupFinished ?? false };
 }
 export function saveIdentity(input: Identity): Settings {
-  const identity = { name: input.name.trim(), email: input.email.trim() };
-  if (!valid(identity)) throw new CodecError("invalid_identity", S.errors.invalid_identity);
+  return saveSettings({ identity: input });
+}
+export function saveSettings(input: { identity?: Identity; setupFinished?: boolean }): Settings {
+  const identity = input.identity ? { name: input.identity.name.trim(), email: input.identity.email.trim() } : undefined;
+  if (identity && !valid(identity)) throw new CodecError("invalid_identity", S.errors.invalid_identity);
   return withLock("settings", () => {
-    const settings = { ...readJson<Partial<Settings>>(settingsFile(), {}), identity };
+    const saved = readJson<Partial<Settings>>(settingsFile(), {});
+    const settings = { ...saved, ...(identity ? { identity } : {}), ...(input.setupFinished !== undefined ? { setupFinished: input.setupFinished } : {}) };
     writeJsonAtomic(settingsFile(), settings);
-    return settings;
+    return { identity: settings.identity ?? configIdentity(), setupFinished: settings.setupFinished ?? false };
   });
 }
 export function checkpointIdentity(projectPath?: string): Identity | undefined {

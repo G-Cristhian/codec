@@ -252,14 +252,15 @@ describe("runs with team members", () => {
       expect(instructions).toContain("Always test.");
       expect(instructions).not.toMatch(/Skills given|Before doing anything else|SKILL.md|Skill tool/);
     });
-    it(`${tool}: no instruction files for a quick helper without skills`, async () => {
+    it(`${tool}: attribution instructions also apply to a quick helper without skills`, async () => {
       useIsolatedHome("true");
       setupOrg();
       const run = startRun({ project: "alpha", agent: tool, task: "test" });
       await waitFor(run.runId);
       const dir = join(process.env.CODEC_HOME!, "runs", run.runId);
-      expect(existsSync(join(dir, "instructions.md"))).toBe(false);
-      expect(existsSync(join(dir, "instructions.toml"))).toBe(false);
+      const instructions = readFileSync(join(dir, "instructions.md"), "utf-8");
+      expect(instructions).toContain("do not add any Co-Authored-By or AI attribution lines");
+      expect(JSON.parse(readFileSync(join(dir, "instructions.toml"), "utf-8"))).toBe(instructions);
     });
   }
 

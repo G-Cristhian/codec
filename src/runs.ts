@@ -19,7 +19,7 @@
  * so restarting codec (or the whole terminal) loses nothing.
  */
 
-import { S } from "./strings.js";
+import { S, wording } from "./strings.js";
 import { checkpointIdentity, identityEnvironment } from "./settings.js";
 import { CodecError } from "./errors.js";
 import { checkTimeLimit, DEFAULT_TIME_LIMIT_MINUTES } from "./limits.js";
@@ -43,6 +43,8 @@ import {
 } from "./org.js";
 import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "./inject.js";
 import { modelFromClaudeStream, renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
+import { modelFromCodexOutput } from "./codex-output.js";
+import { COMMIT_ATTRIBUTION_SCRIPT } from "./commit-attribution.js";
 import {
   eventsFile,
   readJson,
@@ -81,6 +83,9 @@ export interface RunRecord {
   specialty?: string;
   model?: string;
   actualModel?: string;
+  autoSaved?: boolean;
+  coAuthorStripped?: number;
+  checkpointError?: "checkpoint_save_failed";
   /** Exactly the skills the agent could see, with where each came from. */
   skills?: GivenSkill[];
   /** How output.log is written: plain text, or Claude Code's stream-json (rendered on read). */
@@ -90,6 +95,7 @@ export interface RunRecord {
 export interface RunStatus extends RunRecord {
   state: RunState;
   exitCode?: number;
+  reviewStatus?: "ready" | "unsaved" | "no_changes" | "unavailable";
 }
 
 /** A run with no pid yet is "starting"; past this it's considered lost. */
@@ -114,6 +120,7 @@ export function agentCommand(agent: Agent, opts: { model?: string; instructions?
       "claude --dangerously-skip-permissions -p",
       prompt,
       "--output-format stream-json --verbose", // structured, so Skill tool calls can be detected
+      `--settings "$CODEC_RUN_DIR/claude-settings.json"`,
       model && `--model ${model}`,
       opts.instructions && `--append-system-prompt "$(cat "$CODEC_RUN_DIR/instructions.md")"`,
     ]
@@ -147,6 +154,11 @@ cleanup_timer() {
 finish() {
   trap '' USR1 TERM INT HUP
   cleanup_timer
+  result=$1
+  if ! "$CODEC_NODE" "$CODEC_RUN_DIR/strip-attribution.cjs"; then
+    if [ "$result" -eq 0 ]; then result=98; fi
+  fi
+  set -- "$result"
   printf '%s\\n' "$1" > "$CODEC_RUN_DIR/exit_code.tmp" && mv -f "$CODEC_RUN_DIR/exit_code.tmp" "$CODEC_RUN_DIR/exit_code"
   printf '{"ts":"%s","kind":"run.finish","runId":"%s","project":"%s","agent":"%s","exitCode":%s}\\n' \\
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CODEC_RUN_ID" "$CODEC_PROJECT" "$CODEC_AGENT" "$1" >> "$CODEC_EVENTS_FILE"
@@ -197,6 +209,22 @@ if cd "$CODEC_WORKTREE"; then
   printf '%s\\n' "$timer_pid" > "$CODEC_RUN_DIR/timer_pid"
   wait "$agent_pid"
   code=$?
+  cleanup_timer
+  if [ "$code" -eq 0 ]; then
+    if changes=$(git status --porcelain --untracked-files=normal); then
+      if [ -n "$changes" ]; then
+        if git add -A && git -c commit.gpgSign=false commit -m "$CODEC_CHECKPOINT_MESSAGE"; then
+          printf '{"autoSaved":true}\\n' > "$CODEC_RUN_DIR/checkpoint.json.tmp"
+        else
+          printf '{"checkpointError":"checkpoint_save_failed"}\\n' > "$CODEC_RUN_DIR/checkpoint.json.tmp"
+        fi
+        mv -f "$CODEC_RUN_DIR/checkpoint.json.tmp" "$CODEC_RUN_DIR/checkpoint.json"
+      fi
+    else
+      printf '{"checkpointError":"checkpoint_save_failed"}\\n' > "$CODEC_RUN_DIR/checkpoint.json.tmp"
+      mv -f "$CODEC_RUN_DIR/checkpoint.json.tmp" "$CODEC_RUN_DIR/checkpoint.json"
+    fi
+  fi
 else
   code=97
 fi
@@ -261,6 +289,12 @@ export function startRun(input: StartInput): RunStatus {
   });
 
   mkdirSync(dir, { recursive: true });
+  if (agent === "claude") {
+    writeJsonAtomic(join(dir, "claude-settings.json"), {
+      includeCoAuthoredBy: false,
+      attribution: { commit: "", pr: "" },
+    });
+  }
   let skills: GivenSkill[];
   try {
     skills = who ? injectSkills(worktree, agent, who.skills) : projectSkills(worktree, agent);
@@ -282,6 +316,7 @@ export function startRun(input: StartInput): RunStatus {
   writeFileSync(join(dir, "task.txt"), input.task);
   writeFileSync(join(dir, "agent.sh"), command + "\n");
   writeFileSync(join(dir, "run.sh"), WRAPPER);
+  writeFileSync(join(dir, "strip-attribution.cjs"), COMMIT_ATTRIBUTION_SCRIPT);
 
   const record: RunRecord = {
     runId,
@@ -321,9 +356,11 @@ export function startRun(input: StartInput): RunStatus {
         CODEC_RUN_ID: runId,
         CODEC_PROJECT: project.name,
         CODEC_AGENT: agent,
+        CODEC_NODE: process.execPath,
         CODEC_WORKTREE: worktree,
         CODEC_RUN_DIR: dir,
         CODEC_TASK_FILE: join(dir, "task.txt"),
+        CODEC_CHECKPOINT_MESSAGE: wording(S.tasks.checkpointMessage, { id: runId.slice(4), task: input.task.split(/\r?\n/, 1)[0].trim().slice(0, 100) }),
         CODEC_EVENTS_FILE: eventsFile(),
       },
     });
@@ -394,9 +431,29 @@ function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
 export function getRunStatus(runId: string): RunStatus | undefined {
   let rec = readRecord(runId);
   if (!rec) return undefined;
-  if (rec.outputFormat === "claude-stream" && !rec.actualModel) {
+  const attribution = readJson<{ coAuthorStripped?: number }>(join(runDir(runId), "attribution.json"), {});
+  if (attribution.coAuthorStripped && attribution.coAuthorStripped !== rec.coAuthorStripped) {
+    rec = withLock(`run-${runId}`, () => {
+      const updated = { ...readRecord(runId)!, ...attribution };
+      writeJsonAtomic(recordFile(runId), updated);
+      return updated;
+    });
+  }
+  // The standalone wrapper writes this result even while Codec is closed.
+  const checkpoint = readJson<{ autoSaved?: boolean; checkpointError?: "checkpoint_save_failed" }>(join(runDir(runId), "checkpoint.json"), {});
+  if ((checkpoint.autoSaved && !rec.autoSaved) || (checkpoint.checkpointError && !rec.checkpointError)) {
+    rec = withLock(`run-${runId}`, () => {
+      const updated = { ...readRecord(runId)!, ...checkpoint };
+      writeJsonAtomic(recordFile(runId), updated);
+      return updated;
+    });
+  }
+  if (!rec.actualModel) {
     let model: string | undefined;
-    try { model = modelFromClaudeStream(readFileSync(join(runDir(runId), "output.log"), "utf-8")); }
+    try {
+      const raw = readFileSync(join(runDir(runId), "output.log"), "utf-8");
+      model = rec.agent === "codex" ? modelFromCodexOutput(raw) : rec.outputFormat === "claude-stream" ? modelFromClaudeStream(raw) : undefined;
+    }
     catch { /* The helper may not have opened its activity file yet. */ }
     if (model) rec = withLock(`run-${runId}`, () => {
       const fresh = readRecord(runId)!;
@@ -440,7 +497,18 @@ export function getRunStatus(runId: string): RunStatus | undefined {
     exitCode = readExitCode(runId);
     state = deriveState(rec, exitCode);
   }
-  return { ...rec, state, exitCode };
+  let reviewStatus: RunStatus["reviewStatus"];
+  if (state !== "running" && !rec.cleanedAt && existsSync(rec.worktree)) {
+    // Always recheck: a helper or the owner can leave work after the process exits.
+    const status = git(rec.worktree, ["status", "--porcelain", "--untracked-files=normal"]);
+    if (!status.ok) reviewStatus = "unavailable";
+    else if (status.out) reviewStatus = "unsaved";
+    else if (state === "done") {
+      const checkpoints = git(rec.worktree, ["rev-list", "--count", `${rec.baseSha}..HEAD`]);
+      reviewStatus = !checkpoints.ok ? "unavailable" : Number(checkpoints.out) > 0 ? "ready" : "no_changes";
+    }
+  }
+  return { ...rec, state, exitCode, reviewStatus };
 }
 
 /** Every run across every project, oldest first. */

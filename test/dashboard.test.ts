@@ -6,7 +6,7 @@ import { cleanRun, getRunStatus, listRuns, startRun, stopRun, type RunStatus } f
 import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src/dashboard.js";
 import { cleanupTemps, makeRepo, useIsolatedHome, waitFor } from "./helpers.js";
 
-const FAKE = `sleep 1; echo "fake agent says hi"; echo "task: $(cat "$CODEC_TASK_FILE")"`;
+const FAKE = `sleep 1; echo "fake agent says hi"; echo "task: $(cat "$CODEC_TASK_FILE")"; echo saved > notes.txt`;
 
 interface Res {
   status: number;
@@ -178,7 +178,10 @@ describe("lane mapping", () => {
     expect(laneOf(fake({ state: "running" }))).toBe("working");
     expect(laneOf(fake({ state: "failed" }))).toBe("needsYou");
     expect(laneOf(fake({ state: "stopped" }))).toBe("needsYou");
-    expect(laneOf(fake({ state: "done" }))).toBe("inReview");
+    expect(laneOf(fake({ state: "done", reviewStatus: "ready" }))).toBe("inReview");
+    expect(laneOf(fake({ state: "done", reviewStatus: "no_changes" }))).toBe("done");
+    expect(laneOf(fake({ state: "done", reviewStatus: "unsaved" }))).toBe("needsYou");
+    expect(laneOf(fake({ state: "done", reviewStatus: "unavailable" }))).toBe("needsYou");
     expect(laneOf(fake({ state: "done", cleanedAt: "2026-01-01T00:00:00Z" }))).toBe("done");
     expect(laneOf(fake({ state: "failed", cleanedAt: "2026-01-01T00:00:00Z" }))).toBe("done");
     expect(laneOf(fake({ state: "done", worktree: "/nonexistent/codec/wt" }))).toBe("done");
