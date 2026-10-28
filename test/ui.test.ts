@@ -14,7 +14,7 @@ function runtime(bindings: Record<string, unknown> = {}) {
   const params = { S, TOKEN: "test-token", setupState: { tools: [], ready: false }, ...bindings };
   return new Function(...Object.keys(params), functions + `\nif (typeof overrides !== "undefined") { if (overrides.h) h = overrides.h; if (overrides.render) render = overrides.render; if (overrides.showDialog) showDialog = overrides.showDialog; if (overrides.api) api = overrides.api; if (overrides.act) act = overrides.act; if (overrides.tell) tell = overrides.tell; }\nreturn {
     api, errorText, sourceText, fmt, limitText, limitValue, stateText, toolOK, toolProblem, snapshot, restore,
-    removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, setup, projectAddForm, skillAddForm, skillUploadForm
+    removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, setup, project, projectAddForm, skillAddForm, skillUploadForm
   };`)(...Object.values(params));
 }
 describe("dashboard wording and structure", () => {
@@ -23,6 +23,36 @@ describe("dashboard wording and structure", () => {
     expect(injected).not.toBeNull();
     expect(JSON.parse(injected![1])).toEqual(S);
     expect(renderLocked()).toContain(S.locked.hint);
+  });
+
+  it.each([false, true])("separates board metadata lines (team role: %s)", async (hasRole) => {
+    let tree: any[] = [];
+    const capture = (spec: string, props: any, ...kids: any[]) => ({
+      spec, props, kids: kids.flat(Infinity).filter((kid) => kid != null && kid !== false),
+      options: [], addEventListener() {},
+    });
+    const task = { runId: "task-1", task: "Check workspace", state: "done", reviewStatus: "unsaved",
+      startedAt: "2026-10-28T23:12:00Z", ...(hasRole ? { team: "web", member: "builder", specialist: "developer" } : {}) };
+    const lanes = { working: [], needsYou: [task], inReview: [], done: [] };
+    const { project, fmt } = runtime({
+      LANES: Object.keys(lanes).map((lane) => [lane, lane]), messages: new Map(), enc: encodeURIComponent,
+      overrides: { h: capture, api: async () => ({ project: { path: "/workspace" }, members: [], lanes }),
+        render: (_seq: number, ...kids: any[]) => { tree = kids; } },
+    });
+    await project(1, "site");
+    const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes)
+      : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
+    const card = nodes(tree).find((node) => node.props?.["data-testid"] === "task-open");
+    const lines = card.kids.filter((node: any) => node.spec === "div.hint");
+    const timestamp = new Date(task.startedAt).toLocaleString();
+    expect(lines.map((node: any) => node.props.text)).toEqual([
+      ...(hasRole ? [fmt(S.wording.teamRole, { team: "web", role: "developer" }) + "\n"] : []),
+      S.tasks.unsaved + "\n", timestamp + "\n",
+    ]);
+    const textContent = (node: any): string => typeof node === "string" ? node
+      : (node.props?.text || "") + (node.kids || []).map(textContent).join("");
+    expect(textContent(card)).toContain(S.tasks.unsaved + "\n" + timestamp);
+    expect(textContent(card)).not.toContain(S.tasks.unsaved + timestamp);
   });
 
   it("every referenced wording key exists", () => {

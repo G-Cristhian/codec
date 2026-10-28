@@ -215,6 +215,7 @@ function field(id, label, props = {}, tag = "input") {
   return h("label.field", {}, h("span", { text: label }), node);
 }
 function hint(text) { return h("span.hint", { text }); }
+function cardLine(text) { return text ? h("div.hint", { text: text + "\n" }) : null; }
 function disclosure(id, title, child, key) {
   return h("details", { id: id + (key ? "-" + key : ""), "data-key": key },
     h("summary", { "data-testid": id, "data-key": key, text: title }), child);
@@ -554,7 +555,7 @@ async function project(seq, name) {
     hint(S.wording.helperIntro), heading(S.wording.giveTask), !v.members.length ? h("p", {}, S.projects.noTeam, h("a.link", { href: "#/teams" }, h("strong", { text: S.members.addTeam })), S.projects.noTeamAfter) : null, form, heading(S.projects.board), hint(S.wording.workspace),
     h("div.board", {}, LANES.map(([lane, text]) => h("section.lane." + lane, { title: laneHint(lane) }, h("h3", { text: text + " · " + v.lanes[lane].length }),
       v.lanes[lane].length ? v.lanes[lane].map((r) => h("a.card", { href: "#/run/" + enc(r.runId), "data-testid": "task-open", "data-key": r.runId },
-        h("b", { text: whoText(r) }), h("div.task", { text: snippet(r.task, 200) }), hint(r.specialist ? fmt(S.wording.teamRole, { team: r.team, role: r.specialist }) : ""), hint(stateText(r)), hint(when(r.startedAt)))) : hint(S.common.empty)))));
+        h("b", { text: whoText(r) }), h("div.task", { text: snippet(r.task, 200) }), cardLine(r.specialist ? fmt(S.wording.teamRole, { team: r.team, role: r.specialist }) : ""), cardLine(stateText(r)), cardLine(when(r.startedAt)))) : hint(S.common.empty)))));
 }
 
 function laneHint(lane) { return ({ working: S.wording.workingHint, needsYou: S.wording.needsYouHint, inReview: S.wording.reviewHint, done: S.wording.doneHint })[lane]; }
