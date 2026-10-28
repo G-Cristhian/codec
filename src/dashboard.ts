@@ -16,10 +16,19 @@
  *    enough, so other websites can't forge actions).
  */
 
+import { CodecError } from "./errors.js";
+import { S, wording } from "./strings.js";
+import { checkpointIdentity, getSettings, saveIdentity } from "./settings.js";
+import { ApiError, friendlyError } from "./friendly.js";
+import { hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking } from "./folders.js";
+import { createSetupChecker, type SetupOptions } from "./setup.js";
+import { checkTool } from "./tools.js";
 import { checkTimeLimit, formatTimeLimit } from "./limits.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { randomBytes, timingSafeEqual } from "crypto";
 import { existsSync, readdirSync, readFileSync } from "fs";
+import { join } from "path";
+import { codecHome } from "./store.js";
 import { tmpdir } from "os";
 import { addProject, getProject, listProjects, type Project } from "./registry.js";
 import {
@@ -30,6 +39,8 @@ import {
   editSpecialist,
   editMember,
   getTeam,
+  getSpecialist,
+  parseMemberRef,
   listSpecialists,
   listTeams,
   removeSkillEverywhere,
@@ -39,7 +50,7 @@ import {
   skillHolders,
   type ResolvedMember,
 } from "./org.js";
-import { importSkill, importSkillFiles, listSkills } from "./skills.js";
+import { getSkill, importSkill, importSkillFiles, listSkills } from "./skills.js";
 import { projectSkills, type GivenSkill } from "./inject.js";
 import {
   cleanRun,
@@ -158,10 +169,10 @@ function runSummary(r: RunStatus) {
     project: r.project,
     agent: r.agent,
     state: r.state,
-    stateText: r.state === "timed_out" ? `Stopped: took longer than ${formatTimeLimit(r.timeLimitMinutes)}` : r.state,
+    stateText: r.lostAt ? S.wording.lost : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
+    lostAt: r.lostAt,
     timeLimitMinutes: r.timeLimitMinutes,
     deadline: r.deadline,
-    exitCode: r.exitCode,
     lane: laneOf(r),
     startedAt: r.startedAt,
     task: r.task,
@@ -183,12 +194,7 @@ function memberSkills(m: ResolvedMember): { name: string; source: string; projec
 }
 
 function memberView(team: string, member: string, running: RunStatus[]) {
-  let r: ResolvedMember;
-  try {
-    r = resolveMember(team, member);
-  } catch (e) {
-    throw new HttpError(404, (e as Error).message);
-  }
+  const r = resolveMember(team, member);
   return {
     ...r,
     skills: memberSkills(r),
@@ -206,7 +212,7 @@ export function teamsView() {
       try {
         return memberView(t.name, m.name, running);
       } catch (e) {
-        return { team: t.name, member: m.name, kind: m.kind, specialist: m.specialist, error: (e as Error).message };
+        return { team: t.name, member: m.name, kind: m.kind, specialist: m.specialist, ...friendlyError(e, "/api/teams").body };
       }
     }),
   }));
@@ -233,7 +239,7 @@ export function skillsView() {
     rows.push({
       kind: "specialist",
       id: sp.name,
-      label: `${sp.name} (${sp.specialty})`,
+      label: wording(S.wording.roleGrid, { name: sp.name, specialty: sp.specialty }),
       tool: sp.tool,
       skills: Object.fromEntries(sp.skills.map((x) => [x, "own"])),
     });
@@ -245,7 +251,7 @@ export function skillsView() {
         rows.push({
           kind: "member",
           id: `${t.name}/${m.name}`,
-          label: `${t.name}/${m.name}` + (r.specialist ? ` (clone of ${r.specialist})` : " (worker)"),
+          label: wording(S.wording.helperGrid, { member: m.name, team: t.name, role: r.specialist ? wording(S.members.copyOf, { name: r.specialist }) : S.wording.general }),
           tool: r.tool,
           skills: Object.fromEntries(r.skills.map((x) => [x.name, x.source === "specialist" ? "via specialist" : "own"])),
         });
@@ -276,7 +282,7 @@ export function homeView() {
 
 export function projectView(name: string) {
   const project = listProjects().find((p) => p.name === name);
-  if (!project) throw new HttpError(404, `no project named "${name}"`);
+  if (!project) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
   const lanes: Record<Lane, ReturnType<typeof runSummary>[]> = { working: [], needsYou: [], inReview: [], done: [] };
   for (const r of listRuns({ project: name }).reverse()) lanes[laneOf(r)].push(runSummary(r));
   // Who can be started here: members of every team assigned to this project.
@@ -286,7 +292,7 @@ export function projectView(name: string) {
       t.members.map((m) => {
         try {
           const r = resolveMember(t.name, m.name);
-          return { ref: `${t.name}/${m.name}`, tool: r.tool, label: `${t.name}/${m.name}` + (r.specialty ? ` — ${r.specialty}` : " — worker") };
+          return { ref: `${t.name}/${m.name}`, tool: r.tool, label: wording(S.wording.helperOption, { member: m.name, team: t.name, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
         } catch {
           return undefined;
         }
@@ -308,6 +314,7 @@ export function runView(ref: string) {
     cleanedAt: r.cleanedAt,
     lostAt: r.lostAt,
     model: r.model,
+    actualModel: r.actualModel,
     specialty: r.specialty,
     skillsGiven: (r.skills ?? []) as GivenSkill[],
     skillsUsed: skillsUsed(r.runId),
@@ -315,23 +322,72 @@ export function runView(ref: string) {
   };
 }
 
-// ---------- HTTP plumbing ----------
-
-class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
+/** Describe the same dependencies and blockers enforced by engine removals. */
+export function removePreview(kind: string, name: string) {
+  const effects: { what: string }[] = [];
+  let blockedReason: string | undefined;
+  const runs = listRuns();
+  let related: RunStatus[] = [];
+  const effect = (what: string) => effects.push({ what });
+  if (kind === "project") {
+    if (!getProject(name)) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
+    related = runs.filter((run) => run.project === name);
+    for (const team of listTeams().filter((team) => team.projects.includes(name))) {
+      effect(wording(S.wording.teamEffect, { name: team.name }));
+    }
+    effect(S.wording.projectEffect);
+  } else if (kind === "team") {
+    const team = getTeam(name);
+    if (!team) throw new CodecError("team_not_found", `no team named "${name}"`, { name: name }, 404);
+    related = runs.filter((run) => run.team === name);
+    effect(wording(S.wording.helpersRemoved, { count: team.members.length }));
+    effect(S.wording.rolesKept);
+  } else if (kind === "member") {
+    const ref = parseMemberRef(name);
+    const team = getTeam(ref.team);
+    if (!team) throw new CodecError("team_not_found", `no team named "${ref.team}"`, { name: ref.team }, 404);
+    if (!team.members.some((member) => member.name === ref.member)) throw new CodecError("member_not_found", `no member named "${name}"`, {}, 404);
+    related = runs.filter((run) => run.team === ref.team && run.member === ref.member);
+    effect(wording(S.wording.memberEffect, { member: ref.member, team: ref.team }));
+    effect(S.wording.roleKept);
+  } else if (kind === "specialist") {
+    if (!getSpecialist(name)) throw new CodecError("specialist_not_found", `no specialist named "${name}"`, { name }, 404);
+    const clones = clonesOf(name);
+    if (clones.length) blockedReason = wording(S.wording.roleBlocked, { name, count: clones.length, list: clones.map((c) => wording(S.wording.helperTeam, c)).join(", ") });
+    related = runs.filter((run) => run.specialist === name);
+    effect(S.wording.roleRemoved);
+    effect(S.wording.skillsKept);
+  } else if (kind === "skill") {
+    if (!getSkill(name)) throw new CodecError("invalid_skill", `no skill named "${name}"`, { name });
+    const holders = skillHolders(name);
+    effect(wording(S.wording.rolesLose, { count: holders.specialists.length }));
+    // Clones also lose access through their specialist, even without an extra assignment.
+    const members = new Set([...holders.members, ...holders.specialists.flatMap((specialist) => clonesOf(specialist).map((clone) => `${clone.team}/${clone.member}`))]);
+    effect(wording(S.wording.helpersLose, { count: members.size }));
+    effect(S.wording.taskCopies);
+    effect(S.wording.originalKept);
+    effect(wording(S.wording.removeSkill, { name, list: [...holders.specialists.map((name) => wording(S.members.copyOf, { name })), ...Array.from(members, (ref) => wording(S.wording.helperTeam, parseMemberRef(ref)))].join(", ") || S.wording.noHolders }));
+  } else {
+    throw new ApiError(400, "invalid_kind", "Choose a project, team, specialist, skill or member to remove.");
   }
+  if (kind === "project" || kind === "team" || kind === "member") {
+    if (related.some((run) => run.state === "running")) blockedReason = S.wording.busy;
+  }
+  if (kind !== "skill") {
+    const count = related.filter((run) => run.state !== "running").length;
+    effect(wording(S.wording.history, { count }));
+  }
+  const removalText = kind === "project" ? wording(S.wording.removeProject, { name })
+    : kind === "team" ? wording(S.wording.removeTeam, { name })
+    : kind === "member" ? wording(S.wording.removeMember, parseMemberRef(name))
+    : kind === "specialist" ? wording(S.wording.removeRole, { name }) : undefined;
+  return { kind, name, ...(removalText ? { removalText } : {}), blocked: !!blockedReason, ...(blockedReason ? { blockedReason } : {}), effects };
 }
 
+// ---------- HTTP plumbing ----------
+
 function findRunOr404(ref: string): RunStatus {
-  try {
-    return findRun(ref);
-  } catch (e) {
-    throw new HttpError(404, (e as Error).message);
-  }
+  return findRun(ref);
 }
 
 const BASE_HEADERS = {
@@ -372,19 +428,20 @@ function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<Record<string
     req.on("data", (c: Buffer) => {
       size += c.length;
       if (size > limit) {
-        reject(new HttpError(413, "request body too large"));
-        req.destroy();
+        reject(new CodecError("body_too_large", "request body too large", {}, 413));
+        chunks.length = 0;
       } else chunks.push(c);
     });
     req.on("end", () => {
+      if (size > limit) return;
       const text = Buffer.concat(chunks).toString("utf-8");
       if (!text.trim()) return resolve({});
       try {
         const v = JSON.parse(text);
         if (v && typeof v === "object" && !Array.isArray(v)) resolve(v as Record<string, unknown>);
-        else reject(new HttpError(400, "body must be a JSON object"));
+        else reject(new CodecError("bad_json", "body must be a JSON object"));
       } catch {
-        reject(new HttpError(400, "body is not valid JSON"));
+        reject(new CodecError("bad_json", "body is not valid JSON"));
       }
     });
     req.on("error", reject);
@@ -403,15 +460,17 @@ export interface Dashboard {
   close(): Promise<void>;
 }
 
-export function startDashboard(opts: { port?: number; token?: string } = {}): Promise<Dashboard> {
+export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions } = {}): Promise<Dashboard> {
   const token = opts.token ?? randomBytes(24).toString("base64url");
   let port = opts.port ?? DEFAULT_PORT;
   const cookieName = () => `codec_token_${port}`;
+  const checkSetup = createSetupChecker(opts.setup);
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // 1. DNS-rebinding guard: only our own loopback host names.
     const host = req.headers.host ?? "";
     if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) {
+      if ((req.url ?? "").startsWith("/api/")) throw new ApiError(421, "unexpected_host", "Open the dashboard using its local Codec link.");
       return send(res, 421, "Codec dashboard: unexpected Host header\n", "text/plain; charset=utf-8");
     }
     const url = new URL(req.url ?? "/", `http://${host}`);
@@ -439,28 +498,31 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       });
     }
 
-    if (!path.startsWith("/api/")) return sendJson(res, 404, { error: "not found" });
+    if (!path.startsWith("/api/")) throw new ApiError(404, "not_found", "That page could not be found. Refresh the dashboard and try again.");
 
     // 3. API auth. Reads: header or cookie. Writes: POST + header + JSON.
     if (req.method === "GET") {
       if (!tokenEquals(headerToken, token) && !tokenEquals(cookieToken, token)) {
-        return sendJson(res, 401, { error: "missing or wrong token" });
+        throw new ApiError(401, "unauthorized", "Open the dashboard using the link printed by Codec.");
       }
     } else if (req.method === "POST") {
-      if (!tokenEquals(headerToken, token)) return sendJson(res, 401, { error: "missing or wrong token" });
-      if (!(req.headers["content-type"] ?? "").startsWith("application/json")) {
-        return sendJson(res, 415, { error: "Content-Type must be application/json" });
+      if (!tokenEquals(headerToken, token)) throw new ApiError(401, "unauthorized", "Open the dashboard using the link printed by Codec.");
+      if ((req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase() !== "application/json") {
+        throw new ApiError(415, "json_required", "That request could not be read. Refresh the dashboard and try again.");
       }
     } else {
-      return sendJson(res, 405, { error: "method not allowed" });
+      throw new ApiError(405, "method_not_allowed", "That action is not supported. Refresh the dashboard and try again.");
     }
 
-    const parts = path.split("/").slice(2).map(decodeURIComponent); // after "/api/"
+    // Decode the path after /api/ only once.
+    let parts: string[];
+    try { parts = path.split("/").slice(2).map(decodeURIComponent); }
+    catch { throw new ApiError(400, "bad_request", "That address could not be read. Refresh the dashboard and try again."); }
     const isGet = req.method === "GET";
     const body = isGet ? {} : await readBody(req, path === "/api/skills" ? MAX_UPLOAD : MAX_BODY);
     const need = (k: string): string => {
       const v = s(body[k]);
-      if (!v || !v.trim()) throw new HttpError(400, `"${k}" is required`);
+      if (!v || !v.trim()) throw new ApiError(400, k === "task" ? "missing_task" : "missing_path", k === "task" ? "Describe the task before starting it." : "Choose a folder before continuing.");
       return v;
     };
 
@@ -474,6 +536,17 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
     // POST /api/runs/:id/clean           {force?, deleteBranch?}
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
+    if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
+    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await checkSetup(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity() });
+    if (isGet && a === "settings" && n === 1) return sendJson(res, 200, getSettings());
+    if (!isGet && a === "settings" && n === 1) {
+      const identity = body.identity as Record<string, unknown> | undefined;
+      return sendJson(res, 200, saveIdentity({ name: s(identity?.name) ?? "", email: s(identity?.email) ?? "" }));
+    }
+    if (isGet && a === "folders" && n === 1) return sendJson(res, 200, listFolders(url.searchParams.get("path") ?? undefined));
+    if (isGet && a === "remove-preview" && n === 1) return sendJson(res, 200, removePreview(url.searchParams.get("kind") ?? "", url.searchParams.get("name") ?? ""));
+    if (isGet && a === "projects" && n === 1) return sendJson(res, 200, listProjects());
+    if (isGet && a === "runs" && n === 1) return sendJson(res, 200, listRuns({ project: url.searchParams.get("project") ?? undefined }).map(runSummary));
     if (isGet && a === "state" && n === 1) return sendJson(res, 200, homeView());
     if (isGet && a === "teams" && n === 1) return sendJson(res, 200, teamsView());
     if (isGet && a === "specialists" && n === 1) return sendJson(res, 200, specialistsView());
@@ -489,7 +562,7 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       return sendJson(res, 200, setTeamProjects(b, strs(body.projects) ?? []));
     }
     if (!isGet && a === "teams" && b && n === 3 && c === "members") {
-      if (!getTeam(b)) throw new HttpError(404, `no team named "${b}"`);
+      if (!getTeam(b)) throw new CodecError("team_not_found", `no team named "${b}"`, { name: b }, 404);
       const m = addMember(b, {
         name: s(body.name),
         specialist: s(body.specialist) || undefined,
@@ -505,7 +578,7 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
     }
 
     if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "edit" && n === 5) {
-      return sendJson(res, 200, editMember(b, d2, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes) }));
+      return sendJson(res, 200, editMember(b, d2, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes), skills: strs(body.skills) }));
     }
 
     // Specialists
@@ -526,19 +599,27 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       if (Array.isArray(body.files)) {
         const files = (body.files as unknown[]).map((f) => {
           const o = (f ?? {}) as Record<string, unknown>;
-          if (typeof o.path !== "string" || typeof o.content !== "string") throw new HttpError(400, "each file needs path and content");
+          if (typeof o.path !== "string" || typeof o.content !== "string") throw new ApiError(400, "invalid_upload", "Choose the skill folder again so all its files can be read.");
           return { path: o.path, content: o.content };
         });
-        return sendJson(res, 201, importSkillFiles(files, tmpdir()));
+        return sendJson(res, 201, importSkillFiles(files, tmpdir(), { name: s(body.name), replace: body.replace === true }));
       }
-      return sendJson(res, 201, importSkill(need("path")));
+      return sendJson(res, 201, importSkill(requireFolder(need("path")), { name: s(body.name), replace: body.replace === true }));
     }
     if (!isGet && a === "skills" && b && c === "remove" && n === 3) return sendJson(res, 200, removeSkillEverywhere(b));
 
     if (isGet && a === "projects" && b && parts.length === 2) return sendJson(res, 200, projectView(b));
     if (isGet && a === "runs" && b && parts.length === 2) return sendJson(res, 200, runView(b));
     if (!isGet && a === "projects" && parts.length === 1) {
-      return sendJson(res, 201, addProject(need("path"), s(body.name)?.trim() || undefined));
+      const folder = requireFolder(need("path"));
+      if (!isGitRepo(folder) && body.setUpTracking !== true) {
+        throw new ApiError(409, "needs_tracking", "This folder isn't set up for tracking changes yet. Set it up now?");
+      }
+      if (isGitRepo(folder) && !hasCheckpoint(folder) && body.setUpTracking !== true) {
+        throw new CodecError("needs_checkpoint", "repository has no commits yet", {}, 409);
+      }
+      if (body.setUpTracking === true) setUpTracking(folder);
+      return sendJson(res, 201, addProject(folder, s(body.name)?.trim() || undefined));
     }
     if (!isGet && a === "projects" && b && c === "remove" && parts.length === 3) {
       return sendJson(res, 200, removeProjectChecked(b));
@@ -546,8 +627,18 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
     if (!isGet && a === "projects" && b && c === "runs" && parts.length === 3) {
       const member = s(body.member)?.trim() || undefined;
       const agent = s(body.agent)?.trim() || undefined;
-      if (!member && !agent) throw new HttpError(400, '"member" or "agent" is required');
-      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task: need("task"), timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes) })));
+      if (!member && !agent) throw new ApiError(400, "missing_tool", "Choose a team member or a tool before starting this task.");
+      if (!getProject(b)) throw new CodecError("project_not_found", `no project named "${b}"`, {}, 404);
+      const timeLimitMinutes = checkTimeLimit(body.timeLimitMinutes);
+      const task = need("task");
+      const ref = member ? parseMemberRef(member) : undefined;
+      const tool = ref ? resolveMember(ref.team, ref.member).tool : checkTool(agent!);
+      const setup = await checkSetup();
+      if (!setup.tools.some((entry) => entry.tool === tool && entry.installed && entry.signedIn === true)) {
+        const label = tool === "claude" ? S.setup.claude : S.setup.codex;
+        throw new CodecError("tool_unavailable", `${label} is not installed or signed in`, { tool: label }, 409);
+      }
+      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task, timeLimitMinutes })));
     }
     if (!isGet && a === "runs" && b && c === "stop" && parts.length === 3) {
       return sendJson(res, 200, runSummary(stopRun(findRunOr404(b).runId)));
@@ -556,20 +647,20 @@ export function startDashboard(opts: { port?: number; token?: string } = {}): Pr
       const r = cleanRun(findRunOr404(b).runId, { force: body.force === true, deleteBranch: body.deleteBranch === true });
       return sendJson(res, 200, runSummary(r));
     }
-    return sendJson(res, 404, { error: "not found" });
+    throw new ApiError(404, "not_found", "That page could not be found. Refresh the dashboard and try again.");
   }
 
   const server = createServer((req, res) => {
     handle(req, res).catch((e: unknown) => {
-      const status = e instanceof HttpError ? e.status : 400; // engine errors are user errors
-      if (!res.headersSent) sendJson(res, status, { error: e instanceof Error ? e.message : String(e) });
+      const { status, body } = friendlyError(e, (req.url ?? "/").split("?")[0]);
+      if (!res.headersSent) sendJson(res, status, body);
       else res.end();
     });
   });
 
   return new Promise((resolve, reject) => {
     server.once("error", (e: NodeJS.ErrnoException) => {
-      reject(e.code === "EADDRINUSE" ? new Error(`port ${port} is already in use — try --port <other>`) : e);
+      reject(e.code === "EADDRINUSE" ? new CodecError("port_busy", `port ${port} is already in use — try --port <other>`) : e);
     });
     server.listen(port, HOST, () => {
       const addr = server.address();

@@ -4,6 +4,7 @@
  * two `codec project add` commands at once can't lose each other's entry.
  */
 
+import { CodecError, suggestName } from "./errors.js";
 import { spawnSync } from "child_process";
 import { existsSync, statSync } from "fs";
 import { basename, resolve } from "path";
@@ -35,26 +36,26 @@ export function git(cwd: string, args: string[]): { ok: boolean; out: string; er
 export function addProject(path: string, name?: string): Project {
   const abs = resolve(path);
   if (!existsSync(abs) || !statSync(abs).isDirectory()) {
-    throw new Error(`not a directory: ${abs}`);
+    throw new CodecError("not_a_folder", `not a directory: ${abs}`);
   }
   const top = git(abs, ["rev-parse", "--show-toplevel"]);
-  if (!top.ok) throw new Error(`not a git repository: ${abs}`);
+  if (!top.ok) throw new CodecError("needs_tracking", `not a git repository: ${abs}`, {}, 409);
   if (!git(top.out, ["rev-parse", "--verify", "--quiet", "HEAD"]).ok) {
-    throw new Error(`repository has no commits yet (agents branch from HEAD): ${top.out}`);
+    throw new CodecError("needs_checkpoint", `repository has no commits yet (agents branch from HEAD): ${top.out}`, {}, 409);
   }
   const projectName = name ?? basename(top.out).replace(/[^A-Za-z0-9._-]/g, "-");
   if (!PROJECT_NAME_RE.test(projectName)) {
-    throw new Error(`invalid project name "${projectName}" (letters, digits, . _ - only)`);
+    throw new CodecError("invalid_project_name", `invalid project name "${projectName}" (letters, digits, . _ - only)`, { name: projectName }, 400, suggestName(projectName, load().map((p) => p.name)));
   }
 
   const project: Project = { name: projectName, path: top.out, addedAt: new Date().toISOString() };
   withLock("projects", () => {
     const all = load();
     if (all.some((p) => p.name === projectName)) {
-      throw new Error(`a project named "${projectName}" already exists`);
+      throw new CodecError("project_exists", `a project named "${projectName}" already exists`, { name: projectName });
     }
     const dup = all.find((p) => p.path === top.out);
-    if (dup) throw new Error(`${top.out} is already registered as "${dup.name}"`);
+    if (dup) throw new CodecError("project_registered", `${top.out} is already registered as "${dup.name}"`, { name: dup.name });
     all.push(project);
     save(all);
   });
@@ -75,7 +76,7 @@ export function removeProject(name: string): Project {
   const removed = withLock("projects", () => {
     const all = load();
     const idx = all.findIndex((p) => p.name === name);
-    if (idx === -1) throw new Error(`no project named "${name}"`);
+    if (idx === -1) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
     const [p] = all.splice(idx, 1);
     save(all);
     return p;

@@ -9,6 +9,7 @@
  * makes state survive a restart.
  */
 
+import { CodecError } from "./errors.js";
 import {
   closeSync,
   existsSync,
@@ -100,7 +101,7 @@ export function withLock<T>(name: string, fn: () => T, timeoutMs = 30_000): T {
         // Lock vanished between checks — just retry.
       }
       if (Date.now() - start > timeoutMs) {
-        throw new Error(`timed out waiting for lock "${name}" (${file})`);
+        throw new CodecError("lock_busy", `timed out waiting for lock "${name}" (${file})`);
       }
       sleepSync(20);
     }

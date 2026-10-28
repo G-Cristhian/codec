@@ -19,6 +19,9 @@
  * so restarting codec (or the whole terminal) loses nothing.
  */
 
+import { S } from "./strings.js";
+import { checkpointIdentity, identityEnvironment } from "./settings.js";
+import { CodecError } from "./errors.js";
 import { checkTimeLimit, DEFAULT_TIME_LIMIT_MINUTES } from "./limits.js";
 import { isOurProcess, ownsProcessGroup } from "./proc.js";
 import { spawn } from "child_process";
@@ -39,7 +42,7 @@ import {
   type Team,
 } from "./org.js";
 import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "./inject.js";
-import { renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
+import { modelFromClaudeStream, renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
 import {
   eventsFile,
   readJson,
@@ -77,6 +80,7 @@ export interface RunRecord {
   specialist?: string;
   specialty?: string;
   model?: string;
+  actualModel?: string;
   /** Exactly the skills the agent could see, with where each came from. */
   skills?: GivenSkill[];
   /** How output.log is written: plain text, or Claude Code's stream-json (rendered on read). */
@@ -210,32 +214,30 @@ export interface StartInput {
 }
 
 export function startRun(input: StartInput): RunStatus {
-  if (!input.task || !input.task.trim()) throw new Error("--task is required");
+  if (!input.task || !input.task.trim()) throw new CodecError("missing_task", "--task is required");
   const requestedLimit = checkTimeLimit(input.timeLimitMinutes);
   const project = getProject(input.project);
-  if (!project) throw new Error(`no project named "${input.project}" (see: codec project list)`);
+  if (!project) throw new CodecError("project_not_found", `no project named "${input.project}" (see: codec project list)`, {}, 404);
 
   let who: ResolvedMember | undefined;
   if (input.member) {
     const ref = parseMemberRef(input.member);
     who = resolveMember(ref.team, ref.member);
     if (!who.projects.includes(project.name)) {
-      throw new Error(
-        `team ${who.team} doesn't work on ${project.name} (its projects: ${who.projects.join(", ") || "none"})`,
-      );
+      throw new CodecError("project_not_assigned", `team ${who.team} doesn't work on ${project.name} (its projects: ${who.projects.join(", ") || "none"})`, { team: who.team, project: project.name });
     }
     if (input.agent && input.agent !== who.tool) {
-      throw new Error(`${who.team}/${who.member} uses ${who.tool}, not ${input.agent}`);
+      throw new CodecError("tool_mismatch", `${who.team}/${who.member} uses ${who.tool}, not ${input.agent}`, { member: who.member, tool: who.tool === "claude" ? S.setup.claude : S.setup.codex, requested: input.agent === "claude" ? S.setup.claude : input.agent === "codex" ? S.setup.codex : input.agent });
     }
   } else if (!input.agent) {
-    throw new Error("choose a team member (--member <team>/<member>) or a tool for an unassigned worker (--agent claude|codex)");
+    throw new CodecError("missing_tool", "choose a team member (--member <team>/<member>) or a tool for an unassigned worker (--agent claude|codex)");
   }
   const agentName = who ? who.tool : input.agent!;
   if (!(AGENTS as readonly string[]).includes(agentName)) {
-    throw new Error(`unknown agent "${agentName}" (use: ${AGENTS.join(", ")})`);
+    throw new CodecError("invalid_tool", `unknown agent "${agentName}" (use: ${AGENTS.join(", ")})`, { name: agentName });
   }
   const agent = agentName as Agent;
-  if (!existsSync(project.path)) throw new Error(`project path no longer exists: ${project.path}`);
+  if (!existsSync(project.path)) throw new CodecError("project_missing", `project path no longer exists: ${project.path}`, { path: project.path });
 
   const timeLimitMinutes = requestedLimit ?? who?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES;
   const startedAt = new Date().toISOString();
@@ -247,13 +249,15 @@ export function startRun(input: StartInput): RunStatus {
 
   // Worktree creation touches the repo's shared git metadata; serialize it
   // per project so parallel `codec run` calls on one repo can't collide.
-  const baseSha = withLock(`project-${project.name}`, () => {
+  const { baseSha, identity } = withLock(`project-${project.name}`, () => {
     const head = git(project.path, ["rev-parse", "HEAD"]);
-    if (!head.ok) throw new Error(`cannot read HEAD of ${project.path}: ${head.err}`);
+    if (!head.ok) throw new CodecError("tracking_failed", `cannot read HEAD of ${project.path}: ${head.err}`);
+    const identity = checkpointIdentity(project.path);
+    if (!identity) throw new CodecError("identity_missing", S.errors.identity_missing, {}, 409);
     mkdirSync(join(worktreesDir(), project.name), { recursive: true });
     const add = git(project.path, ["worktree", "add", "-q", "-b", branch, worktree, head.out]);
-    if (!add.ok) throw new Error(`git worktree add failed: ${add.err}`);
-    return head.out;
+    if (!add.ok) throw new CodecError("workspace_failed", `git worktree add failed: ${add.err}`);
+    return { baseSha: head.out, identity };
   });
 
   mkdirSync(dir, { recursive: true });
@@ -268,7 +272,7 @@ export function startRun(input: StartInput): RunStatus {
     });
     throw e;
   }
-  const instructions = instructionsText(who);
+  const instructions = instructionsText(who, agent, skills);
   if (instructions) {
     writeFileSync(join(dir, "instructions.md"), instructions);
     // A TOML basic string for `codex -c developer_instructions=...`; JSON string escapes are valid TOML.
@@ -311,6 +315,7 @@ export function startRun(input: StartInput): RunStatus {
       stdio: ["ignore", log, log],
       env: {
         ...process.env,
+        ...identityEnvironment(identity),
         CODEC_TIME_LIMIT_MINUTES: String(timeLimitMinutes),
         CODEC_TIME_LIMIT_SECONDS: String(Math.max(0.001, (Date.parse(deadline) - Date.now()) / 1000)),
         CODEC_RUN_ID: runId,
@@ -327,7 +332,7 @@ export function startRun(input: StartInput): RunStatus {
   } finally {
     closeSync(log);
   }
-  if (!pid) throw new Error(`failed to spawn agent for ${runId} (see ${join(dir, "output.log")})`);
+  if (!pid) throw new CodecError("spawn_failed", `failed to spawn agent for ${runId} (see ${join(dir, "output.log")})`, { tool: agent === "claude" ? S.setup.claude : S.setup.codex });
 
   writeJsonAtomic(recordFile(runId), { ...record, pid });
   // Verified registration (from the hive): never report a launch the
@@ -335,7 +340,7 @@ export function startRun(input: StartInput): RunStatus {
   const check = readRecord(runId);
   if (!check || check.pid !== pid) {
     killGroup(pid, "SIGKILL");
-    throw new Error(`run ${runId} failed to persist — launch aborted`);
+    throw new CodecError("persist_failed", `run ${runId} failed to persist — launch aborted`);
   }
 
   logEvent("run.start", {
@@ -389,6 +394,18 @@ function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
 export function getRunStatus(runId: string): RunStatus | undefined {
   let rec = readRecord(runId);
   if (!rec) return undefined;
+  if (rec.outputFormat === "claude-stream" && !rec.actualModel) {
+    let model: string | undefined;
+    try { model = modelFromClaudeStream(readFileSync(join(runDir(runId), "output.log"), "utf-8")); }
+    catch { /* The helper may not have opened its activity file yet. */ }
+    if (model) rec = withLock(`run-${runId}`, () => {
+      const fresh = readRecord(runId)!;
+      if (fresh.actualModel) return fresh;
+      const updated = { ...fresh, actualModel: model };
+      writeJsonAtomic(recordFile(runId), updated);
+      return updated;
+    });
+  }
   // Also recover overdue runs whose wrapper was lost while the machine slept.
   if (rec.timeLimitMinutes !== undefined && rec.deadline && Date.now() > Date.parse(rec.deadline) + 30_000 &&
       !rec.stoppedAt && !rec.lostAt && readExitCode(runId) === undefined &&
@@ -447,8 +464,8 @@ export function findRun(ref: string): RunStatus {
   if (ids.includes(want)) return getRunStatus(want)!;
   const matches = ids.filter((id) => id.startsWith(want));
   if (matches.length === 1) return getRunStatus(matches[0])!;
-  if (matches.length > 1) throw new Error(`"${ref}" matches several runs: ${matches.join(", ")}`);
-  throw new Error(`no run "${ref}" (see: codec status)`);
+  if (matches.length > 1) throw new CodecError("run_not_found", `"${ref}" matches several runs: ${matches.join(", ")}`, {}, 404);
+  throw new CodecError("run_not_found", `no run "${ref}" (see: codec status)`, {}, 404);
 }
 
 function killGroup(pid: number, signal: NodeJS.Signals): void {
@@ -491,7 +508,7 @@ function terminateRun(rec: RunRecord): void {
 /** Stop a running agent (whole process group: wrapper, agent and children). */
 export function stopRun(ref: string): RunStatus {
   const run = findRun(ref);
-  if (run.state !== "running") throw new Error(`${run.runId} is not running (state: ${run.state})`);
+  if (run.state !== "running") throw new CodecError("run_not_running", `${run.runId} is not running (state: ${run.state})`);
   terminateRun(run);
   withLock(`run-${run.runId}`, () => {
     const fresh = readRecord(run.runId)!;
@@ -508,25 +525,29 @@ export function stopRun(ref: string): RunStatus {
  */
 export function cleanRun(ref: string, opts: { force?: boolean; deleteBranch?: boolean } = {}): RunStatus {
   const run = findRun(ref);
-  if (run.state === "running") throw new Error(`${run.runId} is still running — stop it first`);
-  if (run.cleanedAt) throw new Error(`${run.runId} was already cleaned`);
+  if (run.state === "running") throw new CodecError("run_busy", `${run.runId} is still running — stop it first`);
+  if (run.cleanedAt) throw new CodecError("already_cleaned", `${run.runId} was already cleaned`);
   const repo = run.projectPath;
 
   withLock(`project-${run.project}`, () => {
     if (existsSync(run.worktree)) {
+      if (!opts.force) {
+        const status = git(run.worktree, ["status", "--porcelain", "--untracked-files=all"]);
+        if (!status.ok) throw new CodecError("workspace_remove_failed", status.err);
+        if (status.out) throw new CodecError("uncommitted_changes", `unsaved changes in ${run.worktree}`);
+      }
       const args = ["worktree", "remove", ...(opts.force ? ["--force"] : []), run.worktree];
       const r = git(repo, args);
       if (!r.ok) {
-        throw new Error(
-          `could not remove worktree: ${r.err}` +
-            (opts.force ? "" : "\n(it has uncommitted changes — use --force to discard them)"),
-        );
+        throw new CodecError("workspace_remove_failed", `could not remove worktree: ${r.err}`,);
       }
     }
     git(repo, ["worktree", "prune"]);
     if (opts.deleteBranch) {
-      const b = git(repo, ["branch", "-D", run.branch]);
-      if (!b.ok && !/not found/.test(b.err)) throw new Error(`could not delete branch: ${b.err}`);
+      if (git(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${run.branch}`]).ok) {
+        const b = git(repo, ["branch", "-D", run.branch]);
+        if (!b.ok) throw new CodecError("branch_remove_failed", `could not delete branch: ${b.err}`);
+      }
     }
   });
 
@@ -567,15 +588,15 @@ export function skillsUsed(ref: string): SkillUse[] {
   const run = findRun(ref);
   const raw = rawOutput(run.runId);
   if (run.outputFormat === "claude-stream") {
-    return skillCallsFromClaudeStream(raw).map((name) => ({ name, how: "detected" as const, evidence: "Skill tool call" }));
+    return skillCallsFromClaudeStream(raw).map((name) => ({ name, how: "detected" as const, evidence: S.wording.skillCall }));
   }
   const out: SkillUse[] = [];
   for (const s of run.skills ?? []) {
     const esc = s.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (new RegExp(`skills/${esc}/SKILL\\.md`).test(raw)) {
-      out.push({ name: s.name, how: "guess", evidence: "its SKILL.md appears in the agent's output (likely read it)" });
+      out.push({ name: s.name, how: "guess", evidence: S.wording.skillFile });
     } else if (new RegExp(`(^|[^A-Za-z0-9-])${esc}([^A-Za-z0-9-]|$)`).test(raw)) {
-      out.push({ name: s.name, how: "guess", evidence: "the skill's name appears in the agent's output" });
+      out.push({ name: s.name, how: "guess", evidence: S.wording.skillMention });
     }
   }
   return out;
@@ -583,18 +604,18 @@ export function skillsUsed(ref: string): SkillUse[] {
 
 // ---------- removals that depend on running agents ----------
 
-function refuseIfRunning(what: string, running: RunStatus[]): void {
+function refuseIfRunning(what: string, running: RunStatus[], code: "project_busy" | "team_busy" | "member_busy"): void {
   if (running.length) {
-    throw new Error(
-      `${what} has ${running.length} running agent(s): ${running.map((r) => r.runId).join(", ")} — stop them first`,
-    );
+    const error = new CodecError(code, `${what} has ${running.length} running agent(s): ${running.map((r) => r.runId).join(", ")} — stop them first`, { count: running.length });
+    error.links = running.map((run) => ({ id: run.runId, task: run.task }));
+    throw error;
   }
 }
 
 /** Remove a team, refusing while any of its members is working. */
 export function removeTeamChecked(name: string): Team {
-  if (!getTeam(name)) throw new Error(`no team named "${name}"`);
-  refuseIfRunning(`team ${name}`, listRuns({ state: "running" }).filter((r) => r.team === name));
+  if (!getTeam(name)) throw new CodecError("team_not_found", `no team named "${name}"`, { name }, 404);
+  refuseIfRunning(`team ${name}`, listRuns({ state: "running" }).filter((r) => r.team === name), "team_busy");
   return deleteTeam(name);
 }
 
@@ -603,6 +624,7 @@ export function removeMemberChecked(team: string, member: string): Member {
   refuseIfRunning(
     `${team}/${member}`,
     listRuns({ state: "running" }).filter((r) => r.team === team && r.member === member),
+    "member_busy",
   );
   return deleteMember(team, member);
 }
@@ -612,8 +634,8 @@ export function removeMemberChecked(team: string, member: string): Member {
  * Shared by `codec project remove` and the dashboard.
  */
 export function removeProjectChecked(name: string): Project {
-  if (!getProject(name)) throw new Error(`no project named "${name}"`);
-  refuseIfRunning(name, listRuns({ project: name, state: "running" }));
+  if (!getProject(name)) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
+  refuseIfRunning(name, listRuns({ project: name, state: "running" }), "project_busy");
   const p = removeProject(name);
   dropProjectFromTeams(name);
   return p;

@@ -262,7 +262,7 @@ describe("run time limits", () => {
       for (const timeLimitMinutes of [0, -1, 1441, "0.05", null, true]) {
         const response = await call(path, { ...body, timeLimitMinutes });
         expect(response.status).toBe(400);
-        expect(response.json.error).toMatch(/time limit.*positive.*1440/);
+        expect(response.json.code).toBe("invalid_time_limit");
       }
     }
     expect((await call("specialists", { name: "new", specialty: "QA", tool: "codex", timeLimitMinutes: 1 })).json.timeLimitMinutes).toBe(1);
@@ -279,7 +279,7 @@ describe("run time limits", () => {
     await until(() => existsSync(join(home, "runs", id, "exit_code")));
     const detail = (await call(`runs/${id}`)).json;
     expect(detail).toMatchObject({
-      state: "timed_out", lane: "needsYou", stateText: "Stopped: took longer than 3 seconds", timeLimitMinutes: 0.05,
+      state: "timed_out", lane: "needsYou", stateText: "Stopped: went over its time limit (3 seconds)", timeLimitMinutes: 0.05,
     });
     expect(detail.log).toContain("saved output");
     const board = (await call("projects/alpha")).json;

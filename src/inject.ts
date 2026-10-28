@@ -16,6 +16,8 @@
  * Codec doesn't overwrite it and records that it came from the project.
  */
 
+import { CodecError } from "./errors.js";
+import { S, wording } from "./strings.js";
 import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { git } from "./registry.js";
@@ -28,6 +30,8 @@ export interface GivenSkill {
   source: SkillSource;
   description?: string;
   note?: string;
+  /** Skill file when a project uses an older supported directory. */
+  path?: string;
 }
 
 /** Where each tool reads project skills from (first entry is where Codec writes). */
@@ -54,7 +58,9 @@ export function projectSkills(worktree: string, tool: Agent): GivenSkill[] {
       } catch {
         // malformed project skill: still list it
       }
-      out.push({ name, source: "project", description });
+      out.push({ name, source: "project", description,
+        ...(rel !== SKILL_DIRS[tool][0] ? { path: `${rel}/${name}/SKILL.md` } : {}),
+      });
     }
   }
   return out;
@@ -63,7 +69,7 @@ export function projectSkills(worktree: string, tool: Agent): GivenSkill[] {
 /** Add lines to the repo's info/exclude, inside Codec's marked block, once each. */
 export function addExcludes(worktree: string, patterns: string[]): string {
   const r = git(worktree, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]);
-  if (!r.ok) throw new Error(`cannot locate git exclude file: ${r.err}`);
+  if (!r.ok) throw new CodecError("tracking_failed", `cannot locate git exclude file: ${r.err}`);
   const file = resolve(worktree, r.out);
   mkdirSync(dirname(file), { recursive: true });
   const text = existsSync(file) ? readFileSync(file, "utf-8") : "";
@@ -84,13 +90,18 @@ export function addExcludes(worktree: string, patterns: string[]): string {
 }
 
 /** The text handed to the agent as standing instructions (empty when there are none). */
-export function instructionsText(m: ResolvedMember | undefined): string {
-  if (!m) return "";
-  const who =
-    m.kind === "clone"
-      ? `You are ${m.member}, a ${m.specialty} on team ${m.team} (a copy of the "${m.specialist}" specialist).`
-      : `You are ${m.member}, a worker on team ${m.team}.`;
-  return m.instructions ? `${who}\n\nStanding instructions:\n${m.instructions}\n` : `${who}\n`;
+export function instructionsText(m: ResolvedMember | undefined, tool: Agent, skills: GivenSkill[]): string {
+  const parts: string[] = [];
+  if (skills.length) {
+    parts.push([S.helperInstructions.skills, S.helperInstructions[tool], ...skills.map((skill) =>
+      `- ${skill.name}: ${skill.description || S.helperInstructions.noDescription}${tool === "codex" ? ` (${skill.path ?? `.agents/skills/${skill.name}/SKILL.md`})` : ""}`)].join("\n"));
+  }
+  if (m) {
+    parts.push(wording(m.kind === "clone" ? S.helperInstructions.role : S.helperInstructions.worker,
+      { member: m.member, specialty: m.specialty ?? "", team: m.team, role: m.specialist ?? "" }));
+    if (m.instructions) parts.push(`${S.helperInstructions.standing}\n${m.instructions}`);
+  }
+  return parts.length ? parts.join("\n\n") + "\n" : "";
 }
 
 /**
@@ -104,7 +115,7 @@ export function injectSkills(worktree: string, tool: Agent, skills: ResolvedMemb
   const excludes: string[] = [];
   for (const s of skills) {
     const lib = getSkill(s.name);
-    if (!lib) throw new Error(`skill "${s.name}" is no longer in the library — fix the member's skills and try again`);
+    if (!lib) throw new CodecError("missing_skill", `skill "${s.name}" is no longer in the library — fix the member's skills and try again`, { name: s.name });
     if (projectNames.has(s.name)) {
       const p = given.find((g) => g.name === s.name)!;
       p.note = `also assigned via ${s.source}; the project's own copy is used`;

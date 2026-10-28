@@ -112,7 +112,7 @@ describe("dashboard", () => {
     const add = await call(d, "POST", "/api/projects", { body: { path: repo } });
     expect(add.status, add.body).toBe(201);
     expect(add.json.name).toBe("alpha");
-    expect((await call(d, "POST", "/api/projects", { body: { path: repo } })).json.error).toMatch(/already exists/);
+    expect((await call(d, "POST", "/api/projects", { body: { path: repo } })).json.code).toBe("project_exists");
 
     const started = await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "claude", task: "say hi" } });
     expect(started.status, started.body).toBe(201);
@@ -128,7 +128,7 @@ describe("dashboard", () => {
     // Can't remove a project while it has a running agent (same rule as the CLI).
     const busy = await call(d, "POST", "/api/projects/alpha/remove", { body: {} });
     expect(busy.status).toBe(400);
-    expect(busy.json.error).toMatch(/running agent/);
+    expect(busy.json.code).toBe("project_busy");
 
     await waitFor(id);
     const detail = (await call(d, "GET", `/api/runs/${id}`)).json;
@@ -140,7 +140,7 @@ describe("dashboard", () => {
     const board = (await call(d, "GET", "/api/projects/alpha")).json;
     expect(board.lanes.inReview.map((r: { runId: string }) => r.runId)).toEqual([id]);
 
-    expect((await call(d, "POST", `/api/runs/${id}/stop`, { body: {} })).json.error).toMatch(/not running/);
+    expect((await call(d, "POST", `/api/runs/${id}/stop`, { body: {} })).json.code).toBe("run_not_running");
     const cleaned = await call(d, "POST", `/api/runs/${id}/clean`, { body: {} });
     expect(cleaned.status, cleaned.body).toBe(200);
     expect(cleaned.json.lane).toBe("done");
@@ -160,14 +160,10 @@ describe("dashboard", () => {
     expect((await call(d, "GET", "/api/runs/nope")).status).toBe(404);
     expect((await call(d, "GET", "/api/projects/nope")).status).toBe(404);
     const r = await call(d, "POST", "/api/projects/nope/runs", { body: { agent: "claude", task: "x" } });
-    expect(r.json.error).toMatch(/no project named/);
+    expect(r.json.code).toBe("project_not_found");
     addProject(makeRepo("alpha"));
-    expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "gpt", task: "x" } })).json.error).toMatch(
-      /unknown agent/,
-    );
-    expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "claude" } })).json.error).toMatch(
-      /"task" is required/,
-    );
+    expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "gpt", task: "x" } })).json.code).toBe("invalid_tool");
+    expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "claude" } })).json.code).toBe("missing_task");
   });
 });
 

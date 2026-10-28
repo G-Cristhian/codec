@@ -216,6 +216,53 @@ describe("runs with team members", () => {
     expect(listTeams()).toEqual([]);
   });
 
+  for (const tool of ["claude", "codex"] as const) {
+    it(`${tool}: instruction files require applicable skills first, with names, descriptions and role wording`, async () => {
+      useIsolatedHome("true");
+      setupOrg();
+      editSpecialist("tester", { tool });
+      addMember("red", { specialist: "tester", skills: ["s3"] });
+      const run = startRun({ project: "alpha", member: "red/tester-1", task: "test" });
+      await waitFor(run.runId);
+      const dir = join(process.env.CODEC_HOME!, "runs", run.runId);
+      const instructions = readFileSync(join(dir, "instructions.md"), "utf-8");
+      expect(JSON.parse(readFileSync(join(dir, "instructions.toml"), "utf-8"))).toBe(instructions);
+      expect(instructions).toContain("Before doing anything else");
+      expect(instructions).toContain("every");
+      expect(instructions).toContain("could apply to this task and follow it");
+      expect(instructions).toContain("override your default habits for file content and naming");
+      expect(instructions).toContain("s1: the s1 skill");
+      expect(instructions).toContain("s3: the s3 skill");
+      expect(instructions).toContain("tester-1 uses the tester role");
+      expect(instructions).not.toMatch(/copy of|specialist/);
+      expect(instructions.indexOf("Before doing anything else")).toBeLessThan(instructions.indexOf("Always test."));
+      if (tool === "claude") expect(instructions).toContain("use the Skill tool");
+      else for (const name of ["s1", "s3"]) expect(instructions).toContain(`.agents/skills/${name}/SKILL.md`);
+    });
+    it(`${tool}: omits the skills block when none are given, keeping role instructions`, async () => {
+      useIsolatedHome("true");
+      setupOrg();
+      editSpecialist("tester", { tool, skills: [] });
+      addMember("red", { specialist: "tester" });
+      const run = startRun({ project: "alpha", member: "red/tester-1", task: "test" });
+      await waitFor(run.runId);
+      const dir = join(process.env.CODEC_HOME!, "runs", run.runId);
+      const instructions = readFileSync(join(dir, "instructions.md"), "utf-8");
+      expect(JSON.parse(readFileSync(join(dir, "instructions.toml"), "utf-8"))).toBe(instructions);
+      expect(instructions).toContain("Always test.");
+      expect(instructions).not.toMatch(/Skills given|Before doing anything else|SKILL.md|Skill tool/);
+    });
+    it(`${tool}: no instruction files for a quick helper without skills`, async () => {
+      useIsolatedHome("true");
+      setupOrg();
+      const run = startRun({ project: "alpha", agent: tool, task: "test" });
+      await waitFor(run.runId);
+      const dir = join(process.env.CODEC_HOME!, "runs", run.runId);
+      expect(existsSync(join(dir, "instructions.md"))).toBe(false);
+      expect(existsSync(join(dir, "instructions.toml"))).toBe(false);
+    });
+  }
+
   it("claude: injects only the member's skills, passes instructions, commits nothing injected", async () => {
     // The fake agent records what it sees, then commits everything it can.
     useIsolatedHome(
@@ -314,7 +361,7 @@ describe("runs with team members", () => {
     const raw = lines.map((l) => JSON.stringify(l)).join("\n");
     expect(skillCallsFromClaudeStream(raw)).toEqual(["s1"]);
     const text = renderClaudeStream(raw + "\nnot json\n");
-    expect(text).toContain("[claude started — model claude-test]");
+    expect(text).toContain("[Claude started — AI model claude-test]");
     expect(text).toContain("→ Skill: s1");
     expect(text).toContain("→ Write: a.txt");
     expect(text).toContain("not json");
@@ -349,6 +396,26 @@ describe("runs with team members", () => {
     const rec = findRun(run.runId);
     expect(rec.team).toBeUndefined();
     expect(rec.skills!.map((s) => [s.name, s.source])).toEqual([["proj", "project"]]);
+    const instructions = readFileSync(join(process.env.CODEC_HOME!, "runs", run.runId, "instructions.md"), "utf-8");
+    expect(instructions).toContain("use the Skill tool");
+    expect(instructions).toContain("proj: p");
+  });
+
+  it("a quick Codex helper gets skill-first instructions for native and older project skill folders", async () => {
+    useIsolatedHome("true");
+    const repo = setupOrg();
+    for (const [base, name] of [[".agents/skills", "native"], [".codex/skills", "legacy"]]) {
+      mkdirSync(join(repo, base, name), { recursive: true });
+      writeFileSync(join(repo, base, name, "SKILL.md"), `---\nname: ${name}\ndescription: Project ${name} rules\n---\n`);
+    }
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "skills");
+    const run = startRun({ project: "alpha", agent: "codex", task: "check" });
+    await waitFor(run.runId);
+    const instructions = readFileSync(join(process.env.CODEC_HOME!, "runs", run.runId, "instructions.md"), "utf-8");
+    expect(instructions).toContain("Before doing anything else");
+    expect(instructions).toContain("native: Project native rules (.agents/skills/native/SKILL.md)");
+    expect(instructions).toContain("legacy: Project legacy rules (.codex/skills/legacy/SKILL.md)");
   });
 });
 
@@ -418,7 +485,7 @@ describe("dashboard API for teams and skills", () => {
       files: [{ path: "s2/SKILL.md", content: Buffer.from(`---\nname: s2\ndescription: two\n---\n`).toString("base64") }],
     });
     expect(up.status).toBe(201);
-    expect((await call(d, "POST", "/api/skills", { path: makeSkill("s1") })).json.error).toMatch(/already exists/);
+    expect((await call(d, "POST", "/api/skills", { path: makeSkill("s1") })).json.code).toBe("skill_exists");
 
     expect((await call(d, "POST", "/api/specialists", { name: "tester", specialty: "QA", tool: "claude", skills: ["s1"] })).status).toBe(201);
     expect((await call(d, "POST", "/api/specialists/tester/edit", { instructions: "Be careful." })).json.instructions).toBe("Be careful.");
@@ -457,7 +524,7 @@ describe("dashboard API for teams and skills", () => {
     expect(mp.projects).toEqual(["alpha"]);
     expect((await call(d, "GET", "/api/members/red/ghost")).status).toBe(404);
 
-    expect((await call(d, "POST", "/api/specialists/tester/remove", {})).json.error).toMatch(/clone/);
+    expect((await call(d, "POST", "/api/specialists/tester/remove", {})).json.code).toBe("specialist_in_use");
     const rm = await call(d, "POST", "/api/skills/s2/remove", {});
     expect(rm.json.members).toEqual(["red/tester-1", "red/codex-worker-1"]);
     expect((await call(d, "POST", "/api/teams/red/members/tester-1/remove", {})).status).toBe(200);

@@ -14,7 +14,8 @@
  * don't silently change what agents get.
  */
 
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
+import { CodecError, suggestName } from "./errors.js";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { dirname, join, normalize, resolve, sep } from "path";
 import { randomBytes } from "crypto";
 import { logEvent } from "./events.js";
@@ -38,9 +39,9 @@ const MAX_SKILL_FILES = 200;
  */
 export function parseFrontmatter(text: string): Record<string, string> {
   const lines = text.replace(/^﻿/, "").split(/\r?\n/);
-  if (lines[0]?.trim() !== "---") throw new Error("SKILL.md must start with a '---' frontmatter block");
+  if (lines[0]?.trim() !== "---") throw new CodecError("skill_header", "SKILL.md must start with a '---' frontmatter block");
   const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
-  if (end === -1) throw new Error("SKILL.md frontmatter is not closed with '---'");
+  if (end === -1) throw new CodecError("skill_header", "SKILL.md frontmatter is not closed with '---'");
   const out: Record<string, string> = {};
   for (let i = 1; i < end; i++) {
     const m = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(lines[i]);
@@ -65,7 +66,7 @@ function listFiles(root: string): string[] {
       const abs = join(dir, entry);
       const r = rel ? `${rel}/${entry}` : entry;
       const st = lstatSync(abs);
-      if (st.isSymbolicLink()) throw new Error(`skills may not contain symbolic links (${r})`);
+      if (st.isSymbolicLink()) throw new CodecError("skill_symlink", `skills may not contain symbolic links (${r})`);
       if (st.isDirectory()) walk(abs, r);
       else if (st.isFile()) out.push(r);
     }
@@ -75,23 +76,23 @@ function listFiles(root: string): string[] {
 }
 
 /** Check a folder is a valid skill; returns its name and description. */
-export function validateSkillFolder(folder: string): { name: string; description: string; files: string[] } {
+export function validateSkillFolder(folder: string, nameOverride?: string): { name: string; description: string; files: string[] } {
   const abs = resolve(folder);
-  if (!existsSync(abs) || !statSync(abs).isDirectory()) throw new Error(`not a folder: ${abs}`);
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) throw new CodecError("not_a_folder", `not a folder: ${abs}`);
   const md = join(abs, "SKILL.md");
-  if (!existsSync(md)) throw new Error(`no SKILL.md in ${abs}`);
+  if (!existsSync(md)) throw new CodecError("no_skill_file", `no SKILL.md in ${abs}`);
   const fm = parseFrontmatter(readFileSync(md, "utf-8"));
-  const name = fm.name?.trim();
+  const name = nameOverride ?? fm.name?.trim();
   const description = fm.description?.trim();
-  if (!name) throw new Error("SKILL.md frontmatter needs a 'name'");
-  if (!description) throw new Error("SKILL.md frontmatter needs a 'description'");
+  if (!name) throw new CodecError("skill_field", "SKILL.md frontmatter needs a 'name'", { field: "name" });
+  if (!description) throw new CodecError("skill_field", "SKILL.md frontmatter needs a 'description'", { field: "description" });
   if (!SKILL_NAME_RE.test(name)) {
-    throw new Error(`invalid skill name "${name}" (lowercase letters, digits and hyphens, up to 64 characters)`);
+    throw new CodecError("invalid_skill_name", `invalid skill name "${name}" (lowercase letters, digits and hyphens, up to 64 characters)`, { name }, 400, suggestName(name, existsSync(skillsDir()) ? readdirSync(skillsDir()) : [], true));
   }
   const files = listFiles(abs);
-  if (files.length > MAX_SKILL_FILES) throw new Error(`skill has too many files (${files.length}, max ${MAX_SKILL_FILES})`);
+  if (files.length > MAX_SKILL_FILES) throw new CodecError("skill_too_large", `skill has too many files (${files.length}, max ${MAX_SKILL_FILES})`);
   const size = files.reduce((n, f) => n + statSync(join(abs, f)).size, 0);
-  if (size > MAX_SKILL_BYTES) throw new Error(`skill is too large (${size} bytes, max ${MAX_SKILL_BYTES})`);
+  if (size > MAX_SKILL_BYTES) throw new CodecError("skill_too_large", `skill is too large (${size} bytes, max ${MAX_SKILL_BYTES})`);
   return { name, description, files };
 }
 
@@ -117,20 +118,36 @@ export function listSkills(): SkillInfo[] {
 }
 
 /** Copy a skill folder into the library. Refuses invalid skills and duplicates. */
-export function importSkill(folder: string): SkillInfo {
-  const src = resolve(folder);
-  const v = validateSkillFolder(src);
-  if (src === join(skillsDir(), v.name) || src.startsWith(skillsDir() + sep)) {
-    throw new Error("that folder is already inside the Codec skill library");
+export interface SkillImportOptions { name?: string; replace?: boolean }
+export function importSkill(folder: string, options: SkillImportOptions = {}): SkillInfo {
+  const selected = resolve(folder);
+  const v = validateSkillFolder(selected, options.name);
+  const src = realpathSync(selected);
+  if (existsSync(skillsDir()) && (src === realpathSync(skillsDir()) || src.startsWith(realpathSync(skillsDir()) + sep))) {
+    throw new CodecError("skill_inside", "that folder is already inside the Codec skill library");
   }
   return withLock("org", () => {
     const dest = join(skillsDir(), v.name);
-    if (existsSync(dest)) throw new Error(`a skill named "${v.name}" already exists — remove it first to replace it`);
+    if (existsSync(dest) && !options.replace) throw new CodecError("skill_exists", `a skill named "${v.name}" already exists — remove it first to replace it`, { name: v.name });
     mkdirSync(skillsDir(), { recursive: true });
     const tmp = join(skillsDir(), `.import-${randomBytes(4).toString("hex")}`);
+    const backup = tmp + "-previous";
     try {
-      cpSync(src, tmp, { recursive: true });
-      renameSync(tmp, dest);
+      cpSync(src, tmp, { recursive: true, dereference: false });
+      if (options.name) {
+        const md = join(tmp, "SKILL.md");
+        const text = readFileSync(md, "utf-8");
+        const lines = text.split(/\r?\n/);
+        const end = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
+        // Rewrite only the copied header; the selected source is never edited.
+        const header = lines.slice(1, end).filter((line) => !/^name:/.test(line));
+        writeFileSync(md, ["---", ...header, `name: ${options.name}`, ...lines.slice(end)].join("\n"));
+      }
+      validateSkillFolder(tmp);
+      if (existsSync(dest)) renameSync(dest, backup);
+      try { renameSync(tmp, dest); }
+      catch (error) { if (existsSync(backup)) renameSync(backup, dest); throw error; }
+      rmSync(backup, { recursive: true, force: true });
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -140,11 +157,18 @@ export function importSkill(folder: string): SkillInfo {
 }
 
 /** Import from uploaded files ({path, content(base64)}) — used by the dashboard. */
-export function importSkillFiles(files: { path: string; content: string }[], stagingRoot: string): SkillInfo {
-  if (!files.length) throw new Error("no files uploaded");
-  if (files.length > MAX_SKILL_FILES) throw new Error(`too many files (max ${MAX_SKILL_FILES})`);
+export function importSkillFiles(files: { path: string; content: string }[], stagingRoot: string, options: SkillImportOptions = {}): SkillInfo {
+  if (!files.length) throw new CodecError("invalid_upload", "no files uploaded");
+  if (files.length > MAX_SKILL_FILES) throw new CodecError("skill_too_large", `too many files (max ${MAX_SKILL_FILES})`);
   // Browsers send "<folder>/<file>"; strip a shared top folder.
-  const parts = files.map((f) => f.path.replace(/\\/g, "/").replace(/^\/+/, "").split("/"));
+  const parts = files.map((f) => {
+    const path = f.path.replace(/\\/g, "/");
+    const segments = path.split("/");
+    if (path.startsWith("/") || /^[A-Za-z]:/.test(path) || segments.some((part) => !part || part === "." || part === "..")) {
+      throw new CodecError("invalid_upload", `invalid file path in upload: ${f.path}`);
+    }
+    return segments;
+  });
   const top = parts[0][0];
   const strip = parts.every((p) => p.length > 1 && p[0] === top) ? 1 : 0;
   const dir = join(stagingRoot, `upload-${randomBytes(4).toString("hex")}`);
@@ -154,12 +178,12 @@ export function importSkillFiles(files: { path: string; content: string }[], sta
       const rel = parts[i].slice(strip).join("/");
       const target = normalize(join(dir, rel));
       if (!rel || !target.startsWith(dir + sep) || rel.split("/").includes("..")) {
-        throw new Error(`invalid file path in upload: ${f.path}`);
+        throw new CodecError("invalid_upload", `invalid file path in upload: ${f.path}`);
       }
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, Buffer.from(f.content, "base64"));
     });
-    return importSkill(dir);
+    return importSkill(dir, options);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -167,6 +191,6 @@ export function importSkillFiles(files: { path: string; content: string }[], sta
 
 /** Delete a skill from the library folder (callers also unassign it — see org.ts). */
 export function deleteSkillFolder(name: string): void {
-  if (!getSkill(name)) throw new Error(`no skill named "${name}"`);
+  if (!getSkill(name)) throw new CodecError("invalid_skill", `no skill named "${name}"`, { name });
   rmSync(join(skillsDir(), name), { recursive: true, force: true });
 }

@@ -7,6 +7,7 @@
  * (e.g. a crash message) are shown as they are.
  */
 
+import { S, wording } from "./strings.js";
 interface Block {
   type?: string;
   text?: string;
@@ -54,7 +55,7 @@ function skillName(input: Record<string, unknown> | undefined): string | undefin
 
 function describeTool(b: Block): string {
   const input = b.input ?? {};
-  if (b.name === "Skill") return `→ Skill: ${skillName(input) ?? "?"}`;
+  if (b.name === "Skill") return wording(S.wording.skillActivity, { name: skillName(input) ?? "?" });
   const pick = ["command", "file_path", "path", "pattern", "url", "description", "prompt"].find(
     (k) => typeof input[k] === "string",
   );
@@ -71,7 +72,7 @@ export function renderClaudeStream(raw: string): string {
       continue;
     }
     if (ev.type === "system" && ev.subtype === "init") {
-      out.push(`[claude started${ev.model ? ` — model ${ev.model}` : ""}]`);
+      out.push(wording(S.wording.activityStarted, { model: ev.model ? wording(S.wording.activityModel, { model: ev.model }) : "" }));
     } else if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
       for (const b of ev.message!.content as Block[]) {
         if (b.type === "text" && b.text?.trim()) out.push(b.text.trimEnd());
@@ -85,8 +86,8 @@ export function renderClaudeStream(raw: string): string {
         }
       }
     } else if (ev.type === "result") {
-      const secs = ev.duration_ms !== undefined ? ` in ${Math.round(ev.duration_ms / 1000)}s` : "";
-      out.push(`[claude finished${ev.is_error ? " with an error" : ""}${secs}]`);
+      const secs = ev.duration_ms !== undefined ? wording(S.wording.activityDuration, { seconds: Math.round(ev.duration_ms / 1000) }) : "";
+      out.push(wording(S.wording.activityFinished, { error: ev.is_error ? S.wording.activityError : "", duration: secs }));
       if (ev.is_error && ev.result) out.push(ev.result);
     }
   }
@@ -107,4 +108,13 @@ export function skillCallsFromClaudeStream(raw: string): string[] {
     }
   }
   return names;
+}
+
+/** Only Claude's initialization event identifies the model actually used. */
+export function modelFromClaudeStream(raw: string): string | undefined {
+  for (const line of raw.split("\n")) {
+    const event = parse(line);
+    if (event?.type === "system" && event.subtype === "init" && typeof event.model === "string" && event.model.trim()) return event.model.trim();
+  }
+  return undefined;
 }

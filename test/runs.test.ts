@@ -117,7 +117,7 @@ describe("agent runs", () => {
     process.env.CODEC_AGENT_COMMAND = `echo change > dirty.txt`;
     const dirty = startRun({ project: "alpha", agent: "codex", task: "y" });
     await waitFor(dirty.runId);
-    expect(() => cleanRun(dirty.runId)).toThrow(/uncommitted changes/);
+    expect(() => cleanRun(dirty.runId)).toThrow(expect.objectContaining({ code: "uncommitted_changes" }));
     cleanRun(dirty.runId, { force: true, deleteBranch: true });
     expect(existsSync(dirty.worktree)).toBe(false);
     expect(gitOut(repo, "branch", "--list", dirty.branch).trim()).toBe("");

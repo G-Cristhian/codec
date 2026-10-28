@@ -35,6 +35,8 @@ import {
 } from "./org.js";
 import { importSkill, listSkills } from "./skills.js";
 import { codecHome } from "./store.js";
+import { saveIdentity } from "./settings.js";
+import { S } from "./strings.js";
 
 const HELP = `codec — run AI coding agents on many projects at once
 
@@ -80,6 +82,8 @@ Teams
 
 Dashboard
   codec dashboard [--port N]                 local web page (default port 4777)
+
+${S.cli.identityHelp}
 
 Time limits: run > team member > specialist > 60 minutes. Positive minutes, up to 1440; fractions allowed.
 
@@ -179,6 +183,12 @@ export function main(argv: string[]): number {
   }
 
   switch (cmd) {
+    case "settings": {
+      if (sub !== "identity") throw new Error(S.cli.identityUsage);
+      saveIdentity({ name: str(flags, "name") ?? "", email: str(flags, "email") ?? "" });
+      out(S.common.saved);
+      return 0;
+    }
     case "project": {
       if (sub === "add") {
         const p = addProject(need(rest[0], "codec project add <path> [--name <name>]"), str(flags, "name"));
