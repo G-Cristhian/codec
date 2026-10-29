@@ -25,6 +25,7 @@ import { CodecError } from "./errors.js";
 import { checkTimeLimit, DEFAULT_TIME_LIMIT_MINUTES } from "./limits.js";
 import { isOurProcess, ownsProcessGroup } from "./proc.js";
 import { spawn } from "child_process";
+import { helperNodeExecutable } from "./runtime.js";
 import { existsSync, mkdirSync, openSync, closeSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
@@ -146,7 +147,7 @@ agent_pid=
 timer_pid=
 cleanup_timer() {
   if [ -n "$timer_pid" ]; then
-    exec {timer_fd}>&-
+    exec 9>&-
     wait "$timer_pid" 2>/dev/null || true
     timer_pid=
   fi
@@ -198,13 +199,16 @@ if cd "$CODEC_WORKTREE"; then
   agent_pid=$!
   printf '%s\\n' "$agent_pid" > "$CODEC_RUN_DIR/agent_group"
   wrapper_pid=$$
-  # A pipe held only by this wrapper: read times out at the deadline, and
-  # closing the pipe (including wrapper death) cancels it without any sleep.
-  exec {timer_fd}> >(
-    read -r -t "$CODEC_TIME_LIMIT_SECONDS"
-    result=$?
-    if [ "$result" -gt 128 ]; then kill -USR1 "$wrapper_pid" 2>/dev/null; fi
-  )
+  # Fixed fd + Node timer also work with Apple's Bash 3.2. Closing the pipe
+  # (including wrapper death) cancels the timer without leaving a sleep behind.
+  exec 9> >(exec "$CODEC_NODE" -e '
+    const timer = setTimeout(() => {
+      try { process.kill(Number(process.argv[1]), "SIGUSR1"); } catch {}
+      process.stdin.destroy();
+    }, Number(process.argv[2]) * 1000);
+    process.stdin.resume();
+    process.stdin.on("end", () => clearTimeout(timer));
+  ' "$wrapper_pid" "$CODEC_TIME_LIMIT_SECONDS")
   timer_pid=$!
   printf '%s\\n' "$timer_pid" > "$CODEC_RUN_DIR/timer_pid"
   wait "$agent_pid"
@@ -356,7 +360,7 @@ export function startRun(input: StartInput): RunStatus {
         CODEC_RUN_ID: runId,
         CODEC_PROJECT: project.name,
         CODEC_AGENT: agent,
-        CODEC_NODE: process.execPath,
+        CODEC_NODE: helperNodeExecutable(),
         CODEC_WORKTREE: worktree,
         CODEC_RUN_DIR: dir,
         CODEC_TASK_FILE: join(dir, "task.txt"),

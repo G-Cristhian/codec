@@ -102,4 +102,10 @@ describe("setup checks", () => {
     expect((await runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 30)).status).toBeNull();
     expect(Date.now() - start).toBeLessThan(2000);
   });
+  it("aborts a desktop-owned check when the app shuts down", async () => {
+    const controller = new AbortController();
+    const pending = runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 30_000, controller.signal);
+    controller.abort();
+    expect((await pending).status).toBeNull();
+  });
 });

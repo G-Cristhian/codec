@@ -64,6 +64,7 @@ export const S = {
     identity: "Your name and email for saved checkpoints", identityName: "Your name", identityEmail: "Your email",
     identityHint: "Helpers use these details when saving checkpoints for you.",
     identityMissing: "Your name and email are missing. Enter them below and save before starting a task, or use a project folder that already has them set up.",
+    identityNeeded: "Enter and save your name and email for saved checkpoints.",
     title: "Set up Codec", hint: "Codec needs at least one AI service installed and signed in to do tasks.",
     ok: "OK", notInstalled: "This AI service isn't installed.", notSignedIn: "This AI service isn't signed in.",
     unchecked: "This AI service hasn't been checked yet.", fixMissing: "Check the AI service's setup and sign in, then check again.",
@@ -169,6 +170,7 @@ export const S = {
     setupLogin: "Open {tool} and sign in, then press Check again.",
   },
   errors: {
+    unsupported_platform: "The Codec app launcher works on macOS and Linux. Install it on a computer running one of those systems.",
     checkpoint_save_failed: "Codec couldn't save the helper's leftover work. Open the workspace and save its changes as a checkpoint before tidying up this task.",
     identity_missing: "Your name and email for saved checkpoints are missing. Open Setup and save them, then start the task again.",
     invalid_identity: "Codec couldn't save your name and email. Enter your name and a complete email address, then save again.",

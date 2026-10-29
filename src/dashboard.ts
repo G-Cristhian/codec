@@ -108,7 +108,7 @@ interface ProcInfo {
 
 /** pid -> {ppid, pgrp} for every process, from /proc. Linux only. */
 function readProcTable(): Map<number, ProcInfo> | undefined {
-  if (!existsSync("/proc/self/stat")) return undefined;
+  if (process.platform !== "linux" || !existsSync("/proc/self/stat")) return undefined;
   const table = new Map<number, ProcInfo>();
   for (const name of readdirSync("/proc")) {
     if (!/^\d+$/.test(name)) continue;

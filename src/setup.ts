@@ -11,13 +11,14 @@ export interface SetupOptions {
   runner?: CommandRunner;
   findBinary?: (tool: Agent) => string | undefined;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 export interface ToolSetup {
   tool: Agent; installed: boolean; signedIn: boolean | null; version?: string; problem?: string; fix?: string;
 }
 export interface SetupStatus { tools: ToolSetup[]; ready: boolean }
-export const runCommand: CommandRunner = (command, args, timeoutMs) => new Promise((resolve) => {
-  execFile(command, args, { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 256 * 1024, encoding: "utf-8" }, (error, stdout, stderr) => {
+export const runCommand = (command: string, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<CommandResult> => new Promise((resolve) => {
+  execFile(command, args, { timeout: timeoutMs, signal, killSignal: "SIGKILL", maxBuffer: 256 * 1024, encoding: "utf-8" }, (error, stdout, stderr) => {
     resolve({ stdout, stderr, status: error ? (typeof error.code === "number" ? error.code : null) : 0 });
   });
 });
@@ -36,7 +37,7 @@ export function createSetupChecker(options: SetupOptions = {}) {
   let cached: { at: number; status: SetupStatus } | undefined;
   let pending: Promise<SetupStatus> | undefined;
   const timeoutMs = options.timeoutMs ?? 5000;
-  const runner = options.runner ?? runCommand;
+  const runner = options.runner ?? ((command, args, timeoutMs) => runCommand(command, args, timeoutMs, options.signal));
   async function command(binary: string, args: string[]) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

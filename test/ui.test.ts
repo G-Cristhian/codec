@@ -350,6 +350,30 @@ describe("Wave 2 wording and actions", () => {
     expect(api).toHaveBeenLastCalledWith("settings", { identity: { name: "Edited Owner", email: "edited@example.invalid" } });
   });
 
+  it.each([
+    [0, false, S.setup.notReady + " " + S.setup.identityNeeded],
+    [0, true, S.setup.notReady],
+    [1, false, S.setup.identityNeeded],
+    [2, false, S.setup.identityNeeded],
+    [1, true, S.setup.oneReady.replace("{tool}", S.setup.claude)],
+    [2, true, S.setup.ready],
+  ])("Setup reports what is needed with %s working services and identity ready %s", async (count, identityReady, expected) => {
+    let tree: any[] = [];
+    const tools = ["claude", "codex"].map((tool, index) => ({ tool, installed: index < count, signedIn: index < count }));
+    const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean) });
+    const { setup } = runtime({ messages: new Map(), setupState: { tools, ready: count > 0, identityReady },
+      overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; },
+        api: async () => ({ identity: { name: "", email: "" } }) } });
+    await setup(1);
+    const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
+    const all = nodes(tree);
+    expect(all.find((node) => node.props?.["data-testid"] === "setup-status").props.text).toBe(expected);
+    if (!identityReady || !count) {
+      expect(all.some((node) => node.props?.text === S.setup.ready)).toBe(false);
+      expect(all.some((node) => node.props?.text?.startsWith("Codec is usable"))).toBe(false);
+    }
+  });
+
   it.each(["setup-continue", "setup-skip"])("%s finishes setup through the authenticated settings API", async (id) => {
     let tree: any[] = [];
     const location = { hash: "#/setup" };

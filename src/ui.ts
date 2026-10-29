@@ -484,6 +484,11 @@ async function setup(seq) {
     field("identity-email", S.setup.identityEmail, { value: settings.identity.email, required: true, type: "email", autocomplete: "email" }),
     submit("identity-save", S.common.save), message("identity"));
   const working = setupState.tools.filter((t) => toolOK(t.tool));
+  const needed = [];
+  if (!setupState.ready) needed.push(S.setup.notReady);
+  if (!setupState.identityReady) needed.push(S.setup.identityNeeded);
+  const status = needed.length ? needed.join(" ") : working.length === 1
+    ? fmt(S.setup.oneReady, { tool: toolName(working[0].tool) }) : S.setup.ready;
   const rows = setupState.tools.map((t) => {
     const fix = t.fix || S.setup.fixMissing;
     return h("section.card.setup-tool", { "data-testid": "setup-tool", "data-key": t.tool },
@@ -496,7 +501,7 @@ async function setup(seq) {
         }, { "data-key": t.tool }), message("setup-" + t.tool)));
   });
   render(seq, h("section", { "data-testid": "setup-wizard" }, heading(S.setup.title), h("p", { text: S.setup.hint }),
-    h("p", { text: working.length === 1 ? fmt(S.setup.oneReady, { tool: toolName(working[0].tool) }) : setupState.ready ? S.setup.ready : S.setup.notReady }), identityForm, rows,
+    h("p", { "data-testid": "setup-status", text: status }), identityForm, rows,
     button("setup-check", S.setup.check, (e) => act("setup", e.currentTarget, async () => { setupState = await api("setup?fresh=1"); }, "")),
     button("setup-continue", S.setup.continue, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, ""), { disabled: !setupState.ready }),
     button("setup-skip", S.setup.skip, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, "")), message("setup")));

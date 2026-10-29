@@ -4,11 +4,14 @@
   "description": "Run AI coding agents on many projects at once, each in its own git worktree",
   "private": true,
   "type": "module",
+  "main": "dist/app.js",
   "bin": {
     "codec": "./bin/codec"
   },
   "scripts": {
     "build": "tsc",
+    "app": "npm run build && node scripts/run-app.mjs",
+    "install-launcher": "npm run build && node dist/install-launcher.js",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run"
   },
@@ -17,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "electron": "^45.1.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
