@@ -48,9 +48,16 @@ export function createAccountLogins(options: AccountLoginOptions = {}) {
   }));
   async function signedIn(id: string, fresh = false): Promise<boolean> {
     const account = getAccount(id);
+    function confirmed(value: boolean): boolean {
+      const flow = flows.get(id);
+      if (value && flow && (flow.view.state === "canceled" || flow.view.state === "timed_out" || flow.view.state === "failed")) {
+        finish(flow, "signed_in");
+      }
+      return value;
+    }
     const previous = cached.get(id);
-    if (!fresh && previous && Date.now() - previous.at < 15_000) return previous.pending ?? previous.value;
-    if (process.env.CODEC_AGENT_COMMAND && !options.status && !options.binary) return true;
+    if (!fresh && previous && Date.now() - previous.at < 15_000) return confirmed(await (previous.pending ?? previous.value));
+    if (process.env.CODEC_AGENT_COMMAND && !options.status && !options.binary) return confirmed(true);
     const binary = (options.binary ?? findBinary)(account.kind);
     if (!binary || closed) return false;
     const entry = { at: Date.now(), value: false, pending: undefined as Promise<boolean> | undefined };
@@ -60,7 +67,7 @@ export function createAccountLogins(options: AccountLoginOptions = {}) {
         entry.value = result.status === 0 && (account.kind === "claude" ? JSON.parse(result.stdout).loggedIn === true : /^\s*Logged in\b/im.test(result.stdout + "\n" + (result.stderr ?? "")));
       } catch { entry.value = false; }
       entry.pending = undefined;
-      return entry.value;
+      return confirmed(entry.value);
     };
     entry.pending = check(); cached.set(id, entry); return entry.pending;
   }

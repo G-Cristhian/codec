@@ -111,6 +111,38 @@ describe("background sign-in lifecycle", () => {
     f.child.stdout.write(`${claudeUrl}\n`); expect(f.login.cancel(a.id)).toMatchObject({ state: "canceled" });
     f.end(0); expect(f.login.view(a.id)?.state).toBe("canceled"); expect(f.login.view(a.id)?.url).toBeUndefined();
   });
+  it.each(["canceled", "timed_out", "failed"] as const)("clears a %s result when a later status check confirms sign-in", async (state) => {
+    const a = addAccount("claude", "Work");
+    let signedIn = false;
+    const f = fixture(async () => ({ status: 0, stdout: JSON.stringify({ loggedIn: signedIn }) }));
+    f.login.start(a.id);
+    if (state === "failed") f.end(1);
+    else { f.login.cancel(a.id, state); f.end(1); }
+    expect((await f.login.accountsView()).find((x) => x.id === a.id)).toMatchObject({ status: "needs_sign_in", login: { state } });
+
+    signedIn = true;
+    const account = (await f.login.accountsView([], true)).find((x) => x.id === a.id);
+    expect(account).toMatchObject({ status: "signed_in", login: { state: "signed_in" } });
+    expect(f.login.view(a.id)?.state).toBe("signed_in");
+  });
+  it.each(["canceled", "timed_out", "failed"] as const)("replaces a %s result when another sign-in attempt starts", (state) => {
+    const a = addAccount("claude", "Work"), f = fixture();
+    f.login.start(a.id);
+    if (state === "failed") f.end(1);
+    else { f.login.cancel(a.id, state); f.end(1); }
+    expect(f.login.view(a.id)?.state).toBe(state);
+    expect(f.login.start(a.id)).toMatchObject({ state: "waiting" });
+    expect(f.login.view(a.id)?.state).toBe("waiting");
+    f.end(1);
+  });
+  it("clears canceled text even when the signed-in status is cached", async () => {
+    const a = addAccount("claude", "Work"), f = fixture();
+    f.login.start(a.id);
+    expect(await f.login.signedIn(a.id)).toBe(true);
+    f.login.cancel(a.id); f.end(1);
+    expect(f.login.view(a.id)?.state).toBe("canceled");
+    expect((await f.login.accountsView()).find((x) => x.id === a.id)).toMatchObject({ status: "signed_in", login: { state: "signed_in" } });
+  });
   it("accepts a Claude fallback code over stdin without exposing or retaining it", () => {
     const a = addAccount("claude", "A"), f = fixture(); f.login.start(a.id); f.child.stdout.write(`${claudeUrl}\nPaste code here if prompted > `);
     let input = ""; f.child.stdin.on("data", (chunk) => { input += chunk; });
