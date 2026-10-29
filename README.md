@@ -83,7 +83,10 @@ npm run install-launcher
 
 In Finder, open your home folder's **Applications** folder and double-click
 **Codec**. If macOS says it is from an unidentified developer, right-click
-**Codec**, choose **Open**, and confirm **Open**. This is a local app launcher,
+**Codec**, choose **Open**, and confirm **Open**. If that doesn't work, open
+**System Settings → Privacy & Security**, scroll down, and click **Open Anyway**
+next to the Codec message, then double-click **Codec** again and confirm **Open**.
+This is a local app launcher,
 with a Codec icon, rather than a signed installer. Keep the Codec folder where
 it is; run `npm run install-launcher` again if you move it or replace Node.js.
 
