@@ -4,6 +4,21 @@ import { join } from "path";
 import { CodecError } from "./errors.js";
 import { S } from "./strings.js";
 import { codecHome, projectsFile, readJson, specialistsFile, teamsFile, withLock, writeJsonAtomic } from "./store.js";
+import { accountStore, setAccountChoice, type AccountScope } from "./accounts.js";
+import { getProject } from "./registry.js";
+import { getTeam, parseMemberRef, resolveMember } from "./org.js";
+import type { Agent } from "./tools.js";
+
+export function saveAccountSettings(scope: AccountScope, name: string, kind: Agent, id?: string) {
+  if (scope === "project" && !getProject(name)) throw new CodecError("project_not_found", S.errors.project_not_found, { name }, 404);
+  if (scope === "team" && !getTeam(name)) throw new CodecError("team_not_found", S.errors.team_not_found, { name }, 404);
+  if (scope === "helper") {
+    const ref = parseMemberRef(name);
+    if (resolveMember(ref.team, ref.member).tool !== kind) throw new CodecError("account_kind", S.errors.account_kind);
+  }
+  setAccountChoice(scope, name, kind, id);
+  return accountStore().choices;
+}
 
 export interface Identity { name: string; email: string }
 export interface Settings { identity: Identity; setupFinished: boolean }

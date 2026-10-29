@@ -11,6 +11,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname } from "path";
 import { eventsFile } from "./store.js";
+import { redactValue } from "./secrets.js";
 
 export type EventKind =
   | "project.add"
@@ -46,7 +47,7 @@ export function logEvent(kind: EventKind, fields: Record<string, unknown> = {}):
     const file = eventsFile();
     mkdirSync(dirname(file), { recursive: true });
     const event: CodecEvent = { ts: new Date().toISOString(), kind, ...fields };
-    appendFileSync(file, JSON.stringify(event) + "\n");
+    appendFileSync(file, JSON.stringify(redactValue(event)) + "\n");
   } catch (e) {
     if (!warnedOnce) {
       warnedOnce = true;

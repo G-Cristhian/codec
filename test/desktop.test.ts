@@ -181,6 +181,16 @@ describe("bringing an existing desktop window back", () => {
   const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
   afterEach(() => { Object.defineProperty(process, "platform", platform); });
 
+  it.each(["linux", "darwin"])("opens Accounts sign-in links using shell.openExternal on %s", async (os) => {
+    Object.defineProperty(process, "platform", { value: os });
+    const f = fixture(); await runDesktop(f.electron, "/icon.png", f.start);
+    const contents = f.Window.instances[0].webContents;
+    const popup = contents.setWindowOpenHandler.mock.calls[0][0] as (details: { url: string }) => unknown;
+    const url = "https://claude.com/cai/oauth/authorize?code=true&state=synthetic-state";
+    expect(popup({ url })).toEqual({ action: "deny" });
+    expect(f.shell.openExternal).toHaveBeenCalledExactlyOnceWith(url);
+  });
+
   it.each(["linux", "darwin", "win32"])("restores minimized, hidden and unfocused windows on %s", async (os) => {
     Object.defineProperty(process, "platform", { value: os });
     const f = fixture();

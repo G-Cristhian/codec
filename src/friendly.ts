@@ -4,6 +4,7 @@ import { join } from "path";
 import { codecHome } from "./store.js";
 import { CodecError } from "./errors.js";
 import { S, wording, type ErrorCode } from "./strings.js";
+import { redactValue } from "./secrets.js";
 
 /** HTTP validation also uses stable engine codes. */
 export class ApiError extends CodecError {
@@ -24,7 +25,7 @@ export function friendlyError(error: unknown, route: string): { status: number; 
   const params = error instanceof CodecError ? error.params : {};
   try {
     mkdirSync(codecHome(), { recursive: true });
-    appendFileSync(join(codecHome(), "codec.log"), JSON.stringify({ ts: new Date().toISOString(), route, code, status, detail }) + "\n");
+    appendFileSync(join(codecHome(), "codec.log"), JSON.stringify(redactValue({ ts: new Date().toISOString(), route, code, status, detail })) + "\n");
   } catch { /* A logging failure must not expose the original error. */ }
   return { status, body: {
     error: wording(S.errors[code], params), code,

@@ -24,6 +24,13 @@
  * confirm-submit, confirm-cancel, action-message, connection-message.
  * Error actions: use-suggested-name, copy-details, skill-replace.
  * Task details: task-technical (collapsed by default).
+ * Accounts: nav-accounts, accounts-check, account-card, account-add-open,
+ * account-add-form, account-kind, account-name, account-method, account-sign-in,
+ * account-default, account-sign-in-again, account-browser-sign-in, account-remove,
+ * account-login, account-login-state, account-open-sign-in, account-device-code,
+ * account-cancel, account-code-form, account-send-code, account-code-<id>.
+ * Account settings: project-account-settings, project-account, team-account,
+ * helper-account. Task limit: task-account-limit.
  * All details summaries, buttons and fields are included above. Checkboxes
  * repeat their selector and use data-key for the skill/project name.
  */
@@ -32,7 +39,20 @@ export const S = {
     title: "Codec dashboard",
     hint: "This page needs Codec's private link. Close this tab and open Codec again from the link Codec gave you when it started.",
   },
-  nav: { projects: "Projects", teams: "Teams", specialists: "Roles", skills: "Skills", setup: "Setup" },
+  nav: { projects: "Projects", teams: "Teams", specialists: "Roles", skills: "Skills", accounts: "Accounts", setup: "Setup" },
+  accounts: {
+    title: "Your accounts", label: "Account", computer: "This computer's login", add: "Add account", signIn: "Sign in",
+    nameHint: "Give this account a name you will recognize, like Work or Personal.",
+    intro: "Keep your accounts side by side and choose which one each helper uses.",
+    newTasks: "Account changes apply to new tasks. Helpers already working keep their account.",
+    useDefault: "Use default", default: "Default", makeDefault: "Make default", signedIn: "Signed in", needsSignIn: "Needs sign-in", limit: "Hit its limit",
+    limitMessage: "This account hit its limit. Switch accounts?", open: "Open Accounts", openSignIn: "Open sign-in page", waiting: "Finish signing in on the sign-in page.",
+    deviceCode: "Enter this code on the sign-in page:", pasteHint: "If the sign-in page gives you a code, enter it here.", pasteCode: "Sign-in code", sendCode: "Continue sign-in",
+    device: "Use a sign-in code", browser: "Use the browser", method: "Sign-in method", check: "Check sign-in",
+    canceled: "Sign-in canceled.", timed_out: "Sign-in took too long. Try signing in again.", failed: "Sign-in did not finish. Try again, or choose another sign-in method.",
+    remove: "Remove account", removeTitle: "Remove {name}?", removeEffect: "This account's saved sign-in will be deleted from Codec. Past tasks keep its name.",
+    checkHint: "Sign-in is checked by the AI service. You can check it again here.",
+  },
   theme: { label: "Theme", auto: "Auto", light: "Light", dark: "Dark" },
   cli: { identityUsage: "usage: codec settings identity --name <name> --email <email>", identityHelp: "Settings\n  codec settings identity --name <name> --email <email>\n                                             save your name and email for saved checkpoints" },
   checkpoints: { fallbackName: "Codec", fallbackEmail: "codec@localhost", startingMessage: "Set up tracking for Codec" },
@@ -170,6 +190,18 @@ export const S = {
     setupLogin: "Open {tool} and sign in, then press Check again.",
   },
   errors: {
+    account_missing: "That account is no longer available. Choose another account.",
+    account_needs_sign_in: "Sign in to {name} on the Accounts page before starting this task.",
+    account_folder: "This account's saved sign-in cannot be opened. Add the account again.",
+    account_name: "Give the account a short, plain name. Keep sign-in details on the sign-in page.",
+    account_kind: "Choose an account for the same AI service as this helper.",
+    account_builtin: "This computer's login is managed by the AI service on this computer.",
+    account_confirm: "Confirm that you want to remove this account first.",
+    account_busy: "A helper is using this account. Wait for it to finish before changing its sign-in or removing it.",
+    account_remove: "The saved sign-in could not be removed. Make sure your Mac's saved passwords are unlocked and try again.",
+    account_login: "Sign-in could not start. Try again.",
+    account_login_busy: "Finish or cancel the current sign-in before starting another.",
+    account_code: "Enter the full code from the sign-in page while sign-in is still open.",
     unsupported_platform: "The Codec app launcher works on macOS and Linux. Install it on a computer running one of those systems.",
     checkpoint_save_failed: "Codec couldn't save the helper's leftover work. Open the workspace and save its changes as a checkpoint before tidying up this task.",
     identity_missing: "Your name and email for saved checkpoints are missing. Open Setup and save them, then start the task again.",

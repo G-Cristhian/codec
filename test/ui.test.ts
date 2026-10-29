@@ -14,7 +14,8 @@ function runtime(bindings: Record<string, unknown> = {}) {
   const params = { S, TOKEN: "test-token", setupState: { tools: [], ready: false }, ...bindings };
   return new Function(...Object.keys(params), functions + `\nif (typeof overrides !== "undefined") { if (overrides.h) h = overrides.h; if (overrides.render) render = overrides.render; if (overrides.showDialog) showDialog = overrides.showDialog; if (overrides.api) api = overrides.api; if (overrides.act) act = overrides.act; if (overrides.tell) tell = overrides.tell; }\nreturn {
     api, errorText, sourceText, fmt, limitText, limitValue, stateText, toolOK, toolProblem, snapshot, restore,
-    removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, setup, project, projectAddForm, skillAddForm, skillUploadForm
+    removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, setup, project, projectAddForm, skillAddForm, skillUploadForm,
+    accounts, accountPicker, accountSettings, loginDetails
   };`)(...Object.values(params));
 }
 describe("dashboard wording and structure", () => {
@@ -454,5 +455,64 @@ describe("error support details", () => {
   it("names the project a skill came with", () => {
     const { sourceText } = runtime();
     expect(sourceText({ source: "project" }, "website")).toBe("Comes with the project (website)");
+  });
+});
+
+describe("Accounts controls", () => {
+  const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
+  const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter((kid) => kid != null && kid !== false) });
+  it("shows the task's saved account name and the exact limit message with an Accounts action", async () => {
+    let tree: any[] = [];
+    const record = { runId: "run-account", project: "site", task: "Check", agent: "claude", state: "done", cleanedAt: "today",
+      account: { id: "private-id", name: "Work Claude" }, limitHit: true, skillsGiven: [], skillsUsed: [] };
+    const { run } = runtime({ messages: new Map(), enc: encodeURIComponent,
+      overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; }, api: async () => record } });
+    await run(1, record.runId);
+    const all = nodes(tree);
+    expect(all.some((n) => n.props?.text === "Work Claude")).toBe(true);
+    const banner = all.find((n) => n.props?.["data-testid"] === "task-account-limit");
+    expect(nodes(banner).some((n) => n.props?.text === "This account hit its limit. Switch accounts?")).toBe(true);
+    expect(nodes(banner).find((n) => n.props?.href === "#/accounts").props.text).toBe(S.accounts.open);
+    expect(JSON.stringify(tree)).not.toContain("private-id");
+  });
+  it.each(["helper", "team", "project"])("%s dropdown offers accounts for the same service and saves a manual choice", async (scope) => {
+    const api = vi.fn(async () => ({}));
+    const { accountPicker } = runtime({ enc: encodeURIComponent, messages: new Map(),
+      accountsState: { choices: { [scope + ":web"]: { claude: "work" } }, defaults: {},
+        accounts: [{ id: "work", kind: "claude", name: "Work" }, { id: "other", kind: "codex", name: "Codex" }] },
+      overrides: { h: capture, api, act: async (_key: string, _trigger: unknown, action: () => Promise<void>) => action() } });
+    const picker = accountPicker(scope, "web", "claude"), all = nodes(picker), select = all.find((n) => n.spec === "select");
+    expect(select.value).toBe("work");
+    expect(all.some((n) => n.props?.text === S.accounts.useDefault)).toBe(true);
+    expect(all.some((n) => n.props?.text === "Codex")).toBe(false);
+    expect(api).not.toHaveBeenCalled();
+    await select.props.onchange({ currentTarget: { value: "" } });
+    expect(api).toHaveBeenCalledExactlyOnceWith("account-settings", { scope, name: "web", kind: "claude", accountId: "" });
+  });
+  it("opens sign-in links in a separate browser tab and shows cancel and device-code instructions", () => {
+    const url = "https://auth.openai.com/codex/device";
+    const { loginDetails } = runtime({ enc: encodeURIComponent, messages: new Map(), overrides: { h: capture } });
+    const tree = loginDetails({ id: "work", login: { state: "waiting", url, code: "ABCD-EFGH" } }), all = nodes(tree);
+    expect(all.find((n) => n.props?.["data-testid"] === "account-open-sign-in").props).toMatchObject({ href: url, target: "_blank", rel: "noopener noreferrer", referrerpolicy: "no-referrer", text: S.accounts.openSignIn });
+    expect(all.find((n) => n.props?.["data-testid"] === "account-device-code").props.text).toBe("ABCD-EFGH");
+    expect(all.some((n) => n.props?.["data-testid"] === "account-cancel")).toBe(true);
+  });
+  it("removes an account only after the in-page confirmation", async () => {
+    let tree: any[] = [], confirm: (() => Promise<void>) | undefined;
+    const state = { accounts: [{ id: "work", name: "Work", kind: "claude", status: "signed_in" }], defaults: { claude: "work" }, choices: {} };
+    const api = vi.fn(async () => state);
+    const { accounts } = runtime({ accountsState: state, enc: encodeURIComponent, messages: new Map(), overrides: { h: capture, api,
+      render: (_seq: number, ...kids: any[]) => { tree = kids; }, showDialog: (_title: string, effects: string[], _blocked: unknown, action: () => Promise<void>) => {
+        expect(effects).toEqual([S.accounts.removeEffect]); confirm = action;
+      } } });
+    await accounts(1); nodes(tree).find((n) => n.props?.["data-testid"] === "account-remove").props.onclick();
+    expect(api).toHaveBeenCalledTimes(1); expect(confirm).toBeDefined(); await confirm!();
+    expect(api).toHaveBeenLastCalledWith("accounts/work/remove", { confirmed: true });
+  });
+  it("excludes pasted sign-in codes from refresh snapshots", () => {
+    const secret = { id: "code", type: "password", value: "synthetic-code#state" }, normal = { id: "name", type: "text", value: "Work" };
+    const app = { contains: () => false, querySelector: () => null, querySelectorAll: (query: string) => query === "input[id], textarea[id], select[id]" ? [secret, normal] : [] };
+    const { snapshot } = runtime({ app, document: { activeElement: null }, window: { scrollY: 0 } });
+    expect(snapshot().fields).toEqual([{ id: "name", value: "Work", checked: undefined }]);
   });
 });

@@ -427,6 +427,17 @@ export function main(argv: string[]): number {
         (d) => {
           out(`Codec dashboard: ${d.url}`);
           out("Local only (127.0.0.1). The link contains a secret token — don't share it. Ctrl+C to stop.");
+          let closing = false;
+          const stop = () => {
+            if (closing) return;
+            closing = true;
+            void d.close().finally(() => {
+              process.off("SIGINT", stop);
+              process.off("SIGTERM", stop);
+            });
+          };
+          process.on("SIGINT", stop);
+          process.on("SIGTERM", stop);
         },
         (e: unknown) => {
           process.stderr.write(`codec: ${e instanceof Error ? e.message : String(e)}\n`);

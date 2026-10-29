@@ -46,6 +46,9 @@ import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "
 import { modelFromClaudeStream, renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
 import { modelFromCodexOutput } from "./codex-output.js";
 import { COMMIT_ATTRIBUTION_SCRIPT } from "./commit-attribution.js";
+import { ACTIVITY_SCRIPT } from "./activity.js";
+import { accountCliArgs, accountEnvironment, clearAccountChoices, prepareAccount, resolveAccount } from "./accounts.js";
+import { redactSecrets, redactValue } from "./secrets.js";
 import {
   eventsFile,
   readJson,
@@ -61,6 +64,8 @@ export { AGENTS, type Agent };
 export type RunState = "running" | "done" | "failed" | "stopped" | "timed_out";
 
 export interface RunRecord {
+  account?: { id: string; name: string };
+  limitHit?: boolean;
   runId: string;
   project: string;
   projectPath: string;
@@ -110,7 +115,7 @@ const recordFile = (runId: string): string => join(runDir(runId), "run.json");
  * inside their own worktree, reading the task from $CODEC_TASK_FILE.
  * CODEC_AGENT_COMMAND overrides it (used by tests and demos with a fake agent).
  */
-export function agentCommand(agent: Agent, opts: { model?: string; instructions?: boolean } = {}): string {
+export function agentCommand(agent: Agent, opts: { model?: string; instructions?: boolean; accountArgs?: string[] } = {}): string {
   const override = process.env.CODEC_AGENT_COMMAND;
   if (override) return override;
   const prompt = `"$(cat "$CODEC_TASK_FILE")"`;
@@ -129,7 +134,7 @@ export function agentCommand(agent: Agent, opts: { model?: string; instructions?
       .join(" ");
   }
   return [
-    "codex exec --yolo",
+    "codex" + (opts.accountArgs?.length ? " " + opts.accountArgs.map((arg) => "'" + arg.replace(/'/g, "'\\''") + "'").join(" ") : "") + " exec --yolo",
     model && `-m ${model}`,
     opts.instructions && `-c "developer_instructions=$(cat "$CODEC_RUN_DIR/instructions.toml")"`,
     prompt,
@@ -143,6 +148,11 @@ export function agentCommand(agent: Agent, opts: { model?: string; instructions?
 const WRAPPER = `# codec run wrapper (generated)
 # Separate jobs let the wrapper record the result after ending the agent's group.
 set -m
+umask 077
+exec 8> >(exec "$CODEC_NODE" "$CODEC_RUN_DIR/capture.cjs")
+capture_pid=$!
+exec 1>&8 2>&1
+exec 8>&-
 agent_pid=
 timer_pid=
 cleanup_timer() {
@@ -160,6 +170,9 @@ finish() {
     if [ "$result" -eq 0 ]; then result=98; fi
   fi
   set -- "$result"
+  # Finish writing redacted activity and limit markers before publishing completion.
+  exec 1>&- 2>&-
+  wait "$capture_pid" 2>/dev/null || true
   printf '%s\\n' "$1" > "$CODEC_RUN_DIR/exit_code.tmp" && mv -f "$CODEC_RUN_DIR/exit_code.tmp" "$CODEC_RUN_DIR/exit_code"
   printf '{"ts":"%s","kind":"run.finish","runId":"%s","project":"%s","agent":"%s","exitCode":%s}\\n' \\
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CODEC_RUN_ID" "$CODEC_PROJECT" "$CODEC_AGENT" "$1" >> "$CODEC_EVENTS_FILE"
@@ -246,6 +259,10 @@ export interface StartInput {
 }
 
 export function startRun(input: StartInput): RunStatus {
+  return withLock("accounts", () => startAccountRun(input));
+}
+
+function startAccountRun(input: StartInput): RunStatus {
   if (!input.task || !input.task.trim()) throw new CodecError("missing_task", "--task is required");
   const requestedLimit = checkTimeLimit(input.timeLimitMinutes);
   const project = getProject(input.project);
@@ -269,6 +286,9 @@ export function startRun(input: StartInput): RunStatus {
     throw new CodecError("invalid_tool", `unknown agent "${agentName}" (use: ${AGENTS.join(", ")})`, { name: agentName });
   }
   const agent = agentName as Agent;
+  const account = resolveAccount(agent, { helper: input.member, team: who?.team, project: project.name });
+  const environment = accountEnvironment(account);
+  prepareAccount(account);
   if (!existsSync(project.path)) throw new CodecError("project_missing", `project path no longer exists: ${project.path}`, { path: project.path });
 
   const timeLimitMinutes = requestedLimit ?? who?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES;
@@ -316,18 +336,20 @@ export function startRun(input: StartInput): RunStatus {
     // A TOML basic string for `codex -c developer_instructions=...`; JSON string escapes are valid TOML.
     writeFileSync(join(dir, "instructions.toml"), JSON.stringify(instructions));
   }
-  const command = agentCommand(agent, { model: who?.model, instructions: !!instructions });
+  const command = agentCommand(agent, { model: who?.model, instructions: !!instructions, accountArgs: accountCliArgs(account) });
   writeFileSync(join(dir, "task.txt"), input.task);
   writeFileSync(join(dir, "agent.sh"), command + "\n");
   writeFileSync(join(dir, "run.sh"), WRAPPER);
   writeFileSync(join(dir, "strip-attribution.cjs"), COMMIT_ATTRIBUTION_SCRIPT);
+  writeFileSync(join(dir, "capture.cjs"), ACTIVITY_SCRIPT);
 
   const record: RunRecord = {
+    account: { id: account.id, name: account.name },
     runId,
     project: project.name,
     projectPath: project.path,
     agent,
-    task: input.task,
+    task: redactSecrets(input.task),
     branch,
     worktree,
     baseSha,
@@ -343,9 +365,9 @@ export function startRun(input: StartInput): RunStatus {
     skills,
     outputFormat: agent === "claude" ? "claude-stream" : "text",
   };
-  writeJsonAtomic(recordFile(runId), record);
+  writeJsonAtomic(recordFile(runId), redactValue(record));
 
-  const log = openSync(join(dir, "output.log"), "a");
+  const log = openSync(join(dir, "output.log"), "a", 0o600);
   let pid: number | undefined;
   try {
     const child = spawn("bash", [join(dir, "run.sh")], {
@@ -353,7 +375,7 @@ export function startRun(input: StartInput): RunStatus {
       detached: true, // own process group: survives codec exiting, stoppable as a unit
       stdio: ["ignore", log, log],
       env: {
-        ...process.env,
+        ...environment,
         ...identityEnvironment(identity),
         CODEC_TIME_LIMIT_MINUTES: String(timeLimitMinutes),
         CODEC_TIME_LIMIT_SECONDS: String(Math.max(0.001, (Date.parse(deadline) - Date.now()) / 1000)),
@@ -364,7 +386,7 @@ export function startRun(input: StartInput): RunStatus {
         CODEC_WORKTREE: worktree,
         CODEC_RUN_DIR: dir,
         CODEC_TASK_FILE: join(dir, "task.txt"),
-        CODEC_CHECKPOINT_MESSAGE: wording(S.tasks.checkpointMessage, { id: runId.slice(4), task: input.task.split(/\r?\n/, 1)[0].trim().slice(0, 100) }),
+        CODEC_CHECKPOINT_MESSAGE: wording(S.tasks.checkpointMessage, { id: runId.slice(4), task: redactSecrets(input.task.split(/\r?\n/, 1)[0].trim().slice(0, 100)) }),
         CODEC_EVENTS_FILE: eventsFile(),
       },
     });
@@ -375,7 +397,7 @@ export function startRun(input: StartInput): RunStatus {
   }
   if (!pid) throw new CodecError("spawn_failed", `failed to spawn agent for ${runId} (see ${join(dir, "output.log")})`, { tool: agent === "claude" ? S.setup.claude : S.setup.codex });
 
-  writeJsonAtomic(recordFile(runId), { ...record, pid });
+  writeJsonAtomic(recordFile(runId), redactValue({ ...record, pid }));
   // Verified registration (from the hive): never report a launch the
   // status view can't see. If the record didn't persist, kill and fail.
   const check = readRecord(runId);
@@ -435,6 +457,13 @@ function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
 export function getRunStatus(runId: string): RunStatus | undefined {
   let rec = readRecord(runId);
   if (!rec) return undefined;
+  if (!rec.limitHit && existsSync(join(runDir(runId), "limit_hit"))) {
+    rec = withLock(`run-${runId}`, () => {
+      const updated = { ...readRecord(runId)!, limitHit: true };
+      writeJsonAtomic(recordFile(runId), updated);
+      return updated;
+    });
+  }
   const attribution = readJson<{ coAuthorStripped?: number }>(join(runDir(runId), "attribution.json"), {});
   if (attribution.coAuthorStripped && attribution.coAuthorStripped !== rec.coAuthorStripped) {
     rec = withLock(`run-${runId}`, () => {
@@ -641,7 +670,7 @@ export function runOutput(ref: string, lines = 50): string {
   const run = findRun(ref);
   let text = rawOutput(run.runId);
   if (run.outputFormat === "claude-stream") text = renderClaudeStream(text);
-  return text.split("\n").slice(-lines - 1).join("\n");
+  return redactSecrets(text.split("\n").slice(-lines - 1).join("\n"));
 }
 
 export interface SkillUse {
@@ -688,7 +717,9 @@ function refuseIfRunning(what: string, running: RunStatus[], code: "project_busy
 export function removeTeamChecked(name: string): Team {
   if (!getTeam(name)) throw new CodecError("team_not_found", `no team named "${name}"`, { name }, 404);
   refuseIfRunning(`team ${name}`, listRuns({ state: "running" }).filter((r) => r.team === name), "team_busy");
-  return deleteTeam(name);
+  const team = deleteTeam(name);
+  clearAccountChoices("team", name);
+  return team;
 }
 
 /** Remove a team member, refusing while it is working. */
@@ -698,7 +729,9 @@ export function removeMemberChecked(team: string, member: string): Member {
     listRuns({ state: "running" }).filter((r) => r.team === team && r.member === member),
     "member_busy",
   );
-  return deleteMember(team, member);
+  const removed = deleteMember(team, member);
+  clearAccountChoices("helper", `${team}/${member}`);
+  return removed;
 }
 
 /**
@@ -710,5 +743,6 @@ export function removeProjectChecked(name: string): Project {
   refuseIfRunning(name, listRuns({ project: name, state: "running" }), "project_busy");
   const p = removeProject(name);
   dropProjectFromTeams(name);
+  clearAccountChoices("project", name);
   return p;
 }

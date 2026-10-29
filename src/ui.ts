@@ -132,6 +132,7 @@ label.field textarea { min-height: 120px; width: 100%; }
 .hint { color: var(--muted); font-size: 12px; }
 .message { white-space: pre-wrap; color: var(--danger); margin: 6px 0; }
 .message:empty { display: none; }
+[hidden] { display: none !important; }
 .message.success { color: var(--done); }
 .folder-panel { border: 1px solid var(--border); padding: 12px; border-radius: 8px; margin-top: 8px; }
 .folder-list { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0; max-height: 260px; overflow: auto; }
@@ -152,6 +153,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 <a href="#/teams" data-page="teams" data-testid="nav-teams">${textHTML(S.nav.teams)}</a>
 <a href="#/specialists" data-page="specialists" data-testid="nav-specialists">${textHTML(S.nav.specialists)}</a>
 <a href="#/skills" data-page="skills" data-testid="nav-skills">${textHTML(S.nav.skills)}</a>
+<a href="#/accounts" data-page="accounts" data-testid="nav-accounts">${textHTML(S.nav.accounts)}</a>
 <a href="#/setup" data-page="setup" data-testid="setup-open">${textHTML(S.nav.setup)}</a>
 </nav>
 <span class="stat"><b id="teamsN">–</b>${textHTML(S.common.teamCount)}</span>
@@ -178,6 +180,7 @@ const folders = new Map();
 const messages = new Map();
 let setupState = { tools: [], ready: false };
 let setupChecked = false;
+let accountsState = { accounts: [], defaults: {}, choices: {} };
 let timer = null;
 let renderSeq = 0;
 let busy = 0;
@@ -235,6 +238,7 @@ function messageContent(key, m) {
       })) : null,
     e?.code === "project_registered" ? h("a.link", { href: "#/project/" + enc(e.params?.name), text: fmt(S.wording.openProject, { name: e.params?.name }) }) : null,
     e?.code === "tool_unavailable" || e?.code === "spawn_failed" || e?.code === "identity_missing" ? h("a.link", { href: "#/setup", text: S.nav.setup }) : null,
+    e?.code?.startsWith("account_") ? h("a.link", { href: "#/accounts", text: S.accounts.open }) : null,
     e?.links?.map((link) => h("a.link", { href: "#/run/" + enc(link.id), text: snippet(link.task, 40) })) || null,
     e?.code === "skill_exists" ? button("skill-replace", S.wording.replace, () => showDialog(
       fmt(S.wording.replaceTitle, { name: e.params.name }), [S.wording.replaceEffect], null,
@@ -370,7 +374,7 @@ function taskTable(runs, forMember = false) {
 
 // Polls preserve field values, focus/caret, disclosures, and page/log scroll.
 function snapshot() {
-  const fields = [...app.querySelectorAll("input[id], textarea[id], select[id]")].filter((el) => el.type !== "file").map((el) => ({
+  const fields = [...app.querySelectorAll("input[id], textarea[id], select[id]")].filter((el) => el.type !== "file" && el.type !== "password").map((el) => ({
     id: el.id, value: el.value, checked: el.checked,
   }));
   const open = [...app.querySelectorAll("details[id]")].map((el) => [el.id, el.open]);
@@ -506,6 +510,68 @@ async function setup(seq) {
     button("setup-continue", S.setup.continue, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, ""), { disabled: !setupState.ready }),
     button("setup-skip", S.setup.skip, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, "")), message("setup")));
 }
+
+function currentAccounts() { return typeof accountsState === "undefined" ? { accounts: [], choices: {}, defaults: {} } : accountsState; }
+function accountPicker(scope, name, kind) {
+  const state = currentAccounts();
+  const key = scope + "-account-" + name + "-" + kind;
+  const selected = state.choices[scope + ":" + name]?.[kind] || "";
+  const select = h("select", { id: key, "data-testid": scope + "-account", "data-key": kind,
+    onchange: (e) => act(key, e.currentTarget, () => api("account-settings", { scope, name, kind, accountId: e.currentTarget.value })) },
+    h("option", { value: "", text: S.accounts.useDefault }), state.accounts.filter((a) => a.kind === kind).map((a) => h("option", { value: a.id, text: a.name })));
+  select.value = selected;
+  return h("div", {}, h("label.field", {}, h("span", { text: S.accounts.label + " · " + toolName(kind) }), select), message(key));
+}
+function accountSettings(scope, name, kind) {
+  return h("div.stackcards", {}, kind ? accountPicker(scope, name, kind) : ["claude", "codex"].map((tool) => accountPicker(scope, name, tool)),
+    hint(S.accounts.newTasks), h("a.link", { href: "#/accounts", text: S.accounts.open }));
+}
+function loginDetails(account) {
+  const login = account.login, key = "account-" + account.id;
+  if (!login) return null;
+  if (login.state !== "waiting") return h("p", { "data-testid": "account-login-state", text: login.state === "signed_in" ? S.accounts.signedIn : S.accounts[login.state] });
+  const codeForm = h("form.stack", { "data-testid": "account-code-form", onsubmit: (event) => {
+    event.preventDefault();
+    const input = codeForm.querySelector("input");
+    const code = input.value.trim(); input.value = "";
+    act(key, codeForm.querySelector("button"), () => api("accounts/" + enc(account.id) + "/code", { code }), "");
+  } }, hint(S.accounts.pasteHint), field("account-code-" + account.id, S.accounts.pasteCode, { type: "password", autocomplete: "off" }), submit("account-send-code", S.accounts.sendCode));
+  return h("div", { "data-testid": "account-login" }, h("p", { text: S.accounts.waiting }),
+    login.url ? h("a.link", { href: login.url, target: "_blank", rel: "noopener noreferrer", referrerpolicy: "no-referrer", "data-testid": "account-open-sign-in", text: S.accounts.openSignIn }) : null,
+    login.code ? h("p", {}, S.accounts.deviceCode, " ", h("strong", { "data-testid": "account-device-code", text: login.code })) : null,
+    login.needsCode ? codeForm : null,
+    button("account-cancel", S.common.cancel, (e) => act(key, e.currentTarget, () => api("accounts/" + enc(account.id) + "/cancel", {}), "")));
+}
+async function accounts(seq) {
+  const state = await api("accounts");
+  accountsState = state;
+  const key = "account-add";
+  const kind = h("select", { id: "account-kind", "data-testid": "account-kind", onchange: () => { methodField.hidden = kind.value !== "codex"; } }, ["claude", "codex"].map((tool) => h("option", { value: tool, text: toolName(tool) })));
+  const method = h("select", { id: "account-method", "data-testid": "account-method" }, h("option", { value: "device", text: S.accounts.device }), h("option", { value: "browser", text: S.accounts.browser }));
+  const methodField = h("label.field", { hidden: true }, S.accounts.method, method);
+  const add = h("form.stack", { "data-testid": "account-add-form", onsubmit: (e) => {
+    e.preventDefault();
+    act(key, add.querySelector("button"), async () => {
+      const account = await api("accounts", { name: val(add, "account-name").trim(), kind: kind.value });
+      await api("accounts/" + enc(account.id) + "/login", { method: method.value });
+      clearForm(add);
+    }, "");
+  } }, h("label.field", {}, S.common.tool, kind), field("account-name", S.common.name, { required: true, maxlength: 80 }), hint(S.accounts.nameHint),
+    methodField, submit("account-sign-in", S.accounts.signIn), message(key));
+  render(seq, crumbs(S.nav.accounts), heading(S.accounts.title), hint(S.accounts.intro), hint(S.accounts.newTasks),
+    button("accounts-check", S.accounts.check, (e) => act("accounts", e.currentTarget, async () => { accountsState = await api("accounts?fresh=1"); }, "")), message("accounts"),
+    h("div.stackcards", {}, state.accounts.map((account) => {
+      const key = "account-" + account.id, route = "accounts/" + enc(account.id);
+      const isDefault = state.defaults[account.kind] === account.id;
+      return h("section.card", { "data-testid": "account-card", "data-key": account.id }, h("h3", { text: account.name }),
+        h("p", { text: toolName(account.kind) + " · " + (account.status === "signed_in" ? S.accounts.signedIn : account.status === "limit" ? S.accounts.limit : S.accounts.needsSignIn) + (isDefault ? " · " + S.accounts.default : "") }),
+        h("div.actions", {}, !isDefault ? button("account-default", S.accounts.makeDefault, (e) => act(key, e.currentTarget, () => api(route + "/default", {}))) : null,
+          !account.builtin && account.login?.state !== "waiting" ? [button("account-sign-in-again", S.accounts.signIn, (e) => act(key, e.currentTarget, () => api(route + "/login", { method: "device" }), ""), { disabled: account.running }),
+            account.kind === "codex" ? button("account-browser-sign-in", S.accounts.browser, (e) => act(key, e.currentTarget, () => api(route + "/login", { method: "browser" }), ""), { disabled: account.running }) : null] : null,
+          !account.builtin ? button("account-remove", S.accounts.remove, () => showDialog(fmt(S.accounts.removeTitle, { name: account.name }), [S.accounts.removeEffect], account.running ? S.errors.account_busy : null,
+            () => api(route + "/remove", { confirmed: true })), { class: "danger" }) : null), loginDetails(account), message(key));
+    })), disclosure("account-add-open", S.accounts.add, add));
+}
 function projectAddForm() {
   const key = "project-add";
   const trackingBox = h("div", { "data-testid": "project-tracking", hidden: !tracking });
@@ -557,6 +623,7 @@ async function project(seq, name) {
     limitField("task-limit", undefined, S.wording.usualLimit), submit("task-start", S.tasks.start), message(key));
   render(seq, crumbs(name), h("div.headrow", {}, h("div", {}, h("h1", { text: name }), hint(v.project.path)),
     removeButton("project", name, "projects/" + enc(name) + "/remove", key, S.projects.remove, () => go("#/"))),
+    disclosure("project-account-settings", S.accounts.label, accountSettings("project", name)),
     hint(S.wording.helperIntro), heading(S.wording.giveTask), !v.members.length ? h("p", {}, S.projects.noTeam, h("a.link", { href: "#/teams" }, h("strong", { text: S.members.addTeam })), S.projects.noTeamAfter) : null, form, heading(S.projects.board), hint(S.wording.workspace),
     h("div.board", {}, LANES.map(([lane, text]) => h("section.lane." + lane, { title: laneHint(lane) }, h("h3", { text: text + " · " + v.lanes[lane].length }),
       v.lanes[lane].length ? v.lanes[lane].map((r) => h("a.card", { href: "#/run/" + enc(r.runId), "data-testid": "task-open", "data-key": r.runId },
@@ -648,7 +715,7 @@ async function teams(seq) {
   render(seq, crumbs(S.nav.teams), heading(S.teams.title), hint(S.wording.helperIntro), hint(S.wording.skillsIntro), list.length ? h("div.stackcards", {}, list.map((t) => h("section.card", { "data-key": t.name },
     h("div.headrow", {}, h("h3", { text: t.name }), removeButton("team", t.name, "teams/" + enc(t.name) + "/remove", "team-" + t.name, S.teams.remove)),
     h("p", {}, S.teams.projects + ": ", t.projects.length ? t.projects.map((p, i) => [i ? ", " : "", h("a.link", { href: "#/project/" + enc(p), text: p })]) : S.common.noneAvailable),
-    message("team-" + t.name), disclosure("team-edit-open", S.teams.edit, teamForm(t, projects), t.name),
+    message("team-" + t.name), disclosure("team-edit-open", S.teams.edit, h("div", {}, teamForm(t, projects), accountSettings("team", t.name)), t.name),
     t.members.length ? table([S.members.title, S.members.kind, S.common.tool, S.wording.extraSkills, S.members.working, ""], t.members.map((m) => h("tr", {},
       h("td", {}, h("a.link", { href: memberHref(t.name, m.member || m.name), text: m.member || m.name })),
       h("td", { text: m.error ? S.members.broken : m.specialist ? fmt(S.members.copyOf, { name: m.specialist }) + (m.specialty ? " (" + m.specialty + ")" : "") : S.members.worker }),
@@ -670,7 +737,7 @@ async function member(seq, team, name) {
       S.common.tool, toolName(m.tool), S.common.timeLimitLabel, limitText(m.timeLimitMinutes ?? 60), S.nav.projects,
       m.projects.join(", ") || S.common.noneAvailable].map((text) => h("div", { text }))),
     heading(S.common.instructions), h("p.fulltask", { text: m.instructions || S.common.none }), message(key),
-    disclosure("member-edit-open", S.members.edit, memberForm(team, [], sk.skills.map((s) => s.name), m)),
+    disclosure("member-edit-open", S.members.edit, h("div", {}, memberForm(team, [], sk.skills.map((s) => s.name), m), accountSettings("helper", team + "/" + name, m.tool))),
     heading(S.common.skills), hint(S.wording.skillsIntro), m.skills.length ? table([S.common.skills, S.tasks.source], m.skills.map((s) => h("tr", {}, h("td", { text: s.name }), h("td", { text: sourceText(s) })))) : hint(S.wording.noSkills),
     heading(S.members.working), m.working.length ? taskTable(m.working, true) : hint(S.wording.nothingNow), heading(S.members.past), m.runs.some((r) => r.state !== "running") ? taskTable(m.runs.filter((r) => r.state !== "running"), true) : hint(S.wording.noFinished));
 }
@@ -722,6 +789,7 @@ async function run(seq, id) {
   const r = await api("runs/" + enc(id));
   const key = "task-" + id;
   const pairs = [S.tasks.task, r.task, S.tasks.state, stateText(r), S.tasks.who, whoText(r), S.common.tool, toolName(r.agent),
+    S.accounts.label, r.account?.name || S.accounts.computer,
     S.wording.aiModel, r.model || (r.actualModel ? fmt(S.common.defaultModelUsed, { model: r.actualModel }) : S.common.defaultModel), S.wording.team, r.team || S.common.none, S.members.kind, r.specialist || S.members.worker, S.tasks.started, when(r.startedAt),
     S.tasks.deadline, when(r.deadline)];
   function clean(force = false, deleteBranch = false) {
@@ -739,6 +807,7 @@ async function run(seq, id) {
     }, extra, S.tasks.clean);
   }
   render(seq, crumbs(h("a", { href: "#/project/" + enc(r.project), text: r.project }), S.tasks.task), heading(S.tasks.details), hint(S.wording.helperIntro),
+    r.limitHit ? h("div.card", { "data-testid": "task-account-limit" }, h("p", { text: S.accounts.limitMessage }), h("a.link", { href: "#/accounts", text: S.accounts.open })) : null,
     r.autoSaved ? h("p", { "data-testid": "task-auto-saved", text: S.tasks.autoSaved }) : null,
     r.checkpointError ? h("p", { "data-testid": "task-checkpoint-error", text: S.errors[r.checkpointError] }) : null,
     r.reviewStatus === "unsaved" ? h("p", { "data-testid": "task-unsaved", text: S.tasks.unsavedHelp }) : null,
@@ -774,6 +843,7 @@ async function refresh() {
   if (busy) { timer = setTimeout(refresh, 2000); return; }
   try {
     setupState = await api("setup");
+    accountsState = await api("accounts");
     if (seq !== renderSeq) return;
     if (!setupChecked) {
       setupChecked = true;
@@ -782,6 +852,7 @@ async function refresh() {
     const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
     let page = "projects";
     if (parts[0] === "setup") { page = "setup"; await setup(seq); }
+    else if (parts[0] === "accounts") { page = "accounts"; await accounts(seq); }
     else if (parts[0] === "project" && parts[1]) await project(seq, parts[1]);
     else if (parts[0] === "run" && parts[1]) await run(seq, parts[1]);
     else if (parts[0] === "teams") { page = "teams"; await teams(seq); }

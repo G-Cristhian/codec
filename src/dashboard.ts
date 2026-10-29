@@ -18,7 +18,10 @@
 
 import { CodecError } from "./errors.js";
 import { S, wording } from "./strings.js";
-import { checkpointIdentity, getSettings, saveSettings } from "./settings.js";
+import { checkpointIdentity, getSettings, saveSettings, saveAccountSettings } from "./settings.js";
+import { accountStore, addAccount, builtinId, getAccount, removeAccount, resolveAccount, setDefaultAccount } from "./accounts.js";
+import { createAccountLogins, type AccountLoginOptions } from "./account-login.js";
+import { redactValue } from "./secrets.js";
 import { ApiError, friendlyError } from "./friendly.js";
 import { hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking } from "./folders.js";
 import { createSetupChecker, type SetupOptions } from "./setup.js";
@@ -167,6 +170,8 @@ export function agentMemoryBytes(running: RunStatus[]): number | null {
 
 function runSummary(r: RunStatus) {
   return {
+    account: r.account ?? { id: builtinId(r.agent), name: S.accounts.computer },
+    limitHit: !!r.limitHit,
     runId: r.runId,
     project: r.project,
     agent: r.agent,
@@ -409,7 +414,7 @@ function send(res: ServerResponse, status: number, body: string, type: string, e
 }
 
 function sendJson(res: ServerResponse, status: number, data: unknown) {
-  send(res, status, JSON.stringify(data), "application/json; charset=utf-8");
+  send(res, status, JSON.stringify(redactValue(data)), "application/json; charset=utf-8");
 }
 
 function tokenEquals(a: string | undefined, b: string): boolean {
@@ -466,11 +471,19 @@ export interface Dashboard {
   close(): Promise<void>;
 }
 
-export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions } = {}): Promise<Dashboard> {
+export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions } = {}): Promise<Dashboard> {
   const token = opts.token ?? randomBytes(24).toString("base64url");
   let port = opts.port ?? DEFAULT_PORT;
   const cookieName = () => `codec_token_${port}`;
   const checkSetup = createSetupChecker(opts.setup);
+  const logins = createAccountLogins(opts.accounts);
+  async function setupStatus(fresh = false) {
+    const status = await checkSetup(fresh);
+    const saved = accountStore().accounts;
+    const managed = await Promise.all(saved.map(async (account) => ({ kind: account.kind, ok: await logins.signedIn(account.id, fresh) })));
+    const tools = status.tools.map((tool) => ({ ...tool, signedIn: managed.some((a) => a.kind === tool.tool && a.ok) ? true : tool.signedIn }));
+    return { ...status, tools, ready: tools.some((t) => t.installed && t.signedIn) };
+  }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // 1. DNS-rebinding guard: only our own loopback host names.
@@ -543,7 +556,36 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
-    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await checkSetup(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), shouldOpen: !getSettings().setupFinished });
+    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), shouldOpen: !getSettings().setupFinished });
+    if (isGet && a === "accounts" && n === 1) {
+      const saved = accountStore();
+      return sendJson(res, 200, { accounts: await logins.accountsView(listRuns(), url.searchParams.get("fresh") === "1"),
+        defaults: { claude: saved.defaults.claude ?? builtinId("claude"), codex: saved.defaults.codex ?? builtinId("codex") }, choices: saved.choices });
+    }
+    if (!isGet && a === "accounts" && n === 1) return sendJson(res, 201, addAccount(s(body.kind) ?? "", s(body.name) ?? ""));
+    if (!isGet && a === "account-settings" && n === 1) {
+      const scope = s(body.scope);
+      if (scope !== "helper" && scope !== "team" && scope !== "project") throw new ApiError(400, "bad_request", S.common.error);
+      return sendJson(res, 200, saveAccountSettings(scope, s(body.name) ?? "", checkTool(s(body.kind) ?? ""), s(body.accountId) || undefined));
+    }
+    if (a === "accounts" && b && n === 3) {
+      const account = getAccount(b);
+      if (isGet && c === "login") return sendJson(res, 200, logins.view(b) ?? null);
+      if (!isGet && c === "default") { setDefaultAccount(account.kind, b); return sendJson(res, 200, { ok: true }); }
+      if (!isGet && c === "login") {
+        if (listRuns({ state: "running" }).some((run) => run.account?.id === b)) throw new CodecError("account_busy", S.errors.account_busy, {}, 409);
+        return sendJson(res, 200, logins.start(b, body.method === "browser" ? "browser" : "device"));
+      }
+      if (!isGet && c === "cancel") return sendJson(res, 200, logins.cancel(b) ?? null);
+      if (!isGet && c === "code") { logins.submitCode(b, s(body.code) ?? ""); return sendJson(res, 200, { ok: true }); }
+      if (!isGet && c === "remove") {
+        if (account.builtin) throw new CodecError("account_builtin", S.errors.account_builtin, {}, 409);
+        if (body.confirmed !== true) throw new CodecError("account_confirm", S.errors.account_confirm, {}, 409);
+        if (listRuns({ state: "running" }).some((run) => run.account?.id === b)) throw new CodecError("account_busy", S.errors.account_busy, {}, 409);
+        await logins.stop(b);
+        return sendJson(res, 200, removeAccount(b, { confirmed: true, running: () => listRuns({ state: "running" }) }));
+      }
+    }
     if (isGet && a === "settings" && n === 1) return sendJson(res, 200, getSettings());
     if (!isGet && a === "settings" && n === 1) {
       const identity = body.identity as Record<string, unknown> | undefined;
@@ -644,7 +686,11 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       const ref = member ? parseMemberRef(member) : undefined;
       const tool = ref ? resolveMember(ref.team, ref.member).tool : checkTool(agent!);
       const setup = await checkSetup();
-      if (!setup.tools.some((entry) => entry.tool === tool && entry.installed && entry.signedIn === true)) {
+      const account = resolveAccount(tool, { helper: member, team: ref?.team, project: b });
+      const signedIn = account.builtin ? setup.tools.some((entry) => entry.tool === tool && entry.signedIn === true) : await logins.signedIn(account.id, true);
+      if (!account.builtin && !signedIn) throw new CodecError("account_needs_sign_in", S.errors.account_needs_sign_in, { name: account.name }, 409);
+      if (logins.view(account.id)?.state === "waiting") throw new CodecError("account_login_busy", S.errors.account_login_busy, {}, 409);
+      if (!setup.tools.some((entry) => entry.tool === tool && entry.installed) || !signedIn) {
         const label = tool === "claude" ? S.setup.claude : S.setup.codex;
         throw new CodecError("tool_unavailable", `${label} is not installed or signed in`, { tool: label }, 409);
       }
@@ -680,11 +726,13 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
         port,
         token,
         url: `http://${HOST}:${port}/?token=${token}`,
-        close: () =>
-          new Promise<void>((r) => {
+        close: async () => {
+          await logins.close();
+          await new Promise<void>((r) => {
             server.close(() => r());
             server.closeAllConnections();
-          }),
+          });
+        },
       });
     });
   });

@@ -93,6 +93,7 @@ export async function runDesktop(
     window.webContents.on("will-navigate", navigation);
     window.webContents.on("will-redirect", navigation);
     window.webContents.setWindowOpenHandler(({ url }) => {
+      // Accounts uses a normal web link: sign-in opens in the owner's browser.
       external(url);
       return { action: "deny" };
     });
