@@ -2,11 +2,13 @@
 import { S } from "./strings.js";
 
 export const THEME_KEY = "codec-theme";
-const THEME_BOOT = `<script>try{var t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>`;
+export const SIDEBAR_KEY = "codec-sidebar";
+const THEME_BOOT = `<script>try{var t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem(${JSON.stringify(SIDEBAR_KEY)})==="collapsed")document.documentElement.setAttribute("data-sidebar","collapsed")}catch(e){}</script>`;
 const DARK_VARS = `color-scheme: dark;
-    --bg: #0f1115; --panel: #171a21; --panel2: #1f232c; --text: #e6e8ee; --muted: #8b93a7;
-    --border: #2a2f3a; --accent: #6d8dff; --danger: #f06a6a;
-    --working: #6d8dff; --needs: #f0a050; --review: #a78bfa; --done: #3ccf8e;`;
+    --bg: #0f1115; --side: #14171c; --panel: #171a21; --panel2: #1f232c; --text: #e6e8ee; --muted: #8b93a7;
+    --border: #2a2f3a; --accent: #8aa6ff; --danger: #f07a6a; --primary: #e6e8ee; --on-primary: #0f1115;
+    --working: #4cc38a; --needs: #f07a6a; --review: #e5a54b; --done: #8b93a7;
+    --working-bg: #16271f; --needs-bg: #2b1b1b; --review-bg: #2a2216;`;
 
 // JSON is script-safe even if future wording or a token contains markup.
 function scriptJSON(value: unknown): string {
@@ -18,12 +20,27 @@ function textHTML(value: string): string {
 
 export function renderLocked(): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Codec</title>
-<style>:root{color-scheme:light;--bg:#f6f7f9;--text:#1b1f27}
+<style>:root{color-scheme:light;--bg:#f6f5f1;--text:#1c1c1a}
 @media (prefers-color-scheme: dark){:root{color-scheme:dark;--bg:#0f1115;--text:#e6e6e6}}
 body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--text);display:grid;place-items:center;height:100vh;margin:0;padding:24px}</style></head>
 <body><div><h2>${textHTML(S.locked.title)}</h2><p>${textHTML(S.locked.hint)}</p></div></body></html>`;
 }
 
+// Stroke icons for the sidebar links, drawn on the same 16px grid as icon() in the page script.
+const NAV_ICONS: Record<string, string> = {
+  home: "M2 7.5 8 2.5l6 5M3.5 6.5v7h9v-7M6.5 13.5v-4h3v4",
+  helpers: "M8 1.5v2M4 5.5h8a1.5 1.5 0 0 1 1.5 1.5v4.5A1.5 1.5 0 0 1 12 13H4a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 4 5.5zM6 9h.01M10 9h.01",
+  projects: "M1.5 4.5A1.5 1.5 0 0 1 3 3h3l1.5 1.5H13a1.5 1.5 0 0 1 1.5 1.5v5.5A1.5 1.5 0 0 1 13 13H3a1.5 1.5 0 0 1-1.5-1.5z",
+  teams: "M6 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM1.5 13.5c.4-2.4 2.2-3.8 4.5-3.8s4.1 1.4 4.5 3.8M11 2.7a2.5 2.5 0 0 1 0 4.6M12.5 9.9c1 .6 1.8 1.9 2 3.6",
+  specialists: "M8 1.5l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.3l-3.8 2 .7-4.3-3.1-3 4.3-.6z",
+  skills: "M3 2.5h7.5A2.5 2.5 0 0 1 13 5v8.5H5.5A2.5 2.5 0 0 1 3 11zM3 11a2.5 2.5 0 0 1 2.5-2.5H13",
+  collapse: "M2.5 2.5h11v11h-11zM6 2.5v11M10.5 6 8.5 8l2 2",
+  accounts: "M10.5 8.5a3 3 0 1 0-2.9-2.2L2.5 11.5v2h2v-1.5H6v-1.5h1.5l1.2-1.2c.5.2 1.1.2 1.8.2zM11 4.5h.01",
+  setup: "M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4",
+};
+function navIcon(name: string): string {
+  return `<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="${NAV_ICONS[name]}"/></svg>`;
+}
 export function renderPage(token: string): string {
   return String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -32,9 +49,10 @@ ${THEME_BOOT}
 <style>
 :root {
   color-scheme: light;
-  --bg: #f6f7f9; --panel: #ffffff; --panel2: #eef0f4; --text: #1b1f27; --muted: #667085;
-  --border: #dde1e8; --accent: #3b6cf6; --danger: #d14343;
-  --working: #3b6cf6; --needs: #e0802a; --review: #8b5cf6; --done: #22a06b;
+  --bg: #f6f5f1; --side: #ecebe6; --panel: #ffffff; --panel2: #f0efea; --text: #1c1c1a; --muted: #6b6a65;
+  --border: #e0ded7; --accent: #2d5bb5; --danger: #a8322d; --primary: #1c1c1a; --on-primary: #ffffff;
+  --working: #2e6b4e; --needs: #a8322d; --review: #9a5b00; --done: #6b6a65;
+  --working-bg: #e7f0ea; --needs-bg: #faeeec; --review-bg: #fbf2e6;
 }
 /* Dark: chosen explicitly, or auto (no data-theme) while the OS is dark. */
 :root[data-theme="dark"] {
@@ -45,117 +63,269 @@ ${THEME_BOOT}
     ${DARK_VARS}
   }
 }
-header .theme { margin-left: auto; }
-header .theme select { padding: 4px 8px; }
-header .err { margin-left: 0; }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 100vh; }
 a { color: inherit; text-decoration: none; }
-header { display: flex; align-items: center; gap: 24px; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1; }
-header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+/* The header is the left sidebar: brand, navigation, live counts and theme. */
+header { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px; padding: 18px 8px 14px; background: var(--side); border-right: 1px solid var(--border); overflow-y: auto; }
+header .brand { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin: 0 0 14px 10px; }
+header h1 { font-size: 16px; margin: 0; }
+.sidetoggle { display: grid; place-items: center; padding: 5px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+.sidetoggle:hover { color: var(--text); background: var(--panel); }
+/* Collapsed: an icon rail. Wide windows only; the phone layout is a top bar. */
+@media (min-width: 761px) {
+  :root[data-sidebar="collapsed"] body:not(.full) { grid-template-columns: 52px minmax(0, 1fr); }
+  :root[data-sidebar="collapsed"] header .brand { flex-direction: column; margin: 0 0 14px; }
+  :root[data-sidebar="collapsed"] header h1, :root[data-sidebar="collapsed"] nav a span, :root[data-sidebar="collapsed"] header .stat,
+  :root[data-sidebar="collapsed"] header .theme, :root[data-sidebar="collapsed"] header .profile .who { display: none; }
+  :root[data-sidebar="collapsed"] nav a { justify-content: center; padding: 8px 0; }
+  :root[data-sidebar="collapsed"] .sidetoggle svg { transform: scaleX(-1); }
+  :root[data-sidebar="collapsed"] header .foot { padding: 14px 0 0; align-items: center; }
+  :root[data-sidebar="collapsed"] header .profile { margin: 12px 0 0; padding: 6px; border-top: 0; border-radius: 50%; }
+}
+nav { display: flex; flex-direction: column; gap: 2px; }
+nav a { display: flex; align-items: center; gap: 8px; padding: 6px 10px; color: var(--muted); }
+nav a:hover { color: var(--text); }
+nav a.on { background: var(--panel); color: var(--text); font-weight: 500; box-shadow: 0 1px 2px #00000012; }
+header .foot { margin-top: auto; display: flex; flex-direction: column; gap: 4px; padding: 14px 10px 0; font-size: 12px; }
 header .stat { color: var(--muted); }
-header .stat b { color: var(--text); font-size: 16px; margin-right: 4px; }
-header .err { margin-left: auto; color: var(--danger); }
-main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
-h2 { font-size: 15px; margin: 24px 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .6px; }
+header .stat b { color: var(--text); margin-right: 4px; }
+header .theme { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+header .theme select { padding: 3px 6px; font-size: 12px; }
+header .profile { display: flex; align-items: center; gap: 10px; margin: 12px -4px 0; padding: 8px; border-top: 1px solid var(--border); }
+header .profile:hover, header .profile.on { background: var(--panel); }
+header .profile .who { display: flex; flex-direction: column; min-width: 0; }
+header .profile b { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none; }
+.avatar svg { width: 16px; height: 16px; display: block; }
+/* Full-window pages (Profile) hide the app sidebar but keep the connection message. */
+body.full { grid-template-columns: minmax(0, 1fr); }
+body.full header { display: contents; }
+body.full header > :not(.err) { display: none; }
+#app:has(> .settings) { padding: 0; max-width: none; }
+.settings { display: grid; grid-template-columns: 240px minmax(0, 720px); gap: 48px; max-width: 1060px; margin: 0 auto; padding: 72px 32px 48px; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; align-self: start; }
+.settings-nav a { display: flex; align-items: center; gap: 12px; padding: 10px 14px; color: var(--muted); font-weight: 500; }
+.settings-nav a:hover { color: var(--text); }
+.settings-nav a.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px #00000012; }
+.settings-nav a.back { font-size: 13px; font-weight: 400; margin-bottom: 12px; }
+.icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.settings-body h1 { font: 400 30px/1.2 Georgia, "Times New Roman", serif; }
+.settings-body h2 { margin: 0; }
+.settings-body .lede { color: var(--muted); margin: 6px 0 0; }
+.settings-body hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
+.settings-form { display: flex; flex-direction: column; gap: 18px; align-items: flex-start; }
+.settings-form hr { align-self: stretch; margin: 6px 0; }
+.settings-form label.field, .settings-form p { width: min(100%, 540px); }
+.settings label.field > span:first-child { font: 500 12px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase; }
+.settings input { padding: 10px 14px; }
+button.savebtn::before { content: "✓"; }
+.signins { margin: 16px 0 12px; }
+header .err { position: fixed; right: 16px; bottom: 16px; max-width: min(420px, calc(100vw - 32px)); background: var(--panel); color: var(--danger); border: 1px solid var(--border); padding: 10px 14px; box-shadow: 0 6px 24px #0000001f; z-index: 5; font-size: 13px; }
+header .err:empty { display: none; }
+main { min-width: 0; }
+#app { padding: 28px 32px 48px; max-width: 1400px; }
+#app:has(> .split) { padding: 0; max-width: none; }
+h1 { font-size: 22px; margin: 0; font-weight: 600; }
+h2 { font-size: 15px; margin: 26px 0 10px; font-weight: 600; }
 .crumbs { color: var(--muted); margin-bottom: 8px; }
 .crumbs a:hover { color: var(--accent); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: block; }
-a.card:hover { border-color: var(--accent); }
+.card { background: var(--panel); border: 1px solid var(--border); padding: 12px 14px; display: block; }
+a.card:hover { border-color: var(--muted); }
 .card .title { font-weight: 600; font-size: 15px; }
 .card .sub { color: var(--muted); font-size: 12px; word-break: break-all; }
-.counts { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
-.pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; background: var(--panel2); }
-.pill.working { color: var(--working); } .pill.needsYou { color: var(--needs); }
-.pill.inReview { color: var(--review); } .pill.done { color: var(--done); }
-table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-th { color: var(--muted); font-weight: 500; font-size: 12px; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--panel); border: 1px solid var(--border); overflow: hidden; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tbody tr:last-child td { border-bottom: 0; }
+th { color: var(--muted); font-weight: 500; font-size: 13px; }
 tr.click { cursor: pointer; } tr.click:hover td { background: var(--panel2); }
 td.task { max-width: 480px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .state { font-weight: 600; }
 .state.running { color: var(--working); } .state.timed_out, .state.failed, .state.stopped { color: var(--needs); } .state.done { color: var(--done); }
-.board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; align-items: start; }
-.lane { background: var(--panel2); border-radius: 10px; padding: 10px; min-height: 120px; }
-.lane h3 { margin: 2px 4px 10px; font-size: 13px; display: flex; justify-content: space-between; }
-.lane.working h3 { color: var(--working); } .lane.needsYou h3 { color: var(--needs); }
-.lane.inReview h3 { color: var(--review); } .lane.done h3 { color: var(--done); }
-.lane .card { margin-bottom: 8px; }
+.board { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 14px; align-items: start; }
+.lane { min-height: 120px; }
+.lane h3 { margin: 0 2px 10px; font-size: 14px; font-weight: 500; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+.lane h3::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--done); flex: none; }
+.lane.working h3::before { background: var(--working); } .lane.needsYou h3::before { background: var(--needs); }
+.lane.inReview h3::before { background: var(--review); }
+.lane .card { margin-bottom: 10px; }
 .lane .task { margin: 4px 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.lanecard.needsYou { border-color: color-mix(in srgb, var(--needs) 45%, var(--border)); }
+.lanecard.inReview { border-color: color-mix(in srgb, var(--review) 45%, var(--border)); }
 .empty { color: var(--muted); font-size: 12px; padding: 4px; }
-form.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
-input, select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
+form.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: var(--panel); border: 1px solid var(--border); padding: 10px; }
+input, select, textarea { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); padding: 7px 10px; }
 input[type=text] { flex: 1; min-width: 200px; }
 textarea { flex: 1; min-width: 260px; min-height: 38px; resize: vertical; }
-button { font: inherit; border: 1px solid var(--border); background: var(--panel2); color: var(--text); border-radius: 6px; padding: 7px 14px; cursor: pointer; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button, a.btn { font: inherit; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); padding: 7px 14px; cursor: pointer; }
+button:hover, a.btn:hover { border-color: var(--muted); }
+button.primary, a.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
 button.danger { color: var(--danger); }
 button:disabled { opacity: .5; cursor: default; }
-.kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; background: var(--panel); border: 1px solid var(--border); padding: 14px; }
 .kv div:nth-child(odd) { color: var(--muted); word-break: normal; overflow-wrap: normal; }
 .kv div { word-break: break-all; }
 .fulltask { white-space: pre-wrap; word-break: normal; }
-pre.log { background: #0b0d11; color: #d6dae3; border-radius: 10px; padding: 14px; max-height: 60vh; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
-.actions { display: flex; gap: 8px; margin: 12px 0; }
+pre.log { background: #0b0d11; color: #d6dae3; padding: 14px; max-height: 60vh; overflow: auto; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; margin: 0; }
+.actions { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .headrow { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .muted { color: var(--muted); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-nav { display: flex; gap: 4px; }
-nav a { padding: 5px 10px; border-radius: 6px; color: var(--muted); }
-nav a:hover { color: var(--text); } nav a.on { background: var(--panel2); color: var(--text); }
 a.link { color: var(--accent); } a.link:hover { text-decoration: underline; }
-.summary { display: flex; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
-.card.stat { min-width: 140px; color: var(--muted); } .card.stat b { color: var(--text); font-size: 20px; margin-right: 4px; }
 .stackcards { display: flex; flex-direction: column; gap: 12px; }
 .card.block { padding: 14px 16px; }
 .card.block .sub { margin: 2px 0 10px; }
 table.inner { margin: 8px 0; }
 details { margin-top: 8px; } summary { cursor: pointer; color: var(--accent); }
-form.stack { display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-top: 8px; }
+form.stack { display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--border); padding: 12px; margin-top: 8px; }
 .row2 { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .checks { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; }
 label.check { cursor: pointer; white-space: nowrap; }
 button.small { padding: 3px 10px; font-size: 12px; }
 .actions.tight { margin: 0; }
 .kv.compact { grid-template-columns: 100px 1fr; padding: 10px; margin-top: 6px; }
-.pill.guess { color: var(--needs); }
 table.grid2 th.c, table.grid2 td.c { text-align: center; }
 .dot.own { color: var(--done); } .dot.via { color: var(--review); }
 .row.top { margin-top: 8px; }
-@media (max-width: 900px) { .board { grid-template-columns: 1fr 1fr; } }
-
-header { flex-wrap: wrap; gap: 12px; }
-header .theme { margin-left: auto; }
 label.field { display: flex; flex-direction: column; gap: 4px; min-width: 180px; }
 label.field textarea { min-height: 120px; width: 100%; }
 .hint { color: var(--muted); font-size: 12px; }
+#app > .hint, .pane > .hint { display: block; margin: 4px 0; }
 .message { white-space: pre-wrap; color: var(--danger); margin: 6px 0; }
 .message:empty { display: none; }
 [hidden] { display: none !important; }
-.message.success { color: var(--done); }
-.folder-panel { border: 1px solid var(--border); padding: 12px; border-radius: 8px; margin-top: 8px; }
+.message.success { color: var(--working); }
+.folder-panel { border: 1px solid var(--border); padding: 12px; margin-top: 8px; }
 .folder-list { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0; max-height: 260px; overflow: auto; }
 .folder-current { overflow-wrap: anywhere; }
-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; width: min(600px, 94vw); padding: 24px; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); width: min(600px, 94vw); padding: 24px; }
 dialog::backdrop { background: #0008; }
 dialog h2 { margin-top: 0; }
 .setup-tool { margin: 12px 0; }
 .fix { white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--panel2); user-select: all; }
-button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, a:focus-visible, summary:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .table-scroll { overflow-x: auto; }
-@media (max-width: 650px) { header { position: static; padding: 12px; } main { padding: 12px; } .board { grid-template-columns: 1fr; } nav { flex-wrap: wrap; } }
+/* Full-height pages: a top bar across, then columns (list | main | side panel). */
+.split { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+.split.helpers { grid-template-columns: minmax(0, 1fr) 340px; }
+.split.projects { grid-template-columns: 280px minmax(0, 1fr) 300px; }
+.split.projects.index { grid-template-columns: 280px minmax(0, 1fr); }
+.topbar { grid-column: 1 / -1; min-height: 73px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 18px 32px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.topactions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.pane { padding: 24px 32px 48px; min-width: 0; }
+.pane > h2:first-child { margin-top: 0; }
+.detail { background: var(--panel); border-left: 1px solid var(--border); padding: 24px; display: flex; flex-direction: column; min-width: 0; }
+.detail h2 { margin: 22px 0 8px; font-size: 14px; }
+.detail .who h2 { margin: 0; font-size: 18px; }
+.plainlist { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.plist { padding: 20px 16px; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--panel) 45%, var(--bg)); display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.plist .label { color: var(--muted); font-size: 13px; padding: 0 4px; }
+.pcard .sub { word-break: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detail .path { overflow-wrap: anywhere; }
+.pcard.on { border-color: var(--muted); box-shadow: 0 1px 3px #00000014; }
+.bar { height: 6px; background: var(--panel2); overflow: hidden; margin: 10px 0 6px; }
+.bar i { display: block; height: 100%; background: var(--working); }
+.bar.needsYou i { background: var(--needs); } .bar.inReview i { background: var(--review); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-size: 13px; padding: 3px 11px; background: var(--panel2); border: 1px solid transparent; color: var(--text); }
+.chip:hover { border-color: var(--border); }
+.chip.on { background: var(--primary); color: var(--on-primary); }
+.chip.working { background: var(--working-bg); color: var(--working); } .chip.needsYou { background: var(--needs-bg); color: var(--needs); }
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+.statcard { background: var(--panel); border: 1px solid var(--border); padding: 14px 16px; }
+.statcard span { display: block; color: var(--muted); font-size: 13px; }
+.statcard b { display: block; font-size: 26px; font-weight: 600; margin-top: 2px; }
+.statcard.inReview b { color: var(--review); } .statcard.needsYou b { color: var(--needs); }
+.status { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; }
+.status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: none; }
+.status.working { color: var(--working); }
+.status.inReview { color: var(--review); } .status.inReview::before { background: linear-gradient(90deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
+.status.needsYou { color: var(--needs); } .status.needsYou::before { border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.status.idle { color: var(--muted); } .status.idle::before { background: none; box-shadow: inset 0 0 0 1.5px currentColor; }
+table.helpers .name { font-weight: 600; }
+table.helpers td.now { min-width: 200px; max-width: 360px; }
+table.helpers .status, table.helpers td.nowrap { white-space: nowrap; }
+table.helpers tr.on td { background: var(--panel2); }
+table.helpers tr.alert td { background: var(--needs-bg); }
+.callout { border: 1px solid var(--border); padding: 14px; margin-top: 16px; }
+.callout b { display: block; }
+.callout p { margin: 4px 0 12px; overflow-wrap: anywhere; }
+.callout .actions { margin: 0; }
+.callout.working { background: var(--working-bg); border-color: color-mix(in srgb, var(--working) 30%, transparent); } .callout.working b { color: var(--working); }
+.callout.needsYou { background: var(--needs-bg); border-color: color-mix(in srgb, var(--needs) 30%, transparent); } .callout.needsYou b { color: var(--needs); }
+.callout.inReview { background: var(--review-bg); border-color: color-mix(in srgb, var(--review) 30%, transparent); } .callout.inReview b { color: var(--review); }
+.activity { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.activity li { overflow-wrap: anywhere; }
+.activity li.working:last-child { color: var(--working); } .activity li.needsYou:last-child { color: var(--needs); } .activity li.inReview:last-child { color: var(--review); }
+.compose { margin-top: auto; padding-top: 20px; display: flex; flex-direction: column; gap: 8px; }
+.compose input[type=text] { min-width: 0; }
+/* Home: greeting, teams beside what needs you, then the week's tasks. */
+.homehead { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.homehead h1 { font-size: 28px; }
+.homehead p { margin: 4px 0 0; color: var(--muted); }
+.home { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+.home > .wide { grid-column: 1 / -1; }
+.panel { background: var(--panel); border: 1px solid var(--border); padding: 18px 20px; min-width: 0; }
+.panel h2 { margin: 0; font-size: 16px; }
+.panel > .headrow { margin-bottom: 12px; }
+a.teamrow { display: block; padding: 14px 0 12px; border-top: 1px solid var(--border); }
+a.teamrow:hover .tname { text-decoration: underline; }
+.teamrow .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.teamrow .tname { font-weight: 600; }
+.teamrow .counts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px 12px; font-size: 13px; }
+.teamrow p { margin: 8px 0 0; }
+.notes { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
+.note { display: block; border: 1px solid var(--border); padding: 10px 12px; }
+a.note:hover { border-color: var(--muted); }
+.note.urgent { border-color: var(--text); }
+.note b { display: block; font-weight: 600; }
+.note span { display: block; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.note.needsYou b { color: var(--needs); } .note.inReview b { color: var(--review); }
+.week { display: grid; grid-template-columns: repeat(7, minmax(64px, 1fr)); gap: 8px; margin: 14px 0 8px; overflow-x: auto; }
+button.day { flex-direction: column; justify-content: center; gap: 0; padding: 10px 4px; }
+button.day span { color: var(--muted); font-size: 13px; }
+button.day b { font-size: 20px; font-weight: 600; }
+button.day small { color: var(--muted); font-size: 11px; min-height: 1.4em; }
+button.day.today span, button.day.on small { color: var(--text); font-weight: 600; }
+button.day.on { border: 2px solid var(--text); padding: 9px 3px; }
+table.due { border: 0; }
+table.due td { padding: 10px 12px 10px 0; }
+table.due tr:first-child td { border-top: 1px solid var(--border); }
+table.due td:first-child { font-weight: 600; white-space: nowrap; }
+@media (max-width: 1100px) {
+  .home { grid-template-columns: minmax(0, 1fr); }
+  .split.helpers, .split.projects, .split.projects.index { grid-template-columns: minmax(0, 1fr); }
+  .detail { border-left: 0; border-top: 1px solid var(--border); }
+  .plist { border-right: 0; border-bottom: 1px solid var(--border); }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .board { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 760px) {
+  body { grid-template-columns: minmax(0, 1fr); }
+  header { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--border); }
+  header .brand { margin: 0 8px 0 0; }
+  .sidetoggle { display: none; }
+  nav { flex-direction: row; flex-wrap: wrap; }
+  header .foot { margin-top: 0; flex-direction: row; flex-wrap: wrap; gap: 4px 12px; padding: 0; width: 100%; }
+  header .theme { margin-top: 0; }
+  #app { padding: 16px; } .topbar, .pane, .detail { padding: 16px; }
+  .settings { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 24px 16px; }
+  .board { grid-template-columns: 1fr; }
+  .split { min-height: 0; }
+}
 </style></head><body>
 <header>
-<h1><a href="#/">Codec</a></h1>
+<div class="brand"><h1><a href="#/">Codec</a></h1><button type="button" class="sidetoggle" id="sidetoggle" data-testid="sidebar-toggle" aria-label="${textHTML(S.nav.collapse)}" title="${textHTML(S.nav.collapse)}" aria-expanded="true">${navIcon("collapse")}</button></div>
 <nav>
-<a href="#/" data-page="projects" data-testid="nav-projects">${textHTML(S.nav.projects)}</a>
-<a href="#/teams" data-page="teams" data-testid="nav-teams">${textHTML(S.nav.teams)}</a>
-<a href="#/specialists" data-page="specialists" data-testid="nav-specialists">${textHTML(S.nav.specialists)}</a>
-<a href="#/skills" data-page="skills" data-testid="nav-skills">${textHTML(S.nav.skills)}</a>
-<a href="#/accounts" data-page="accounts" data-testid="nav-accounts">${textHTML(S.nav.accounts)}</a>
-<a href="#/setup" data-page="setup" data-testid="setup-open">${textHTML(S.nav.setup)}</a>
+<a href="#/" data-page="home" title="${textHTML(S.nav.home)}" data-testid="nav-home">${navIcon("home")}<span>${textHTML(S.nav.home)}</span></a>
+<a href="#/helpers" data-page="helpers" title="${textHTML(S.nav.helpers)}" data-testid="nav-helpers">${navIcon("helpers")}<span>${textHTML(S.nav.helpers)}</span></a>
+<a href="#/projects" data-page="projects" title="${textHTML(S.nav.projects)}" data-testid="nav-projects">${navIcon("projects")}<span>${textHTML(S.nav.projects)}</span></a>
+<a href="#/teams" data-page="teams" title="${textHTML(S.nav.teams)}" data-testid="nav-teams">${navIcon("teams")}<span>${textHTML(S.nav.teams)}</span></a>
+<a href="#/specialists" data-page="specialists" title="${textHTML(S.nav.specialists)}" data-testid="nav-specialists">${navIcon("specialists")}<span>${textHTML(S.nav.specialists)}</span></a>
+<a href="#/skills" data-page="skills" title="${textHTML(S.nav.skills)}" data-testid="nav-skills">${navIcon("skills")}<span>${textHTML(S.nav.skills)}</span></a>
+<a href="#/accounts" data-page="accounts" title="${textHTML(S.nav.accounts)}" data-testid="nav-accounts">${navIcon("accounts")}<span>${textHTML(S.nav.accounts)}</span></a>
 </nav>
+<div class="foot">
 <span class="stat"><b id="teamsN">–</b>${textHTML(S.common.teamCount)}</span>
 <span class="stat"><b id="running" title="${textHTML(S.wording.aiHelper)}">–</b>${textHTML(S.common.running)}</span>
 <span class="stat" title="${textHTML(S.wording.memoryHint)}"><b id="memory">–</b>${textHTML(S.common.memory)}</span>
@@ -165,6 +335,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 <option value="light">${textHTML(S.theme.light)}</option>
 <option value="dark">${textHTML(S.theme.dark)}</option>
 </select></label>
+<a href="#/profile" class="profile" id="profile-link" data-testid="profile-open" title="${textHTML(S.profile.open)}">
+<span class="avatar" aria-hidden="true"><span id="avatar-icon"><svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="5.5" r="3"/><path d="M2 14.5c0-3 2.7-5 6-5s6 2 6 5z"/></svg></span><span id="avatar-initials"></span></span>
+<span class="who"><b id="profile-name">${textHTML(S.profile.title)}</b><span class="muted" id="profile-sub" hidden>${textHTML(S.profile.title)}</span></span>
+</a>
+</div>
 <span class="err" id="err" role="status" data-testid="connection-message" data-message-key="connection"></span>
 </header>
 <main id="app"></main>
@@ -174,6 +349,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 const S = ${scriptJSON(S)};
 const TOKEN = ${scriptJSON(token)};
 const THEME_KEY = ${JSON.stringify(THEME_KEY)};
+const SIDEBAR_KEY = ${JSON.stringify(SIDEBAR_KEY)};
 const app = document.getElementById("app");
 const enc = encodeURIComponent;
 const folders = new Map();
@@ -187,6 +363,12 @@ let busy = 0;
 let lastRoute = null;
 let tracking = null;
 let dialogTrigger = null;
+let helperTeam = "";
+let helperPick = "";
+let homeDay = "";
+let homeMode = "calendar";
+let projectAddOpen = false;
+let profileReturn = "#/";
 const LANES = [["working", S.tasks.working], ["needsYou", S.tasks.needsYou], ["inReview", S.tasks.inReview], ["done", S.tasks.done]];
 function fmt(text, values) { return text.replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? "")); }
 function h(spec, props, ...kids) {
@@ -219,8 +401,8 @@ function field(id, label, props = {}, tag = "input") {
 }
 function hint(text) { return h("span.hint", { text }); }
 function cardLine(text) { return text ? h("div.hint", { text: text + "\n" }) : null; }
-function disclosure(id, title, child, key) {
-  return h("details", { id: id + (key ? "-" + key : ""), "data-key": key },
+function disclosure(id, title, child, key, open) {
+  return h("details", { id: id + (key ? "-" + key : ""), "data-key": key, open },
     h("summary", { "data-testid": id, "data-key": key, text: title }), child);
 }
 function messageContent(key, m) {
@@ -237,7 +419,7 @@ function messageContent(key, m) {
         tell(key, "");
       })) : null,
     e?.code === "project_registered" ? h("a.link", { href: "#/project/" + enc(e.params?.name), text: fmt(S.wording.openProject, { name: e.params?.name }) }) : null,
-    e?.code === "tool_unavailable" || e?.code === "spawn_failed" || e?.code === "identity_missing" ? h("a.link", { href: "#/setup", text: S.nav.setup }) : null,
+    e?.code === "tool_unavailable" || e?.code === "spawn_failed" || e?.code === "identity_missing" ? h("a.link", { href: "#/profile/setup", text: S.nav.setup }) : null,
     e?.code?.startsWith("account_") ? h("a.link", { href: "#/accounts", text: S.accounts.open }) : null,
     e?.links?.map((link) => h("a.link", { href: "#/run/" + enc(link.id), text: snippet(link.task, 40) })) || null,
     e?.code === "skill_exists" ? button("skill-replace", S.wording.replace, () => showDialog(
@@ -363,7 +545,7 @@ function mem(bytes) {
 }
 function snippet(text, length = 120) { text = text.replace(/\s+/g, " ").trim(); return text.length > length ? text.slice(0, length) + "…" : text; }
 function sourceText(s, project) { return s.source === "specialist" ? S.members.fromSpecialist : s.source === "project" ? fmt(S.members.fromProject, { project: s.project || project || S.tasks.project }) : S.members.own; }
-function crumbs(...items) { return h("div.crumbs", {}, h("a", { href: "#/", text: S.nav.projects }), items.map((x) => [" / ", x])); }
+function crumbs(...items) { return h("div.crumbs", {}, h("a", { href: "#/projects", text: S.nav.projects }), items.map((x) => [" / ", x])); }
 function table(headers, rows) { return h("div.table-scroll", {}, h("table", {}, h("thead", {}, h("tr", {}, headers.map((t) => h("th", { text: t })))), h("tbody", {}, rows))); }
 function taskTable(runs, forMember = false) {
   return runs.length ? table([S.tasks.project, ...(forMember ? [] : [S.tasks.who, S.common.tool]), S.tasks.state, S.tasks.started, S.tasks.task], runs.map((r) => h("tr", {},
@@ -476,27 +658,40 @@ function removeButton(kind, name, route, key, label, after) {
   return button(kind + "-remove", label, (e) => removeItem(kind, name, route, key, e.currentTarget, after), { class: "danger", "data-key": name });
 }
 
-async function setup(seq) {
-  const settings = await api("settings");
-  const identityForm = h("form.stack", { "data-testid": "identity-form", onsubmit: (e) => {
+// Shared by Setup (a card) and the profile's Info tab (plain, under the page heading).
+function identityForm(settings, plain = false) {
+  const form = h(plain ? "form.settings-form" : "form.stack", { "data-testid": "identity-form", onsubmit: (e) => {
     e.preventDefault(); act("identity", e.submitter, async () => {
-      await api("settings", { identity: { name: val(identityForm, "identity-name"), email: val(identityForm, "identity-email") } });
+      await api("settings", { identity: { name: val(form, "identity-name"), email: val(form, "identity-email") } });
     });
-  } }, h("h3", { text: S.setup.identity }), hint(S.setup.identityHint),
+  } }, plain ? null : h("h3", { text: S.setup.identity }), plain ? null : hint(S.setup.identityHint),
     setupState.identityReady ? null : h("p", { "data-testid": "identity-missing", text: S.setup.identityMissing }),
     field("identity-name", S.setup.identityName, { value: settings.identity.name, required: true, autocomplete: "name" }),
     field("identity-email", S.setup.identityEmail, { value: settings.identity.email, required: true, type: "email", autocomplete: "email" }),
-    submit("identity-save", S.common.save), message("identity"));
-  const working = setupState.tools.filter((t) => toolOK(t.tool));
-  const needed = [];
-  if (!setupState.ready) needed.push(S.setup.notReady);
-  if (!setupState.identityReady) needed.push(S.setup.identityNeeded);
-  const status = needed.length ? needed.join(" ") : working.length === 1
-    ? fmt(S.setup.oneReady, { tool: toolName(working[0].tool) }) : S.setup.ready;
-  const rows = setupState.tools.map((t) => {
+    plain ? h("hr") : null,
+    plain ? h("button.savebtn", { type: "submit", "data-testid": "identity-save", text: S.profile.saveChanges }) : submit("identity-save", S.common.save),
+    message("identity"));
+  return form;
+}
+// Builds stroke icons. SVG needs its own namespace, so h() can't make them; the
+// namespace is read from the sidebar's avatar icon to keep URLs out of the page.
+function icon(name) {
+  const paths = { user: "M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2.5 14.5c.5-2.8 2.7-4.5 5.5-4.5s5 1.7 5.5 4.5", back: "M10 3 5 8l5 5",
+    accounts: "M10.5 8.5a3 3 0 1 0-2.9-2.2L2.5 11.5v2h2v-1.5H6v-1.5h1.5l1.2-1.2c.5.2 1.1.2 1.8.2zM11 4.5h.01",
+  setup: "M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" };
+  const ns = document.querySelector("#avatar-icon svg").namespaceURI;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("class", "icon"); svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", paths[name]);
+  svg.append(path);
+  return svg;
+}
+function toolCards(okText = S.setup.ok) {
+  return setupState.tools.map((t) => {
     const fix = t.fix || S.setup.fixMissing;
     return h("section.card.setup-tool", { "data-testid": "setup-tool", "data-key": t.tool },
-      h("h3", { text: toolName(t.tool) }), h("p", { text: toolOK(t.tool) ? S.setup.ok : toolProblem(t.tool) }),
+      h("h3", { text: toolName(t.tool) }), h("p", { text: toolOK(t.tool) ? okText : toolProblem(t.tool) }),
       t.version ? h("span.muted", { text: t.version }) : null,
       toolOK(t.tool) ? null : h("div", {}, h("pre.fix", { "data-testid": "setup-fix", text: fix }),
         button("setup-copy", S.common.copy, async () => {
@@ -504,11 +699,45 @@ async function setup(seq) {
           catch (_) { tell("setup-" + t.tool, S.common.copyFailed); }
         }, { "data-key": t.tool }), message("setup-" + t.tool)));
   });
-  render(seq, h("section", { "data-testid": "setup-wizard" }, heading(S.setup.title), h("p", { text: S.setup.hint }),
-    h("p", { "data-testid": "setup-status", text: status }), identityForm, rows,
+}
+// The profile's Setup tab: the first-run checklist, also opened automatically until setup is finished.
+function setupTab(settings) {
+  const working = setupState.tools.filter((t) => toolOK(t.tool));
+  const needed = [];
+  if (!setupState.ready) needed.push(S.setup.notReady);
+  if (!setupState.identityReady) needed.push(S.setup.identityNeeded);
+  const status = needed.length ? needed.join(" ") : working.length === 1
+    ? fmt(S.setup.oneReady, { tool: toolName(working[0].tool) }) : S.setup.ready;
+  return h("div", { "data-testid": "setup-wizard" },
+    h("p", { "data-testid": "setup-status", text: status }), identityForm(settings), toolCards(),
     button("setup-check", S.setup.check, (e) => act("setup", e.currentTarget, async () => { setupState = await api("setup?fresh=1"); }, "")),
     button("setup-continue", S.setup.continue, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, ""), { disabled: !setupState.ready }),
-    button("setup-skip", S.setup.skip, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, "")), message("setup")));
+    button("setup-skip", S.setup.skip, (e) => act("setup", e.currentTarget, async () => { await api("settings", { setupFinished: true }); go("#/"); }, "")), message("setup"));
+}
+// Each profile tab is [key, label, icon, description, renderer]; add more tabs here.
+function profileTabs() {
+  return [["info", S.profile.info, "user", S.profile.infoHint, profileInfo], ["setup", S.nav.setup, "setup", S.setup.hint, setupTab]];
+}
+function profileInfo(settings) {
+  return [identityForm(settings, true), h("hr"), h("h2", { text: S.profile.signIns }), h("p.lede", { text: S.profile.signInsHint }),
+    h("div.signins", {}, toolCards(S.profile.signedIn)),
+    button("profile-check", S.profile.recheck, (e) => act("profile-check", e.currentTarget, async () => { setupState = await api("setup?fresh=1"); }, "")),
+    message("profile-check")];
+}
+// A full-window page: its own section list on the left instead of the app sidebar.
+async function profile(seq, tab) {
+  const settings = await api("settings");
+  const tabs = profileTabs();
+  const [key, title, , lede, paint] = tabs.find(([k]) => k === tab) || tabs[0];
+  render(seq, h("div.settings", {},
+    h("nav.settings-nav", { "aria-label": S.profile.tabs },
+      h("a.back", { href: profileReturn, "data-testid": "profile-back" }, icon("back"), S.profile.back),
+      tabs.map(([k, text, name]) => h("a" + (k === key ? ".on" : ""), { href: "#/profile/" + k, "aria-current": k === key ? "page" : undefined,
+        "data-testid": "profile-tab", "data-key": k }, icon(name), text))),
+    h("section.settings-body", { "data-testid": "profile-" + key }, h("h1", { text: title }), h("p.lede", { text: lede }), h("hr"), paint(settings))));
+}
+function initials(name) {
+  return (name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2).map((word) => [...word][0]).join("").toUpperCase();
 }
 
 function currentAccounts() { return typeof accountsState === "undefined" ? { accounts: [], choices: {}, defaults: {} } : accountsState; }
@@ -599,14 +828,233 @@ function projectAddForm() {
   paintTracking(form);
   return form;
 }
+function ago(iso) {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!iso || !Number.isFinite(minutes)) return S.common.unknown;
+  if (minutes < 1) return S.time.now;
+  if (minutes < 60) return fmt(S.time.minutes, { count: minutes });
+  if (minutes < 1440) return fmt(S.time.hours, { count: Math.round(minutes / 60) });
+  return fmt(S.time.days, { count: Math.round(minutes / 1440) });
+}
+// One row per team helper, plus quick helpers whose task still needs attention. Runs arrive newest first.
+function helperRows(teamList, runs) {
+  const rows = [];
+  for (const t of teamList) for (const m of t.members) {
+    const name = m.member || m.name;
+    const mine = runs.filter((r) => r.team === t.name && r.member === name);
+    rows.push({ key: t.name + "/" + name, name, team: t.name, tool: m.tool, broken: !!m.error, projects: m.projects || t.projects,
+      sub: m.error ? S.helpers.broken : m.specialty || S.members.worker, href: memberHref(t.name, name),
+      run: mine.find((r) => r.state === "running") || mine[0] });
+  }
+  for (const r of runs) if (!r.team && r.lane !== "done") rows.push({ key: "run:" + r.runId, name: S.helpers.quick, tool: r.agent, quick: true,
+    projects: [r.project], sub: toolName(r.agent), href: "#/run/" + enc(r.runId), run: r });
+  return rows;
+}
+function helperStatus(row) {
+  if (row.broken) return ["needsYou", S.helpers.broken];
+  const lane = row.run?.lane;
+  return lane === "working" || lane === "needsYou" || lane === "inReview" ? [lane, LANES.find(([k]) => k === lane)[1]] : ["idle", S.members.idle];
+}
+function pickHelper(key) { helperPick = key; refresh(); }
+function helperTable(rows, picked) {
+  return h("div.table-scroll", {}, h("table.helpers", {}, h("thead", {}, h("tr", {}, [S.helpers.helper, S.tasks.state, S.helpers.current, S.tasks.project, S.tasks.started].map((t) => h("th", { text: t })))),
+    h("tbody", {}, rows.map((row) => {
+      const [k, text] = helperStatus(row);
+      const active = k !== "idle" && row.run;
+      return h("tr.click" + (row === picked ? ".on" : "") + (k === "needsYou" ? ".alert" : ""), { "data-testid": "helper-row", "data-key": row.key, tabindex: "0",
+        "aria-selected": String(row === picked), onclick: () => pickHelper(row.key),
+        onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickHelper(row.key); } } },
+      h("td", {}, h("div.name", { text: row.name }), h("div.hint", { text: row.team ? row.sub + " · " + row.team : row.sub })),
+      h("td", {}, h("span.status." + k, { text })),
+      h("td.now", { text: active ? snippet(row.run.task, 90) : S.helpers.noTask }),
+      h("td.nowrap", { text: active ? row.run.project : S.wording.dash }),
+      h("td.muted.nowrap", { text: row.run ? ago(row.run.startedAt) : S.wording.dash }));
+    }))));
+}
+function helperCallout(row, k, r) {
+  if (row.broken) return h("div.callout.needsYou", {}, h("b", { text: S.helpers.broken }), h("p", { text: S.members.broken }),
+    h("div.actions", {}, h("a.btn.primary", { href: row.href, text: S.helpers.openHelper })));
+  if (k === "idle" || !r) return null;
+  const open = h("a.btn.primary", { href: "#/run/" + enc(r.runId), text: S.helpers.openTask });
+  const stop = k === "working" ? button("helper-stop", S.tasks.stop, () => showDialog(S.tasks.stopTitle, [fmt(S.tasks.stopEffect, { name: r.runId })], null,
+    () => api("runs/" + enc(r.runId) + "/stop", {}), undefined, S.tasks.stop), { class: "danger" }) : null;
+  const title = k === "working" ? S.helpers.workingOn : k === "inReview" ? S.tasks.inReview : S.tasks.needsYou;
+  const body = k === "inReview" ? S.wording.reviewHint : k === "needsYou" ? stateText(r) : r.project;
+  return h("div.callout." + k, {}, h("b", { text: title }), h("p", {}, k === "working" ? null : h("span", { text: body + " · " }), snippet(r.task, 200), k === "working" ? h("span.muted", { text: " · " + body }) : null),
+    h("div.actions", {}, open, stop));
+}
+function helperCompose(row) {
+  if (row.quick) return h("div.compose", {}, hint(S.helpers.quickHint));
+  if (row.broken) return null;
+  if (!row.projects.length) return h("div.compose", {}, hint(S.helpers.noProjects));
+  const key = "helper-" + row.key;
+  const where = h("select", { id: "helper-task-project", "data-testid": "helper-task-project", "aria-label": S.tasks.project }, row.projects.map((p) => h("option", { value: p, text: p })));
+  const form = h("form.compose", { "data-testid": "helper-task-form", onsubmit: (e) => {
+    e.preventDefault();
+    act(key, e.submitter, async () => {
+      await api("projects/" + enc(where.value) + "/runs", { member: row.key, task: val(form, "helper-task-text") });
+      clearForm(form);
+    }, S.helpers.started);
+  } }, row.projects.length > 1 ? where : null,
+    h("div.row2", {}, h("input", { id: "helper-task-text", "data-testid": "helper-task-text", type: "text", required: true,
+      "aria-label": S.tasks.task, placeholder: fmt(S.helpers.compose, { name: row.name }) }),
+      h("button.primary", { type: "submit", "data-testid": "helper-task-start", text: S.tasks.start, disabled: !toolOK(row.tool), title: toolOK(row.tool) ? undefined : toolProblem(row.tool) })),
+    message(key));
+  return form;
+}
+function helperDetail(row, r) {
+  const [k] = helperStatus(row);
+  const lines = r?.log ? r.log.split("\n").filter((line) => line.trim()).slice(-12) : [];
+  return [h("div.who", {}, h("h2", {}, h("a", { href: row.href, text: row.name })), hint(row.team ? row.sub + " · " + row.team : row.sub)),
+    helperCallout(row, k, r),
+    h("h2", { text: S.helpers.activity }), lines.length ? h("ul.activity", {}, lines.map((line) => h("li." + k, { text: snippet(line, 160) }))) : hint(S.helpers.noActivity),
+    r ? h("a.link.hint", { href: "#/run/" + enc(r.runId), text: S.helpers.fullActivity }) : null,
+    helperCompose(row)];
+}
+async function helpers(seq) {
+  const [teamList, state] = await Promise.all([api("teams"), api("state")]);
+  if (!teamList.some((t) => t.name === helperTeam)) helperTeam = "";
+  const rows = helperRows(teamList, state.runs).filter((row) => !helperTeam || row.team === helperTeam);
+  const picked = rows.find((row) => row.key === helperPick) || rows.find((row) => helperStatus(row)[0] !== "idle") || rows[0];
+  const detail = picked?.run ? await api("runs/" + enc(picked.run.runId)).catch(() => null) : null;
+  const counts = { working: 0, inReview: 0, idle: 0, needsYou: 0 };
+  for (const row of rows) counts[helperStatus(row)[0]]++;
+  const chip = (name, text) => button("helpers-team", text, () => { helperTeam = name; refresh(); },
+    { class: "chip" + (helperTeam === name ? " on" : ""), "data-key": name || undefined, "aria-pressed": String(helperTeam === name) });
+  render(seq, h("div.split.helpers", {},
+    h("div.topbar", {}, h("h1", { text: S.helpers.title }), teamList.length ? h("div.chips", {}, chip("", S.helpers.all), teamList.map((t) => chip(t.name, t.name))) : null,
+      h("div.topactions", {}, h("a.btn", { href: "#/projects", text: S.helpers.startTask }), h("a.btn.primary", { href: "#/teams", text: S.members.add }))),
+    h("section.pane", {}, h("div.stats", {}, [["working", S.tasks.working], ["inReview", S.tasks.inReview], ["idle", S.members.idle], ["needsYou", S.tasks.needsYou]]
+      .map(([k, text]) => h("div.statcard." + k, {}, h("span", { text }), h("b", { text: String(counts[k]) })))),
+      rows.length ? helperTable(rows, picked) : hint(S.helpers.empty)),
+    h("aside.detail", { "data-testid": "helper-detail" }, picked ? helperDetail(picked, detail) : hint(S.helpers.pick))));
+}
+
+function projectList(projects, active) {
+  return h("section.plist", {}, h("div.label", { text: S.projects.all }), projects.length ? projects.map((p) => {
+    const total = LANES.reduce((n, [k]) => n + p.lanes[k], 0);
+    const percent = total ? Math.round(p.lanes.done / total * 100) : 0;
+    const tone = p.lanes.needsYou ? "needsYou" : p.lanes.inReview ? "inReview" : "working";
+    const notes = total ? [fmt(S.projects.progress, { percent }), p.lanes.needsYou ? fmt(S.projects.needCount, { count: p.lanes.needsYou }) : "",
+      p.lanes.inReview ? fmt(S.projects.reviewCount, { count: p.lanes.inReview }) : ""].filter(Boolean).join(" · ") : S.projects.noTasks;
+    return h("a.card.pcard" + (p.name === active ? ".on" : ""), { href: "#/project/" + enc(p.name), "aria-current": p.name === active ? "page" : undefined },
+      h("div.title", { text: p.name }), h("div.sub", { text: p.path, title: p.path }), h("div.bar." + tone, {}, h("i", { style: "width:" + percent + "%" })), h("div.hint", { text: notes }));
+  }) : hint(S.projects.empty));
+}
+function plural(count, one, many) { return fmt(count === 1 ? one : many, { count }); }
+function dayKey(d) { return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
+// Monday through Sunday of the week containing now, at local midnight.
+function weekOf(now) {
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (now.getDay() + 6) % 7);
+  return Array.from({ length: 7 }, (_, i) => new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i));
+}
+function greeting(now, name) {
+  const hour = now.getHours();
+  const part = hour < 12 ? S.home.morning : hour < 18 ? S.home.afternoon : S.home.evening;
+  const first = (name || "").trim().split(/\s+/)[0];
+  return first ? fmt(S.home.named, { greeting: part, name: first }) : part;
+}
+// What needs the user: tasks to fix or review, broken helpers, and setup gaps for the tools teams rely on.
+function homeNotes(rows, runs) {
+  const notes = [];
+  const list = (items) => items.slice(0, 2).map((r) => whoText(r) + ": " + snippet(r.task, 60)).join(" · ") + (items.length > 2 ? " " + fmt(S.home.more, { count: items.length - 2 }) : "");
+  const href = (items) => items.length === 1 ? "#/run/" + enc(items[0].runId) : "#/helpers";
+  const needs = runs.filter((r) => r.lane === "needsYou");
+  if (needs.length) notes.push({ tone: "needsYou", count: needs.length, title: plural(needs.length, S.home.needsOne, S.home.needsMany), body: list(needs), href: href(needs) });
+  const broken = rows.filter((row) => row.broken);
+  if (broken.length) notes.push({ tone: "needsYou", count: broken.length, title: plural(broken.length, S.home.brokenOne, S.home.brokenMany),
+    body: broken.map((row) => fmt(S.wording.helperTeam, { team: row.team, member: row.name })).join(", "), href: broken[0].href });
+  const review = runs.filter((r) => r.lane === "inReview");
+  if (review.length) notes.push({ tone: "inReview", count: review.length, title: plural(review.length, S.home.reviewOne, S.home.reviewMany), body: list(review), href: href(review) });
+  const used = new Set(rows.filter((row) => row.team).map((row) => row.tool));
+  const anyReady = setupState.tools.some((t) => toolOK(t.tool));
+  for (const t of setupState.tools) if (!toolOK(t.tool) && (used.has(t.tool) || !anyReady)) {
+    notes.push({ count: 1, title: fmt(S.home.toolTitle, { tool: toolName(t.tool) }), body: toolProblem(t.tool), href: "#/profile/setup" });
+  }
+  if (setupState.identityReady === false) notes.push({ count: 1, title: S.home.identityTitle, body: S.home.identityHint, href: "#/profile" });
+  return notes;
+}
+function teamCard(t, rows, runs) {
+  const mine = rows.filter((row) => row.team === t.name);
+  const counts = { working: 0, needsYou: 0, inReview: 0, idle: 0 };
+  const lines = [];
+  for (const row of mine) {
+    const [k] = helperStatus(row);
+    counts[k]++;
+    if (row.broken) lines.push(fmt(S.home.broken, { name: row.name }));
+    else if (k === "working") lines.push(fmt(S.home.isWorking, { name: row.name, task: snippet(row.run.task, 60) }));
+    else if (k === "needsYou") lines.push(fmt(S.home.needsYou, { name: row.name, state: stateText(row.run) }));
+    else if (k === "inReview") lines.push(fmt(S.home.toReview, { name: row.name, task: snippet(row.run.task, 60) }));
+  }
+  const teamRuns = runs.filter((r) => r.team === t.name);
+  const percent = teamRuns.length ? Math.round(teamRuns.filter((r) => r.lane === "done").length / teamRuns.length * 100) : 0;
+  const tone = counts.needsYou ? "needsYou" : counts.inReview ? "inReview" : "working";
+  const status = [["working", S.home.countWorking], ["needsYou", S.home.countNeeds], ["inReview", S.home.countReview]]
+    .filter(([k]) => counts[k]).map(([k, text]) => h("span.status." + k, { text: fmt(text, { count: counts[k] }) }));
+  const where = t.projects.length ? fmt(S.home.workingOn, { projects: t.projects.join(", ") }) : S.home.noProject;
+  return h("a.teamrow", { href: "#/helpers", "data-testid": "home-team", "data-key": t.name, onclick: () => { helperTeam = t.name; } },
+    h("div.top", {}, h("div", {}, h("div.tname", { text: t.name }), h("div.hint", { text: plural(mine.length, S.home.memberOne, S.home.memberMany) + " · " + where })),
+      h("div.counts", {}, status.length ? status : h("span.status.idle", { text: S.home.free }))),
+    h("p", { text: lines.length ? lines.slice(0, 3).join(" ") + (lines.length > 3 ? " " + fmt(S.home.more, { count: lines.length - 3 }) : "") : S.home.idleTeam }),
+    teamRuns.length ? h("div.bar." + tone, { title: fmt(S.projects.progress, { percent }) }, h("i", { style: "width:" + percent + "%" })) : null);
+}
+function dayText(d, now) { return dayKey(d) === dayKey(now) ? S.home.today : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
+// Tasks by the day they started, Monday to Sunday. Calendar shows one day; List shows the whole week, newest first.
+function weekTasks(runs, now) {
+  const days = weekOf(now);
+  if (!days.some((d) => dayKey(d) === homeDay)) homeDay = dayKey(now);
+  const byDay = new Map(days.map((d) => [dayKey(d), []]));
+  for (const r of runs) byDay.get(dayKey(new Date(r.startedAt)))?.push(r);
+  const shown = homeMode === "list" ? [...days].reverse().flatMap((d) => byDay.get(dayKey(d))) : byDay.get(homeDay);
+  const mode = (key, text) => button("home-mode", text, () => { homeMode = key; refresh(); },
+    { class: "chip" + (homeMode === key ? " on" : ""), "data-key": key, "aria-pressed": String(homeMode === key) });
+  return h("section.panel.wide", {}, h("div.headrow", {}, h("h2", { text: S.home.week }), h("div.chips", {}, mode("calendar", S.home.calendar), mode("list", S.home.list))),
+    homeMode === "calendar" ? h("div.week", {}, days.map((d) => {
+      const key = dayKey(d);
+      const count = byDay.get(key).length;
+      const on = key === homeDay;
+      return h("button.day" + (key === dayKey(now) ? ".today" : "") + (on ? ".on" : ""), { type: "button", "data-testid": "home-day", "data-key": key, "aria-pressed": String(on),
+        onclick: () => { homeDay = key; refresh(); } },
+        h("span", { text: key === dayKey(now) ? S.home.today : d.toLocaleDateString(undefined, { weekday: "short" }) }), h("b", { text: String(d.getDate()) }),
+        h("small", { text: count ? plural(count, S.home.taskOne, S.home.taskMany) : "" }));
+    })) : null,
+    shown.length ? h("div.table-scroll", {}, h("table.due", {}, h("tbody", {}, shown.map((r) => {
+      const started = new Date(r.startedAt);
+      return h("tr", { "data-testid": "home-task", "data-key": r.runId },
+        h("td", { text: dayText(started, now) + ", " + started.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) }),
+        h("td.task", {}, h("a.link", { href: "#/run/" + enc(r.runId), title: r.task, text: snippet(r.task, 90) })),
+        h("td.muted", { text: whoText(r) + " · " + stateText(r) }),
+        h("td", {}, h("a.link", { href: "#/project/" + enc(r.project), text: r.project })));
+    })))) : h("p.muted", { text: homeMode === "list" ? S.home.noWeek : S.home.noDay }));
+}
+async function homePage(seq) {
+  const [teamList, state] = await Promise.all([api("teams"), api("state")]);
+  const now = new Date();
+  const rows = helperRows(teamList, state.runs);
+  const notes = homeNotes(rows, state.runs);
+  const count = notes.reduce((n, note) => n + note.count, 0);
+  const date = now.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  render(seq, h("div.homehead", {},
+      h("div", {}, h("h1", { text: greeting(now, setupState.profileName) }), h("p", { "data-testid": "home-summary", text: date + " · " + (count ? plural(count, S.home.itemOne, S.home.itemMany) : S.home.itemNone) })),
+      button("home-new-project", S.home.newProject, () => { projectAddOpen = true; go("#/projects"); }, { class: "primary" })),
+    h("div.home", {},
+      h("section.panel", { "data-testid": "home-teams" }, h("div.headrow", {}, h("h2", { text: S.home.teams }), h("a.link.hint", { href: "#/helpers", text: S.home.viewHelpers })),
+        teamList.length ? teamList.map((t) => teamCard(t, rows, state.runs)) : h("p.muted", {}, S.home.noTeams + " ", h("a.link", { href: "#/teams", text: S.home.addTeam }))),
+      h("section.panel", { "data-testid": "home-important" }, h("h2", { text: S.home.important }), h("div.notes", {}, notes.length
+        ? notes.map((note, i) => h("a.note" + (i === 0 ? ".urgent" : "") + (note.tone ? "." + note.tone : ""), { href: note.href, "data-testid": "home-note" }, h("b", { text: note.title }), h("span", { text: note.body })))
+        : h("div.note", { "data-testid": "home-note" }, h("b", { text: S.home.calm }), h("span", { text: S.home.calmHint })))),
+      weekTasks(state.runs, now)));
+}
 async function home(seq) {
   const state = await api("state");
-  render(seq, heading(S.projects.title), hint(S.wording.helperIntro), state.projects.length ? h("div.grid", {}, state.projects.map((p) => h("a.card", { href: "#/project/" + enc(p.name) },
-    h("div.title", { text: p.name }), h("div.sub", { text: p.path }), h("div.counts", {}, LANES.map(([k, text]) => h("span.pill." + k, { text: text + " " + p.lanes[k], title: laneHint(k) })))))) : hint(S.projects.empty),
-    disclosure("project-add-open", S.projects.addTitle, projectAddForm()), heading(S.wording.allTasks), taskTable(state.runs));
+  const openAdd = !state.projects.length || projectAddOpen;
+  projectAddOpen = false;
+  render(seq, h("div.split.projects.index", {}, h("div.topbar", {}, h("h1", { text: S.projects.title })), projectList(state.projects, ""),
+    h("section.pane", {}, hint(S.wording.helperIntro), disclosure("project-add-open", S.projects.addTitle, projectAddForm(), undefined, openAdd),
+      state.projects.length ? hint(S.projects.pick) : null, heading(S.wording.allTasks), taskTable(state.runs))));
 }
 async function project(seq, name) {
-  const v = await api("projects/" + enc(name));
+  const [v, state] = await Promise.all([api("projects/" + enc(name)), api("state")]);
   const key = "project-" + name;
   const who = h("select", { id: "task-who", "data-testid": "task-who", required: true },
     h("optgroup", { label: S.tasks.teamMembers }, v.members.map((m) => toolOption("m:" + m.ref, m.tool, m.label))),
@@ -621,13 +1069,25 @@ async function project(seq, name) {
     }, "");
   } }, h("label.field", {}, S.tasks.who, who), field("task-text", S.tasks.task, { required: true, placeholder: S.tasks.prompt }, "textarea"),
     limitField("task-limit", undefined, S.wording.usualLimit), submit("task-start", S.tasks.start), message(key));
-  render(seq, crumbs(name), h("div.headrow", {}, h("div", {}, h("h1", { text: name }), hint(v.project.path)),
-    removeButton("project", name, "projects/" + enc(name) + "/remove", key, S.projects.remove, () => go("#/"))),
-    disclosure("project-account-settings", S.accounts.label, accountSettings("project", name)),
-    hint(S.wording.helperIntro), heading(S.wording.giveTask), !v.members.length ? h("p", {}, S.projects.noTeam, h("a.link", { href: "#/teams" }, h("strong", { text: S.members.addTeam })), S.projects.noTeamAfter) : null, form, heading(S.projects.board), hint(S.wording.workspace),
-    h("div.board", {}, LANES.map(([lane, text]) => h("section.lane." + lane, { title: laneHint(lane) }, h("h3", { text: text + " · " + v.lanes[lane].length }),
-      v.lanes[lane].length ? v.lanes[lane].map((r) => h("a.card", { href: "#/run/" + enc(r.runId), "data-testid": "task-open", "data-key": r.runId },
-        h("b", { text: whoText(r) }), h("div.task", { text: snippet(r.task, 200) }), cardLine(r.specialist ? fmt(S.wording.teamRole, { team: r.team, role: r.specialist }) : ""), cardLine(stateText(r)), cardLine(when(r.startedAt)))) : hint(S.common.empty)))));
+  const total = LANES.reduce((n, [lane]) => n + v.lanes[lane].length, 0);
+  const [tone, toneText] = v.lanes.needsYou.length ? ["needsYou", S.tasks.needsYou] : ["working", S.projects.onTrack];
+  const openForm = () => {
+    const box = document.getElementById("task-new-open");
+    if (box) { box.open = true; document.getElementById("task-text")?.focus(); }
+  };
+  render(seq, h("div.split.projects", {},
+    h("div.topbar", {}, h("h1", { text: name }), h("span.chip." + tone, { text: toneText }),
+      h("div.topactions", {}, button("task-new", S.projects.newTask, openForm, { class: "primary" }))),
+    projectList(state.projects || [], name),
+    h("section.pane", {}, !v.members.length ? h("p", {}, S.projects.noTeam, h("a.link", { href: "#/teams" }, h("strong", { text: S.members.addTeam })), S.projects.noTeamAfter) : null,
+      disclosure("task-new-open", S.wording.giveTask, form, undefined, !total), disclosure("project-account-settings", S.accounts.label, accountSettings("project", name)), heading(S.projects.board),
+      h("div.board", {}, LANES.map(([lane, text]) => h("section.lane." + lane, { title: laneHint(lane) }, h("h3", { text: text + " · " + v.lanes[lane].length }),
+        v.lanes[lane].length ? v.lanes[lane].map((r) => h("a.card.lanecard." + lane, { href: "#/run/" + enc(r.runId), "data-testid": "task-open", "data-key": r.runId },
+          h("b", { text: whoText(r) }), h("div.task", { text: snippet(r.task, 200) }), cardLine(r.specialist ? fmt(S.wording.teamRole, { team: r.team, role: r.specialist }) : ""), cardLine(stateText(r)), cardLine(when(r.startedAt)))) : hint(S.common.empty))))),
+    h("aside.detail", {}, h("h2", { text: S.projects.team }), v.members.length ? h("ul.plainlist", {}, v.members.map((m) => h("li", {},
+      h("a.link", { href: memberHref(m.team, m.member), text: m.member }), " · " + (m.specialty || S.members.worker), h("div.hint", { text: fmt(S.wording.helperTeam, m) + " · " + toolName(m.tool) })))) : hint(S.projects.noHelpers),
+      h("h2", { text: S.projects.path }), h("div.path", { text: v.project.path }), hint(S.wording.workspace),
+      h("div.actions", {}, removeButton("project", name, "projects/" + enc(name) + "/remove", key + "-remove", S.projects.remove, () => go("#/projects"))), message(key + "-remove"))));
 }
 
 function laneHint(lane) { return ({ working: S.wording.workingHint, needsYou: S.wording.needsYouHint, inReview: S.wording.reviewHint, done: S.wording.doneHint })[lane]; }
@@ -837,6 +1297,22 @@ function go(hash) { if (location.hash === hash) refresh(); else location.hash = 
     try { if (value === "auto") localStorage.removeItem(THEME_KEY); else localStorage.setItem(THEME_KEY, value); } catch (_) {}
   });
 })();
+(function sidebarToggle() {
+  const btn = document.getElementById("sidetoggle");
+  const root = document.documentElement;
+  const sync = () => {
+    const collapsed = root.getAttribute("data-sidebar") === "collapsed";
+    const label = collapsed ? S.nav.expand : S.nav.collapse;
+    btn.setAttribute("aria-expanded", String(!collapsed)); btn.setAttribute("aria-label", label); btn.title = label;
+  };
+  sync();
+  btn.addEventListener("click", () => {
+    const collapse = root.getAttribute("data-sidebar") !== "collapsed";
+    if (collapse) root.setAttribute("data-sidebar", "collapsed"); else root.removeAttribute("data-sidebar");
+    try { if (collapse) localStorage.setItem(SIDEBAR_KEY, "collapsed"); else localStorage.removeItem(SIDEBAR_KEY); } catch (_) {}
+    sync();
+  });
+})();
 async function refresh() {
   clearTimeout(timer);
   const seq = ++renderSeq;
@@ -847,11 +1323,15 @@ async function refresh() {
     if (seq !== renderSeq) return;
     if (!setupChecked) {
       setupChecked = true;
-      if (setupState.shouldOpen && location.hash !== "#/setup") { go("#/setup"); return; }
+      if (setupState.shouldOpen && location.hash !== "#/profile/setup") { go("#/profile/setup"); return; }
     }
     const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
     let page = "projects";
-    if (parts[0] === "setup") { page = "setup"; await setup(seq); }
+    document.body.classList.toggle("full", parts[0] === "profile");
+    // Setup now lives in the profile; keep old #/setup links working.
+    if (parts[0] === "setup") { go("#/profile/setup"); return; }
+    if (parts[0] === "profile") { page = "profile"; await profile(seq, parts[1]); }
+    else if (parts[0] === "projects") await home(seq);
     else if (parts[0] === "accounts") { page = "accounts"; await accounts(seq); }
     else if (parts[0] === "project" && parts[1]) await project(seq, parts[1]);
     else if (parts[0] === "run" && parts[1]) await run(seq, parts[1]);
@@ -859,10 +1339,17 @@ async function refresh() {
     else if (parts[0] === "specialists") { page = "specialists"; await specialists(seq); }
     else if (parts[0] === "skills") { page = "skills"; await skills(seq); }
     else if (parts[0] === "member" && parts[1] && parts[2]) { page = "teams"; await member(seq, parts[1], parts[2]); }
-    else await home(seq);
+    else if (parts[0] === "helpers") { page = "helpers"; await helpers(seq); }
+    else { page = "home"; await homePage(seq); }
     const state = await api("state");
     if (seq !== renderSeq) return;
-    for (const a of document.querySelectorAll("nav a")) a.classList.toggle("on", a.dataset.page === page);
+    for (const a of document.querySelectorAll("header nav a")) a.classList.toggle("on", a.dataset.page === page);
+    const short = initials(setupState.profileName);
+    document.getElementById("profile-link").classList.toggle("on", page === "profile");
+    document.getElementById("profile-name").textContent = setupState.profileName || S.profile.title;
+    document.getElementById("profile-sub").hidden = !setupState.profileName;
+    document.getElementById("avatar-initials").textContent = short;
+    document.getElementById("avatar-icon").hidden = !!short;
     document.getElementById("running").textContent = state.agentsRunning;
     document.getElementById("teamsN").textContent = state.teamsCount;
     document.getElementById("memory").textContent = mem(state.memoryBytes);
@@ -872,7 +1359,10 @@ async function refresh() {
     if (seq === renderSeq) tell("connection", errorText(e), false, e);
   } finally { if (seq === renderSeq) timer = setTimeout(refresh, 2000); }
 }
-window.addEventListener("hashchange", () => {
+window.addEventListener("hashchange", (e) => {
+  // "Back to Codec" returns to whatever page opened the profile.
+  const from = new URL(e.oldURL).hash || "#/";
+  if (location.hash.startsWith("#/profile") && !from.startsWith("#/profile")) profileReturn = from;
   messages.clear(); folders.clear(); tracking = null;
   if (dialog.open) closeDialog();
   document.getElementById("err").textContent = ""; refresh();

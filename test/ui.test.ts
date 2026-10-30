@@ -14,7 +14,8 @@ function runtime(bindings: Record<string, unknown> = {}) {
   const params = { S, TOKEN: "test-token", setupState: { tools: [], ready: false }, ...bindings };
   return new Function(...Object.keys(params), functions + `\nif (typeof overrides !== "undefined") { if (overrides.h) h = overrides.h; if (overrides.render) render = overrides.render; if (overrides.showDialog) showDialog = overrides.showDialog; if (overrides.api) api = overrides.api; if (overrides.act) act = overrides.act; if (overrides.tell) tell = overrides.tell; }\nreturn {
     api, errorText, sourceText, fmt, limitText, limitValue, stateText, toolOK, toolProblem, snapshot, restore,
-    removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, setup, project, projectAddForm, skillAddForm, skillUploadForm,
+    removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, project, projectAddForm, skillAddForm, skillUploadForm,
+    helperRows, helperStatus, ago, profile, initials, greeting, weekOf, dayKey, homeNotes, teamCard, weekTasks,
     accounts, accountPicker, accountSettings, loginDetails
   };`)(...Object.values(params));
 }
@@ -127,6 +128,105 @@ describe("dashboard wording and structure", () => {
     expect(source).not.toMatch(/\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML|document\.write/);
     expect(page).toContain("el.textContent = value");
     expect(page).not.toMatch(/<script\b[^>]*\bsrc=|<link\b|https?:\/\//);
+  });
+});
+
+describe("helpers overview", () => {
+  it("gives every team helper one row with its live or latest task, plus quick helpers that still need attention", () => {
+    const LANES = [["working", S.tasks.working], ["needsYou", S.tasks.needsYou], ["inReview", S.tasks.inReview], ["done", S.tasks.done]];
+    const { helperRows, helperStatus } = runtime({ LANES, enc: encodeURIComponent });
+    const teams = [{ name: "pod", projects: ["site"], members: [
+      { member: "scout", tool: "claude", specialty: "Research", projects: ["site"] },
+      { member: "writer", tool: "claude", projects: ["site"] },
+      { member: "idle", tool: "codex", projects: ["site"] },
+      { member: "orphan", error: "role_missing" },
+    ] }];
+    // Newest first, as /api/state returns them.
+    const runs = [
+      { runId: "run-4", project: "site", agent: "codex", lane: "needsYou", state: "failed", task: "Quick fix" },
+      { runId: "run-5", project: "site", agent: "codex", lane: "done", state: "done", task: "Old quick task" },
+      { runId: "run-3", project: "site", team: "pod", member: "writer", lane: "inReview", state: "done", task: "Draft" },
+      { runId: "run-2", project: "site", team: "pod", member: "scout", lane: "done", state: "done", task: "Earlier" },
+      { runId: "run-1", project: "site", team: "pod", member: "scout", lane: "working", state: "running", task: "Search" },
+    ];
+    const rows = helperRows(teams, runs);
+    expect(rows.map((row: any) => [row.key, helperStatus(row)[0], row.run?.runId])).toEqual([
+      ["pod/scout", "working", "run-1"], ["pod/writer", "inReview", "run-3"], ["pod/idle", "idle", undefined],
+      ["pod/orphan", "needsYou", undefined], ["run:run-4", "needsYou", "run-4"],
+    ]);
+    expect(rows[0].sub).toBe("Research");
+    expect(rows[1].sub).toBe(S.members.worker);
+    expect(helperStatus(rows[3])[1]).toBe(S.helpers.broken);
+  });
+
+  it("says how long ago a task started in plain words", () => {
+    const { ago } = runtime();
+    const before = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+    expect(ago(before(0))).toBe(S.time.now);
+    expect(ago(before(5))).toBe("5 min ago");
+    expect(ago(before(180))).toBe("3 h ago");
+    expect(ago(before(2 * 1440))).toBe("2 d ago");
+    expect(ago(undefined)).toBe(S.common.unknown);
+  });
+});
+
+describe("home dashboard", () => {
+  const LANES = [["working", S.tasks.working], ["needsYou", S.tasks.needsYou], ["inReview", S.tasks.inReview], ["done", S.tasks.done]];
+  const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter((kid) => kid != null && kid !== false) });
+  const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
+  const teams = [{ name: "pod", projects: ["site"], members: [
+    { member: "scout", tool: "claude", projects: ["site"] }, { member: "writer", tool: "codex", projects: ["site"] }, { member: "orphan", error: "role_missing" },
+  ] }];
+  const runs = [
+    { runId: "run-3", project: "site", team: "pod", member: "writer", agent: "codex", lane: "needsYou", state: "failed", task: "Draft methods", startedAt: "2026-10-29T15:00:00" },
+    { runId: "run-2", project: "site", team: "pod", member: "scout", agent: "claude", lane: "working", state: "running", task: "Summarize papers", startedAt: "2026-10-28T09:00:00" },
+    { runId: "run-1", project: "site", team: "pod", member: "scout", agent: "claude", lane: "done", state: "done", task: "Earlier", startedAt: "2026-10-20T09:00:00" },
+  ];
+
+  it("greets by first name and time of day", () => {
+    const { greeting } = runtime();
+    expect(greeting(new Date(2026, 9, 29, 8), "Jordan Lee")).toBe("Good morning, Jordan");
+    expect(greeting(new Date(2026, 9, 29, 14), "")).toBe(S.home.afternoon);
+    expect(greeting(new Date(2026, 9, 29, 20), "Sam")).toBe("Good evening, Sam");
+  });
+
+  it("builds a Monday-to-Sunday week", () => {
+    const { weekOf, dayKey } = runtime();
+    expect(weekOf(new Date(2026, 9, 29, 12)).map(dayKey)).toEqual(["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-1"]);
+    expect(dayKey(weekOf(new Date(2026, 10, 1))[0])).toBe("2026-10-26");
+  });
+
+  it("lists what needs the user, including tools a team relies on but not unused ones", () => {
+    const setupState = { identityReady: false, tools: [{ tool: "claude", installed: true, signedIn: true }, { tool: "codex", installed: true, signedIn: false }] };
+    const { helperRows, homeNotes } = runtime({ LANES, enc: encodeURIComponent, setupState });
+    const notes = homeNotes(helperRows(teams, runs), runs);
+    expect(notes.map((n: any) => n.title)).toEqual([S.home.needsOne, S.home.brokenOne, "Codex isn't ready", S.home.identityTitle]);
+    expect(notes[0].href).toBe("#/run/run-3");
+    const quiet = runtime({ LANES, enc: encodeURIComponent, setupState: { ...setupState, identityReady: true } });
+    expect(quiet.homeNotes(quiet.helperRows([{ ...teams[0], members: [teams[0].members[0]] }], []), [])).toEqual([]);
+  });
+
+  it("summarizes a team's helpers and progress", () => {
+    const { helperRows, teamCard } = runtime({ LANES, enc: encodeURIComponent, overrides: { h: capture } });
+    const all = nodes(teamCard(teams[0], helperRows(teams, runs), runs));
+    expect(all.filter((n) => n.spec.startsWith("span.status")).map((n) => [n.spec, n.props.text])).toEqual([
+      ["span.status.working", "1 working"], ["span.status.needsYou", "2 need you"],
+    ]);
+    expect(all.find((n) => n.spec === "p").props.text).toBe("scout is working on “Summarize papers”. writer needs you (Didn't finish). orphan needs fixing.");
+    expect(all.find((n) => n.spec === "i").props.style).toBe("width:33%");
+  });
+
+  it("shows the selected day in Calendar and the whole week in List", () => {
+    const now = new Date(2026, 9, 29, 16);
+    const view = (homeMode: string) => {
+      const r = runtime({ LANES, enc: encodeURIComponent, homeDay: "", homeMode, overrides: { h: capture } });
+      return nodes(r.weekTasks(runs, now));
+    };
+    const calendar = view("calendar");
+    expect(calendar.filter((n) => n.props?.["data-testid"] === "home-day")).toHaveLength(7);
+    expect(calendar.find((n) => n.props?.["aria-pressed"] === "true" && n.props?.["data-testid"] === "home-day").props["data-key"]).toBe("2026-10-29");
+    expect(calendar.filter((n) => n.props?.["data-testid"] === "home-task").map((n) => n.props["data-key"])).toEqual(["run-3"]);
+    expect(view("list").filter((n) => n.props?.["data-testid"] === "home-task").map((n) => n.props["data-key"])).toEqual(["run-3", "run-2"]);
   });
 });
 
@@ -336,10 +436,11 @@ describe("Wave 2 wording and actions", () => {
     const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean),
       querySelector: (selector: string) => ({ value: fields[selector.match(/identity-(?:name|email)/)![0]] }) });
     const api = vi.fn(async () => ({ identity: { name: "Global Owner", email: "global@example.invalid" } }));
-    const { setup } = runtime({ messages: new Map(), setupState: { tools: [], ready: true, identityReady: false },
+    const { profile } = runtime({ profileReturn: "#/", document: { createElementNS: () => ({ setAttribute() {}, append() {} }), querySelector: () => ({ namespaceURI: "svg" }) },
+      messages: new Map(), setupState: { tools: [], ready: true, identityReady: false },
       overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; }, api,
         act: async (_key: string, _trigger: unknown, action: () => Promise<void>) => { await action(); } } });
-    await setup(1);
+    await profile(1, "setup");
     const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
     const all = nodes(tree);
     expect(all.find((node) => node.props?.["data-testid"] === "identity-missing").props.text).toBe(S.setup.identityMissing);
@@ -349,6 +450,39 @@ describe("Wave 2 wording and actions", () => {
     form.props.onsubmit({ preventDefault() {} });
     await Promise.resolve();
     expect(api).toHaveBeenLastCalledWith("settings", { identity: { name: "Edited Owner", email: "edited@example.invalid" } });
+  });
+
+  it("Profile opens on the Info tab with name, email and sign-ins, and saves through the settings API", async () => {
+    let tree: any[] = [];
+    const fields: Record<string, string> = { "identity-name": "Jordan Lee", "identity-email": "jordan@example.invalid" };
+    const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean),
+      querySelector: (selector: string) => ({ value: fields[selector.match(/identity-(?:name|email)/)![0]] }) });
+    const api = vi.fn(async () => ({ identity: { name: "Saved Owner", email: "saved@example.invalid" } }));
+    const tools = [{ tool: "claude", installed: true, signedIn: true }, { tool: "codex", installed: true, signedIn: false, problem: "Sign in to Codex", fix: "codex login" }];
+    const svgNode = () => ({ setAttribute() {}, append() {} });
+    const { profile, initials } = runtime({ messages: new Map(), setupState: { tools, ready: true, identityReady: true },
+      profileReturn: "#/projects", document: { createElementNS: svgNode, querySelector: () => ({ namespaceURI: "svg" }) },
+      overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; }, api,
+        act: async (_key: string, _trigger: unknown, action: () => Promise<void>) => { await action(); } } });
+    await profile(1, "unknown-tab");
+    const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
+    const all = nodes(tree);
+    const tab = all.find((node) => node.props?.["data-testid"] === "profile-tab");
+    expect(tab.props).toMatchObject({ "data-key": "info", "aria-current": "page", href: "#/profile/info" });
+    expect(tab.kids).toContain(S.profile.info);
+    expect(all.find((node) => node.props?.["data-testid"] === "profile-back").props.href).toBe("#/projects");
+    const body = all.find((node) => node.props?.["data-testid"] === "profile-info");
+    expect(body.kids[0].props.text).toBe(S.profile.info);
+    expect(all.find((node) => node.props?.["data-testid"] === "identity-save").props.text).toBe(S.profile.saveChanges);
+    expect(all.find((node) => node.props?.id === "identity-name").props.value).toBe("Saved Owner");
+    expect(all.find((node) => node.props?.id === "identity-email").props.value).toBe("saved@example.invalid");
+    const cards = all.filter((node) => node.props?.["data-testid"] === "setup-tool");
+    expect(cards.map((card) => card.kids[1].props.text)).toEqual([S.profile.signedIn, "Sign in to Codex"]);
+    expect(all.find((node) => node.props?.["data-testid"] === "setup-fix").props.text).toBe("codex login");
+    all.find((node) => node.props?.["data-testid"] === "identity-form").props.onsubmit({ preventDefault() {} });
+    await Promise.resolve();
+    expect(api).toHaveBeenLastCalledWith("settings", { identity: { name: "Jordan Lee", email: "jordan@example.invalid" } });
+    expect([initials("Jordan Lee"), initials("  ada  "), initials("Mary Ann Smith"), initials(""), initials(undefined)]).toEqual(["JL", "A", "MA", "", ""]);
   });
 
   it.each([
@@ -362,10 +496,11 @@ describe("Wave 2 wording and actions", () => {
     let tree: any[] = [];
     const tools = ["claude", "codex"].map((tool, index) => ({ tool, installed: index < count, signedIn: index < count }));
     const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean) });
-    const { setup } = runtime({ messages: new Map(), setupState: { tools, ready: count > 0, identityReady },
+    const { profile } = runtime({ profileReturn: "#/", document: { createElementNS: () => ({ setAttribute() {}, append() {} }), querySelector: () => ({ namespaceURI: "svg" }) },
+      messages: new Map(), setupState: { tools, ready: count > 0, identityReady },
       overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; },
         api: async () => ({ identity: { name: "", email: "" } }) } });
-    await setup(1);
+    await profile(1, "setup");
     const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
     const all = nodes(tree);
     expect(all.find((node) => node.props?.["data-testid"] === "setup-status").props.text).toBe(expected);
@@ -380,16 +515,17 @@ describe("Wave 2 wording and actions", () => {
     const location = { hash: "#/setup" };
     const api = vi.fn(async () => ({ identity: { name: "", email: "" } }));
     const capture = (spec: string, props: any, ...kids: any[]) => ({ spec, props, kids: kids.flat(Infinity).filter(Boolean) });
-    const { setup } = runtime({ location, messages: new Map(), setupState: { tools: [], ready: true },
+    const { profile } = runtime({ location, profileReturn: "#/", document: { createElementNS: () => ({ setAttribute() {}, append() {} }), querySelector: () => ({ namespaceURI: "svg" }) },
+      messages: new Map(), setupState: { tools: [], ready: true },
       overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; }, api,
         act: async (_key: string, _trigger: unknown, action: () => Promise<void>) => action() } });
-    await setup(1);
+    await profile(1, "setup");
     const nodes = (node: any): any[] => Array.isArray(node) ? node.flatMap(nodes) : node && typeof node === "object" ? [node, ...nodes(node.kids || [])] : [];
     const action = nodes(tree).find((node) => node.props?.["data-testid"] === id);
     await action.props.onclick({ currentTarget: {} });
     expect(api).toHaveBeenLastCalledWith("settings", { setupFinished: true });
     expect(location.hash).toBe("#/");
-    expect(page).toContain('if (setupState.shouldOpen && location.hash !== "#/setup")');
+    expect(page).toContain('if (setupState.shouldOpen && location.hash !== "#/profile/setup")');
   });
 
   it.each([
@@ -419,7 +555,7 @@ describe("Wave 2 wording and actions", () => {
     const capture = (spec: string, props: any) => ({ spec, props });
     const { messageContent } = runtime({ overrides: { h: capture } });
     expect(messageContent("task", { text: S.errors.identity_missing, error: { code: "identity_missing" } }))
-      .toContainEqual({ spec: "a.link", props: { href: "#/setup", text: S.nav.setup } });
+      .toContainEqual({ spec: "a.link", props: { href: "#/profile/setup", text: S.nav.setup } });
   });
 
   it("uses the exact plain labels, explainers and tooltips", () => {

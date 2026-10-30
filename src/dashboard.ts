@@ -300,7 +300,7 @@ export function projectView(name: string) {
       t.members.map((m) => {
         try {
           const r = resolveMember(t.name, m.name);
-          return { ref: `${t.name}/${m.name}`, tool: r.tool, label: wording(S.wording.helperOption, { member: m.name, team: t.name, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
+          return { ref: `${t.name}/${m.name}`, member: m.name, team: t.name, specialty: r.specialty, tool: r.tool, label: wording(S.wording.helperOption, { member: m.name, team: t.name, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
         } catch {
           return undefined;
         }
@@ -556,7 +556,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
-    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), shouldOpen: !getSettings().setupFinished });
+    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), profileName: getSettings().identity.name, shouldOpen: !getSettings().setupFinished });
     if (isGet && a === "accounts" && n === 1) {
       const saved = accountStore();
       return sendJson(res, 200, { accounts: await logins.accountsView(listRuns(), url.searchParams.get("fresh") === "1"),
