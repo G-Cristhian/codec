@@ -16,7 +16,7 @@ function runtime(bindings: Record<string, unknown> = {}) {
     api, errorText, sourceText, fmt, limitText, limitValue, stateText, toolOK, toolProblem, snapshot, restore,
     removeItem, showDialog, folderPicker, render, replace, messageContent, stateText, run, project, projectAddForm, skillAddForm, skillUploadForm,
     helperRows, helperStatus, ago, profile, initials, greeting, weekOf, dayKey, homeNotes, teamCard, weekTasks,
-    accounts, accountPicker, accountSettings, loginDetails
+    accounts, accountPicker, accountSettings, loginDetails, chat, markdown
   };`)(...Object.values(params));
 }
 describe("dashboard wording and structure", () => {
@@ -624,6 +624,59 @@ describe("Accounts controls", () => {
     expect(api).not.toHaveBeenCalled();
     await select.props.onchange({ currentTarget: { value: "" } });
     expect(api).toHaveBeenCalledExactlyOnceWith("account-settings", { scope, name: "web", kind: "claude", accountId: "" });
+  });
+  it("shows the chat with who said what, a thinking note while busy, and sends the typed message", async () => {
+    let tree: any[] = [];
+    const view = { tool: "codex", model: "gpt-6-sol", busy: true, models: { claude: [{ id: "opus", label: "Opus" }], codex: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }] },
+      messages: [{ role: "user", text: "Hi" }, { role: "assistant", text: "Hello!", model: "gpt-6-sol" }, { role: "error", text: "Oops" }] };
+    const api = vi.fn(async (path: string) => path === "chat" ? view : {});
+    const { chat } = runtime({ messages: new Map(), app: { querySelector: () => null }, location: { hash: "#/chat" }, lastRoute: "", renderSeq: 1,
+      overrides: { h: capture, render: (_seq: number, ...kids: any[]) => { tree = kids; }, api, act: async (_key: string, _trigger: unknown, action: () => Promise<void>) => action() } });
+    await chat(1);
+    const all = nodes(tree);
+    expect(all.filter((n) => n.props?.["data-testid"] === "chat-message").map((n) => n.props["data-key"])).toEqual(["user", "assistant", "error"]);
+    expect(all.find((n) => n.props?.["data-testid"] === "chat-thinking").props["aria-label"]).toBe("Codex is thinking…");
+    expect(all.some((n) => n.spec === "h1" || n.spec.includes("topbar"))).toBe(false);
+    expect(all.some((n) => n.props?.text === "GPT-6-Sol" && n.spec === "span.hint")).toBe(true);
+    const model = all.find((n) => n.props?.["data-testid"] === "chat-model");
+    expect(nodes(model).filter((n) => n.spec === "option").map((n) => [n.props.value, n.props.selected])).toEqual([["", false], ["gpt-6-sol", true]]);
+    await model.props.onchange({ currentTarget: { value: "" } });
+    expect(api).toHaveBeenLastCalledWith("chat/model", { model: "" });
+    expect(all.filter((n) => n.props?.["data-testid"] === "chat-copy")).toHaveLength(1);
+    expect(all.find((n) => n.props?.["data-testid"] === "chat-send").props.disabled).toBe(true);
+    const picker = all.find((n) => n.props?.["data-testid"] === "chat-tool");
+    await picker.props.onchange({ currentTarget: { value: "claude" } });
+    expect(api).toHaveBeenLastCalledWith("chat/new", { tool: "claude" });
+
+    view.busy = false;
+    await chat(1);
+    const form = nodes(tree).find((n) => n.props?.["data-testid"] === "chat-form");
+    const text = nodes(tree).find((n) => n.props?.["data-testid"] === "chat-text");
+    text.value = "  What's new?  ";
+    form.querySelector = () => null;
+    await form.props.onsubmit({ preventDefault() {} });
+    expect(api).toHaveBeenLastCalledWith("chat", { text: "What's new?" });
+    expect(text.value).toBe("");
+  });
+  it("renders replies as Markdown nodes, never as HTML", () => {
+    // A tiny element stand-in: markdown() appends list items to the list it built.
+    const el = (spec: string, props: any = {}, ...kids: any[]) => {
+      const node: any = { tagName: spec.split(".")[0].toUpperCase(), props, kids: kids.flat(Infinity).filter((k) => k != null && k !== false) };
+      node.append = (...more: any[]) => { node.kids.push(...more); };
+      Object.defineProperty(node, "lastChild", { get: () => node.kids[node.kids.length - 1] });
+      return node;
+    };
+    const { markdown } = runtime({ overrides: { h: el } });
+    const fence = "\x60\x60\x60";
+    const blocks = markdown("**Root cause:** the \x60.topbar\x60 rule\n\n1. one\n2. two\n\n- a\n- [docs](https://example.com)\n\n" + fence + "js\n<b>x</b>\n" + fence + "\n<img src=x onerror=alert(1)>");
+    expect(blocks.map((b: any) => b.tagName)).toEqual(["P", "OL", "UL", "PRE", "P"]);
+    expect(blocks[0].kids[0].tagName).toBe("STRONG");
+    expect(blocks[0].kids.find((k: any) => k.tagName === "CODE").props.text).toBe(".topbar");
+    expect(blocks[1].kids).toHaveLength(2);
+    expect(blocks[2].kids[1].kids[0].props).toMatchObject({ href: "https://example.com", rel: "noopener noreferrer", text: "docs" });
+    expect(blocks[3].kids[0].props.text).toBe("<b>x</b>");
+    expect(blocks[4].kids).toEqual(["<img src=x onerror=alert(1)>"]);
+    expect(markdown("[bad](javascript:alert(1))")[0].kids).toEqual(["[bad](javascript:alert(1))"]);
   });
   it("opens sign-in links in a separate browser tab and shows cancel and device-code instructions", () => {
     const url = "https://auth.openai.com/codex/device";

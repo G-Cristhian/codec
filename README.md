@@ -46,6 +46,10 @@ running until you press Ctrl+C. Open the link in a browser to:
   helpers and progress, an **Important** list (tasks to fix or review, broken
   helpers, tools that aren't signed in) and this week's tasks by day, as a
   calendar or a list;
+- open **Chat**: one conversation with Claude or Codex (pick which at the
+  top; switching or **New chat** starts over). It isn't tied to a project and
+  can't change files: Claude runs without extra permissions and Codex in its
+  read-only sandbox. The conversation is kept in `~/.codec/chat/`;
 - open **Helpers**: every team member (and any quick run that still needs
   attention) in one table with its status, current task and project, plus
   counts of working / ready to review / free / needs you. Select a helper to

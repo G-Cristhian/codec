@@ -34,6 +34,7 @@ const NAV_ICONS: Record<string, string> = {
   teams: "M6 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM1.5 13.5c.4-2.4 2.2-3.8 4.5-3.8s4.1 1.4 4.5 3.8M11 2.7a2.5 2.5 0 0 1 0 4.6M12.5 9.9c1 .6 1.8 1.9 2 3.6",
   specialists: "M8 1.5l1.9 3.9 4.3.6-3.1 3 .7 4.3L8 11.3l-3.8 2 .7-4.3-3.1-3 4.3-.6z",
   skills: "M3 2.5h7.5A2.5 2.5 0 0 1 13 5v8.5H5.5A2.5 2.5 0 0 1 3 11zM3 11a2.5 2.5 0 0 1 2.5-2.5H13",
+  chat: "M2.5 3.5h11v7.5H7l-3 2.5V11H2.5z",
   collapse: "M2.5 2.5h11v11h-11zM6 2.5v11M10.5 6 8.5 8l2 2",
   accounts: "M10.5 8.5a3 3 0 1 0-2.9-2.2L2.5 11.5v2h2v-1.5H6v-1.5h1.5l1.2-1.2c.5.2 1.1.2 1.8.2zM11 4.5h.01",
   setup: "M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4",
@@ -86,14 +87,17 @@ header h1 { font-size: 16px; margin: 0; }
 nav { display: flex; flex-direction: column; gap: 2px; }
 nav a { display: flex; align-items: center; gap: 8px; padding: 6px 10px; color: var(--muted); }
 nav a:hover { color: var(--text); }
-nav a.on { background: var(--panel); color: var(--text); font-weight: 500; box-shadow: 0 1px 2px #00000012; }
+nav a { border-radius: 6px; }
+nav a:hover { background: color-mix(in srgb, var(--text) 5%, var(--side)); }
+nav a.on { background: color-mix(in srgb, var(--text) 11%, var(--side)); color: var(--text); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
 header .foot { margin-top: auto; display: flex; flex-direction: column; gap: 4px; padding: 14px 10px 0; font-size: 12px; }
 header .stat { color: var(--muted); }
 header .stat b { color: var(--text); margin-right: 4px; }
 header .theme { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 header .theme select { padding: 3px 6px; font-size: 12px; }
 header .profile { display: flex; align-items: center; gap: 10px; margin: 12px -4px 0; padding: 8px; border-top: 1px solid var(--border); }
-header .profile:hover, header .profile.on { background: var(--panel); }
+header .profile:hover { background: color-mix(in srgb, var(--text) 5%, var(--side)); }
+header .profile.on { background: color-mix(in srgb, var(--text) 11%, var(--side)); }
 header .profile .who { display: flex; flex-direction: column; min-width: 0; }
 header .profile b { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--primary); color: var(--on-primary); display: grid; place-items: center; font-size: 12px; font-weight: 600; flex: none; }
@@ -291,6 +295,47 @@ button.day.on { border: 2px solid var(--text); padding: 9px 3px; }
 table.due { border: 0; }
 table.due td { padding: 10px 12px 10px 0; }
 table.due tr:first-child td { border-top: 1px solid var(--border); }
+/* Chat: a full-height column. Top bar, scrolling messages, then the composer. */
+#app:has(> .chatpage) { padding: 0; max-width: none; }
+.chatpage { display: flex; flex-direction: column; height: 100vh; }
+.pill { border: 1px solid var(--border); border-radius: 999px; padding: 5px 14px; background: var(--panel2); color: var(--text); font-size: 13px; }
+select.pill { color: var(--accent); font-weight: 500; cursor: pointer; }
+.chatlog { flex: 1; overflow-y: auto; padding: 16px 28px 24px; }
+.chatlog > * { max-width: 920px; margin-left: auto; margin-right: auto; }
+.chatempty { padding: 32px 0; } .chatempty h2 { margin: 0 0 6px; font-size: 18px; } .chatempty p { margin: 0; color: var(--muted); }
+.msg { display: grid; grid-template-columns: 30px minmax(0, 1fr); column-gap: 14px; padding: 14px 0 6px; }
+.msg .avatar { width: 30px; height: 30px; background: var(--panel2); color: var(--muted); border: 1px solid var(--border); font-size: 12px; }
+.msg.assistant .avatar { background: var(--review-bg); color: var(--review); border-color: color-mix(in srgb, var(--review) 30%, transparent); }
+.msg .meta { display: flex; align-items: center; gap: 12px; min-height: 30px; }
+.msg .meta b { font-weight: 600; } .msg.assistant .meta b { color: var(--review); }
+.msg .meta time { color: var(--muted); font-size: 12px; }
+.msg .meta .copy { margin-left: auto; border: 0; background: none; color: var(--muted); padding: 4px; opacity: 0; }
+.msg:hover .meta .copy, .msg .meta .copy:focus-visible { opacity: 1; } .msg .meta .copy:hover { color: var(--text); }
+.msg .body { grid-column: 2; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.msg .body > :first-child { margin-top: 4px; } .msg .body > :last-child { margin-bottom: 0; }
+.msg .body p, .msg .body ul, .msg .body ol, .msg .body pre { margin: 0 0 12px; }
+.msg .body li { margin: 3px 0; }
+.msg .body h3 { font-size: 16px; margin: 16px 0 8px; }
+.msg .body code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--review); }
+.msg .body pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.msg .body pre code { background: none; border: 0; padding: 0; color: var(--text); }
+.msg .body a { color: var(--accent); text-decoration: underline; }
+.msg.error .body { color: var(--needs); }
+.msg .typing { display: inline-flex; gap: 4px; padding: 10px 0; }
+.msg .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: typing 1.2s infinite ease-in-out; }
+.msg .typing i:nth-child(2) { animation-delay: .2s; } .msg .typing i:nth-child(3) { animation-delay: .4s; }
+@keyframes typing { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .msg .typing i { animation: none; opacity: .6; } }
+.chatform { flex: none; padding: 0 28px 20px; }
+.composer { max-width: 920px; margin: 0 auto; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 12px 14px 10px; box-shadow: 0 1px 3px #00000010; }
+.composer:focus-within { border-color: var(--muted); }
+.composer textarea { display: block; width: 100%; border: 0; background: none; padding: 4px 6px; min-height: 48px; max-height: 40vh; resize: none; font-size: 15px; outline: none; }
+.composer .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.composer .row .hint { margin-left: auto; }
+.composer .row button { border-radius: 999px; padding: 6px 16px; }
+.composer .row .pill { padding: 4px 12px; font-size: 13px; }
+.composer select.pill { max-width: 200px; }
+.chatform .message { max-width: 920px; margin-left: auto; margin-right: auto; }
 table.due td:first-child { font-weight: 600; white-space: nowrap; }
 @media (max-width: 1100px) {
   .home { grid-template-columns: minmax(0, 1fr); }
@@ -312,12 +357,17 @@ table.due td:first-child { font-weight: 600; white-space: nowrap; }
   .settings { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 24px 16px; }
   .board { grid-template-columns: 1fr; }
   .split { min-height: 0; }
+  .chatpage { height: auto; min-height: calc(100dvh - 120px); }
+  .chatlog { padding-left: 16px; padding-right: 16px; }
+  .composer .row .hint { display: none; } .composer .row button.primary { margin-left: auto; }
+  .chatform { position: sticky; bottom: 0; padding: 8px 16px 12px; background: var(--bg); }
 }
 </style></head><body>
 <header>
 <div class="brand"><h1><a href="#/">Codec</a></h1><button type="button" class="sidetoggle" id="sidetoggle" data-testid="sidebar-toggle" aria-label="${textHTML(S.nav.collapse)}" title="${textHTML(S.nav.collapse)}" aria-expanded="true">${navIcon("collapse")}</button></div>
 <nav>
 <a href="#/" data-page="home" title="${textHTML(S.nav.home)}" data-testid="nav-home">${navIcon("home")}<span>${textHTML(S.nav.home)}</span></a>
+<a href="#/chat" data-page="chat" title="${textHTML(S.nav.chat)}" data-testid="nav-chat">${navIcon("chat")}<span>${textHTML(S.nav.chat)}</span></a>
 <a href="#/helpers" data-page="helpers" title="${textHTML(S.nav.helpers)}" data-testid="nav-helpers">${navIcon("helpers")}<span>${textHTML(S.nav.helpers)}</span></a>
 <a href="#/projects" data-page="projects" title="${textHTML(S.nav.projects)}" data-testid="nav-projects">${navIcon("projects")}<span>${textHTML(S.nav.projects)}</span></a>
 <a href="#/teams" data-page="teams" title="${textHTML(S.nav.teams)}" data-testid="nav-teams">${navIcon("teams")}<span>${textHTML(S.nav.teams)}</span></a>
@@ -562,7 +612,7 @@ function snapshot() {
   const open = [...app.querySelectorAll("details[id]")].map((el) => [el.id, el.open]);
   const active = document.activeElement;
   const focus = active && app.contains(active) && active.id ? { id: active.id, start: active.selectionStart, end: active.selectionEnd } : null;
-  const log = app.querySelector("pre.log");
+  const log = app.querySelector("pre.log, .chatlog");
   const files = [...app.querySelectorAll("input[type=file][id]")];
   return { fields, files, open, focus, scroll: window.scrollY, log: log && { top: log.scrollTop, bottom: log.scrollTop + log.clientHeight >= log.scrollHeight - 20 } };
 }
@@ -581,7 +631,7 @@ function restore(snap) {
     if (el) { el.focus({ preventScroll: true }); try { el.setSelectionRange(snap.focus.start, snap.focus.end); } catch (_) {} }
   }
   window.scrollTo(0, snap.scroll);
-  const log = app.querySelector("pre.log");
+  const log = app.querySelector("pre.log, .chatlog");
   if (log) log.scrollTop = !snap.log || snap.log.bottom ? log.scrollHeight : snap.log.top;
 }
 function render(seq, ...kids) {
@@ -1090,6 +1140,99 @@ async function project(seq, name) {
       h("div.actions", {}, removeButton("project", name, "projects/" + enc(name) + "/remove", key + "-remove", S.projects.remove, () => go("#/projects"))), message(key + "-remove"))));
 }
 
+// Replies arrive as Markdown. Build DOM nodes from a safe subset; never parse HTML.
+function inlineMarkdown(text) {
+  const out = [];
+  const pattern = /\x60([^\x60\n]+)\x60|\*\*([^*\n]+)\*\*|(?:\*|_)([^*_\n]+)(?:\*|_)|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let last = 0, m;
+  while ((m = pattern.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1] !== undefined) out.push(h("code", { text: m[1] }));
+    else if (m[2] !== undefined) out.push(h("strong", {}, inlineMarkdown(m[2])));
+    else if (m[3] !== undefined) out.push(h("em", { text: m[3] }));
+    else out.push(h("a", { href: m[5], target: "_blank", rel: "noopener noreferrer", referrerpolicy: "no-referrer", text: m[4] }));
+    last = pattern.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function markdown(text) {
+  const blocks = [];
+  const parts = text.split(/^\x60\x60\x60[^\n]*\n?/m);
+  parts.forEach((part, i) => {
+    // Odd parts sit between fences: code shown exactly as written.
+    if (i % 2) { blocks.push(h("pre", {}, h("code", { text: part.replace(/\n$/, "") }))); return; }
+    let list = null, para = [];
+    const flush = () => {
+      if (para.length) blocks.push(h("p", {}, para.flatMap((line, n) => n ? [h("br", {}), inlineMarkdown(line)] : inlineMarkdown(line))));
+      para = []; list = null;
+    };
+    for (const line of part.split("\n")) {
+      const item = /^\s*(?:([-*+])|(\d+)[.)])\s+(.*)$/.exec(line);
+      const head = /^#{1,6}\s+(.*)$/.exec(line);
+      if (!line.trim()) flush();
+      else if (head) { flush(); blocks.push(h("h3", {}, inlineMarkdown(head[1]))); }
+      else if (item) {
+        const tag = item[1] ? "ul" : "ol";
+        if (para.length) flush();
+        if (!list || list.tagName.toLowerCase() !== tag) { list = h(tag, {}); blocks.push(list); }
+        list.append(h("li", {}, inlineMarkdown(item[3])));
+      } else if (list && /^\s{2,}\S/.test(line)) list.lastChild.append(" ", ...inlineMarkdown(line.trim()));
+      else { list = null; para.push(line); }
+    }
+    flush();
+  });
+  return blocks;
+}
+function clock(iso) {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? "" : at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+// One conversation with Claude or Codex; each reply arrives on a later poll.
+async function chat(seq) {
+  const v = await api("chat");
+  const tool = toolName(v.tool);
+  const key = "chat";
+  const me = setupState.profileName ? setupState.profileName.trim().split(/\s+/)[0] : S.chat.you;
+  const models = v.models?.[v.tool] || [];
+  const modelName = (id) => models.find((m) => m.id === id)?.label || id;
+  const text = h("textarea", { id: "chat-text", "data-testid": "chat-text", "aria-label": S.chat.message, placeholder: fmt(S.chat.placeholder, { tool }), maxlength: 20000, rows: 2,
+    onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } } });
+  const provider = h("select.pill", { id: "chat-tool", "data-testid": "chat-tool", "aria-label": S.chat.provider, title: S.chat.switchHint,
+    onchange: (e) => act(key, e.currentTarget, () => api("chat/new", { tool: e.currentTarget.value }), "") },
+    ["claude", "codex"].map((t) => h("option", { value: t, text: toolName(t), selected: t === v.tool })));
+  // A model saved earlier but no longer listed stays selectable so the choice isn't silently lost.
+  const choices = v.model && !models.some((m) => m.id === v.model) ? [...models, { id: v.model, label: v.model }] : models;
+  const model = h("select.pill", { id: "chat-model", "data-testid": "chat-model", "aria-label": S.chat.model, title: S.chat.modelHint,
+    onchange: (e) => act(key, e.currentTarget, () => api("chat/model", { model: e.currentTarget.value }), "") },
+    h("option", { value: "", text: S.chat.defaultModel, selected: !v.model }), choices.map((m) => h("option", { value: m.id, text: m.label, selected: m.id === v.model })));
+  const form = h("form.chatform", { "data-testid": "chat-form", onsubmit: (e) => {
+    e.preventDefault();
+    const message = text.value.trim();
+    if (!message || v.busy) return;
+    act(key, form.querySelector("button[type=submit]"), async () => { await api("chat", { text: message }); text.value = ""; }, "");
+  } }, h("div.composer", {}, text, h("div.row", {}, provider, model,
+    button("chat-new", S.chat.newChat, (e) => act(key, e.currentTarget, () => api("chat/new", {}), ""), { class: "pill", disabled: !v.messages.length && !v.busy }),
+    hint(S.chat.enterHint), h("button.primary", { type: "submit", "data-testid": "chat-send", text: S.chat.send, disabled: v.busy }))), message(key));
+  const row = (role, name, at, body, m) => h("article.msg." + role, m ? { "data-testid": "chat-message", "data-key": role } : { "data-testid": "chat-thinking", "aria-label": fmt(S.chat.thinking, { tool }) },
+    h("span.avatar", { "aria-hidden": "true", text: role === "user" ? initials(setupState.profileName) || name[0] : name[0] }),
+    h("div.meta", {}, h("b", { text: name }), m?.model ? h("span.hint", { text: modelName(m.model) }) : null, at ? h("time", { datetime: at, text: clock(at) }) : null,
+      m && m.role === "assistant" ? button("chat-copy", "⧉", async () => {
+        try { await navigator.clipboard.writeText(m.text); tell(key, S.common.copied, true); } catch (_) { tell(key, S.common.copyFailed); }
+      }, { class: "copy", "aria-label": S.chat.copy, title: S.chat.copy }) : null),
+    h("div.body", {}, body));
+  const fresh = lastRoute !== location.hash;
+  render(seq, h("div.chatpage", {},
+    h("div.chatlog", { "data-testid": "chat-log", "aria-live": "polite" },
+      !v.messages.length && !v.busy ? h("div.chatempty", {}, h("h2", { text: S.chat.empty }), h("p", { text: S.chat.intro })) : null,
+      v.messages.map((m) => row(m.role, m.role === "user" ? me : tool, m.at, m.role === "assistant" ? markdown(m.text) : h("p", { text: m.text }), m)),
+      v.busy ? row("assistant", tool, "", h("span.typing", {}, h("i"), h("i"), h("i"))) : null),
+    form));
+  // Open a chat at its latest message; later polls keep the reader's place.
+  const log = app.querySelector(".chatlog");
+  if (fresh && log && seq === renderSeq) log.scrollTop = log.scrollHeight;
+}
+
 function laneHint(lane) { return ({ working: S.wording.workingHint, needsYou: S.wording.needsYouHint, inReview: S.wording.reviewHint, done: S.wording.doneHint })[lane]; }
 function namespace(form, key) {
   for (const el of form.querySelectorAll("[id]")) { el.dataset.field = el.id; el.id = key + "-" + el.id; }
@@ -1339,11 +1482,15 @@ async function refresh() {
     else if (parts[0] === "specialists") { page = "specialists"; await specialists(seq); }
     else if (parts[0] === "skills") { page = "skills"; await skills(seq); }
     else if (parts[0] === "member" && parts[1] && parts[2]) { page = "teams"; await member(seq, parts[1], parts[2]); }
+    else if (parts[0] === "chat") { page = "chat"; await chat(seq); }
     else if (parts[0] === "helpers") { page = "helpers"; await helpers(seq); }
     else { page = "home"; await homePage(seq); }
     const state = await api("state");
     if (seq !== renderSeq) return;
-    for (const a of document.querySelectorAll("header nav a")) a.classList.toggle("on", a.dataset.page === page);
+    for (const a of document.querySelectorAll("header nav a")) {
+      a.classList.toggle("on", a.dataset.page === page);
+      if (a.dataset.page === page) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    }
     const short = initials(setupState.profileName);
     document.getElementById("profile-link").classList.toggle("on", page === "profile");
     document.getElementById("profile-name").textContent = setupState.profileName || S.profile.title;

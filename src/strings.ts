@@ -1,7 +1,7 @@
 /**
  * Stable browser selectors. Repeated lists use data-key = name/path; scope
  * repeated form fields to their form or enclosing team.
- * Header: nav-home, nav-helpers, nav-projects, nav-teams, nav-specialists, nav-skills, theme, profile-open.
+ * Header: nav-home, nav-chat, nav-helpers, nav-projects, nav-teams, nav-specialists, nav-skills, theme, profile-open.
  * Profile: profile-tab (data-key = tab), profile-info, profile-check; reuses identity-form and setup-tool.
  * Setup (profile tab "setup"): setup-wizard, setup-check, setup-continue, setup-tool, setup-fix, setup-copy.
  * Projects: project-add-open, project-add-form, project-name, project-path,
@@ -19,6 +19,8 @@
  * member-edit-form, member-remove.
  * Skills: skill-add-open, skill-add-form, skill-path, skill-save, skill-remove,
  * skill-upload-form, skill-upload, skill-upload-save.
+ * Chat: chat-tool, chat-model, chat-new, chat-log, chat-message (data-key = user/assistant/error), chat-copy, chat-thinking,
+ * chat-form, chat-text, chat-send.
  * Home: home-summary, home-new-project, home-teams, home-team (data-key = team),
  * home-important, home-note, home-mode (data-key = calendar/list), home-day
  * (data-key = y-m-d), home-task.
@@ -46,7 +48,7 @@ export const S = {
     title: "Codec dashboard",
     hint: "This page needs Codec's private link. Close this tab and open Codec again from the link Codec gave you when it started.",
   },
-  nav: { home: "Home", helpers: "Helpers", projects: "Projects", teams: "Teams", specialists: "Roles", skills: "Skills", accounts: "Accounts", setup: "Setup", collapse: "Collapse sidebar", expand: "Expand sidebar" },
+  nav: { home: "Home", chat: "Chat", helpers: "Helpers", projects: "Projects", teams: "Teams", specialists: "Roles", skills: "Skills", accounts: "Accounts", setup: "Setup", collapse: "Collapse sidebar", expand: "Expand sidebar" },
   accounts: {
     title: "Your accounts", label: "Account", computer: "This computer's login", add: "Add account", signIn: "Sign in",
     nameHint: "Give this account a name you will recognize, like Work or Personal.",
@@ -142,6 +144,15 @@ export const S = {
     identityHint: "Codec needs them to save checkpoints of your helpers' work.",
     week: "This week", calendar: "Calendar", list: "List", today: "Today",
     taskOne: "1 task", taskMany: "{count} tasks", noDay: "No tasks started on this day.", noWeek: "No tasks started this week.",
+  },
+  chat: {
+    title: "Chat", intro: "Ask Claude or Codex anything. Chats aren't tied to a project and can't change your files.",
+    provider: "AI service", model: "AI model", defaultModel: "Default model", modelHint: "Used for the next replies. The conversation carries on.",
+    newChat: "New chat", switchHint: "Switching starts a new chat.", empty: "Say hello to start the conversation.",
+    message: "Message", placeholder: "Message {tool}…", send: "Send", thinking: "{tool} is thinking…", you: "You",
+    enterHint: "Enter to send · Shift+Enter for a new line", copy: "Copy reply",
+    failed: "No reply came back. Make sure the AI service is installed and signed in, then try again.",
+    timedOut: "That reply was stopped before it finished. Send your message again.",
   },
   time: { now: "just now", minutes: "{count} min ago", hours: "{count} h ago", days: "{count} d ago" },
   folder: {
@@ -245,6 +256,8 @@ export const S = {
     account_confirm: "Confirm that you want to remove this account first.",
     account_busy: "A helper is using this account. Wait for it to finish before changing its sign-in or removing it.",
     account_remove: "The saved sign-in could not be removed. Make sure your Mac's saved passwords are unlocked and try again.",
+    chat_message: "Write a message first. Keep it under 20,000 characters.",
+    chat_busy: "Wait for the reply before sending another message.",
     account_login: "Sign-in could not start. Try again.",
     account_login_busy: "Finish or cancel the current sign-in before starting another.",
     account_code: "Enter the full code from the sign-in page while sign-in is still open.",
