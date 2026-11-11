@@ -181,7 +181,7 @@ function runSummary(r: RunStatus) {
     agent: r.agent,
     state: r.state,
     reviewStatus: r.reviewStatus,
-    stateText: r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
+    stateText: r.state === "stopped" ? S.tasks.stopped : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : r.state === "failed" ? (r.lostAt ? S.wording.lost : S.tasks.failed) : r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
     lostAt: r.lostAt,
     timeLimitMinutes: r.timeLimitMinutes,
     deadline: r.deadline,

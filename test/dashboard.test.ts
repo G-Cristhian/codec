@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { request } from "http";
-import { existsSync } from "fs";
+import { join } from "path";
+import { existsSync, writeFileSync } from "fs";
 import { addProject } from "../src/registry.js";
 import { cleanRun, getRunStatus, listRuns, startRun, stopRun, type RunStatus } from "../src/runs.js";
 import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src/dashboard.js";
 import { cleanupTemps, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
+import { S, wording } from "../src/strings.js";
+import { formatTimeLimit } from "../src/limits.js";
 
 const FAKE = `sleep 1; echo "fake agent says hi"; echo "task: $(cat "$CODEC_TASK_FILE")"; echo saved > notes.txt`;
 
@@ -155,6 +158,30 @@ describe("dashboard", () => {
     expect((await call(d, "POST", "/api/projects/alpha/remove", { body: {} })).status).toBe(200);
     expect((await call(d, "GET", "/api/state")).json.projects).toEqual([]);
   });
+
+  it.each(["stopped", "timed_out", "failed"] as const)(
+    "shows the %s outcome ahead of unsaved workspace status",
+    async (state) => {
+      addProject(makeRepo("alpha"));
+      process.env.CODEC_AGENT_COMMAND = "sleep 30";
+      const run = startRun({ project: "alpha", agent: "claude", task: "wait", timeLimitMinutes: 1 });
+      writeFileSync(join(run.worktree, "poem.txt"), "Work waiting for the owner\n");
+      stopRun(run.runId);
+      const dir = join(process.env.CODEC_HOME!, "runs", run.runId);
+      if (state === "timed_out") writeFileSync(join(dir, "timed_out"), new Date().toISOString());
+      if (state === "failed") {
+        const { stoppedAt, ...record } = getRunStatus(run.runId)!;
+        writeFileSync(join(dir, "run.json"), JSON.stringify(record));
+        writeFileSync(join(dir, "exit_code"), "2\n");
+      }
+      const text = state === "stopped" ? S.tasks.stopped : state === "failed" ? S.tasks.failed
+        : wording(S.tasks.timedOut, { limit: formatTimeLimit(1) });
+      const expected = { state, reviewStatus: "unsaved", stateText: text, lane: "needsYou" };
+      expect((await call(d, "GET", `/api/runs/${run.runId}`)).json).toMatchObject(expected);
+      expect((await call(d, "GET", "/api/state")).json.runs[0]).toMatchObject(expected);
+      expect((await call(d, "GET", "/api/projects/alpha")).json.lanes.needsYou[0]).toMatchObject(expected);
+    },
+  );
 
   it("returns clear errors for bad input", async () => {
     expect((await call(d, "GET", "/api/runs/nope")).status).toBe(404);

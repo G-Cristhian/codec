@@ -100,7 +100,10 @@ describe("saved checkpoints before review", () => {
     expect(done.reviewStatus).toBe("unsaved");
     expect(done.autoSaved).toBeUndefined();
     expect(laneOf(done)).toBe("needsYou");
-    expect(runView(run.runId).stateText).toBe(S.tasks.unsaved);
+    const outcome = ending === "stopped" ? S.tasks.stopped
+      : ending === "timed_out" ? wording(S.tasks.timedOut, { limit: "0.6 seconds" })
+      : ending === "lost" ? S.wording.lost : S.tasks.failed;
+    expect(runView(run.runId).stateText).toBe(outcome);
   });
 
   it("a workspace that cannot be checked never enters review", async () => {

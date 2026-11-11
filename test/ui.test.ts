@@ -365,6 +365,17 @@ describe("React screens and routes", () => {
       text,
     );
   });
+  it.each([
+    ["stopped", S.tasks.stopped],
+    ["timed_out", S.tasks.timedOut.replace("{limit}", "1 minutes")],
+    ["failed", S.tasks.failed],
+  ] as const)("renders the %s outcome with the unsaved note", async (state, text) => {
+    Object.assign(data.run!, { state, reviewStatus: "unsaved", timeLimitMinutes: 1 });
+    await mount("#/run/run-demo");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(text);
+    expect(screen.getAllByText(text).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("task-unsaved").textContent).toBe(S.tasks.unsavedHelp);
+  });
   it("renders account limit, checkpoint and unsaved notices", async () => {
     Object.assign(data.run!, {
       limitHit: true,

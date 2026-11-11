@@ -248,15 +248,17 @@ export const limitText = (value?: number) =>
     ? S.common.noLimit
     : fmt(S.common.minutes, { value });
 export function stateText(r: Run): string {
-  if (r.reviewStatus === "unsaved") return S.tasks.unsaved;
-  if (r.reviewStatus === "unavailable") return S.tasks.workspaceUnchecked;
-  if (r.reviewStatus === "no_changes") return S.tasks.noChanges;
-  if (r.lostAt) return S.wording.lost;
+  if (r.state === "stopped") return S.tasks.stopped;
   if (r.state === "timed_out")
     return (
       r.stateText ||
       fmt(S.tasks.timedOut, { limit: limitText(r.timeLimitMinutes) })
     );
+  if (r.state === "failed") return r.lostAt ? S.wording.lost : S.tasks.failed;
+  if (r.reviewStatus === "unsaved") return S.tasks.unsaved;
+  if (r.reviewStatus === "unavailable") return S.tasks.workspaceUnchecked;
+  if (r.reviewStatus === "no_changes") return S.tasks.noChanges;
+  if (r.lostAt) return S.wording.lost;
   return (
     (
       {
