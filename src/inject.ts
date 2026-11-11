@@ -100,6 +100,7 @@ export function instructionsText(m: ResolvedMember | undefined, tool: Agent, ski
     parts.push(wording(m.kind === "clone" ? S.helperInstructions.role : S.helperInstructions.worker,
       { member: m.member, specialty: m.specialty ?? "", team: m.team, role: m.specialist ?? "" }));
     if (m.instructions) parts.push(`${S.helperInstructions.standing}\n${m.instructions}`);
+    parts.push(S.helperInstructions.messages);
   }
   parts.push(S.helperInstructions.attribution);
   return parts.join("\n\n") + "\n";

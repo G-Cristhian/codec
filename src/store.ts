@@ -37,6 +37,8 @@ export const locksDir = (): string => join(codecHome(), "locks");
 export const skillsDir = (): string => join(codecHome(), "skills");
 export const specialistsFile = (): string => join(codecHome(), "specialists.json");
 export const teamsFile = (): string => join(codecHome(), "teams.json");
+export const messagesDir = (): string => join(codecHome(), "messages");
+export const inboxFile = (team: string, member: string): string => join(messagesDir(), team, `${member}.json`);
 
 export function readJson<T>(file: string, fallback: T): T {
   if (!existsSync(file)) return fallback;
@@ -49,10 +51,19 @@ export function readJson<T>(file: string, fallback: T): T {
  * writing at once can't interleave bytes (from the hive's task registry).
  */
 export function writeJsonAtomic(file: string, data: unknown): void {
+  writeTextAtomic(file, JSON.stringify(data, null, 2) + "\n");
+}
+
+/** The same atomic replacement for plain-text files. Callers hold the relevant lock. */
+export function writeTextAtomic(file: string, text: string): void {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
-  renameSync(tmp, file);
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, file);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
 }
 
 /** True if a process with this pid exists (zombies included). */
