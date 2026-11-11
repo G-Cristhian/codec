@@ -8,6 +8,9 @@ import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src
 import { cleanupTemps, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
 import { S, wording } from "../src/strings.js";
 import { formatTimeLimit } from "../src/limits.js";
+import { addMember, addTeam } from "../src/org.js";
+import { listMessages, postMessage } from "../src/messages.js";
+import { inboxFile, writeJsonAtomic } from "../src/store.js";
 
 const FAKE = `sleep 1; echo "fake agent says hi"; echo "task: $(cat "$CODEC_TASK_FILE")"; echo saved > notes.txt`;
 
@@ -191,6 +194,119 @@ describe("dashboard", () => {
     addProject(makeRepo("alpha"));
     expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "gpt", task: "x" } })).json.code).toBe("invalid_tool");
     expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "claude" } })).json.code).toBe("missing_task");
+  });
+
+  describe("project conversations", () => {
+    beforeEach(() => {
+      addProject(makeRepo("alpha"));
+      addProject(makeRepo("beta"));
+      addTeam({ name: "red", projects: ["alpha", "beta"] });
+      addMember("red", { name: "reader", tool: "claude" });
+      addMember("red", { name: "writer", tool: "claude" });
+      addTeam({ name: "green", projects: ["alpha"] });
+      addMember("green", { name: "reader", tool: "claude" });
+      addTeam({ name: "blue", projects: ["beta"] });
+      addMember("blue", { name: "reader", tool: "claude" });
+    });
+
+    it("includes both directions for every project helper, oldest first, without marking messages read", async () => {
+      const owner = postMessage({ from: "owner", to: "red/reader", body: "Owner note" });
+      const internal = postMessage({ from: "red/reader", to: "green/reader", body: "Another team" });
+      const outgoing = postMessage({ from: "red/writer", to: "blue/reader", body: "Outgoing" });
+      const incoming = postMessage({ from: "blue/reader", to: "red/reader", body: "Incoming" });
+      const excluded = postMessage({ from: "owner", to: "blue/reader", body: "Only beta" });
+      const at = (day: number) => `2026-11-0${day}T12:00:00.000Z`;
+      writeJsonAtomic(inboxFile("red", "reader"), [{ ...owner, sentAt: at(4) }, { ...incoming, sentAt: at(1) }]);
+      writeJsonAtomic(inboxFile("green", "reader"), [{ ...internal, sentAt: at(2), deliveredAt: at(2) }]);
+      writeJsonAtomic(inboxFile("blue", "reader"), [{ ...outgoing, sentAt: at(3) }, { ...excluded, sentAt: at(5) }]);
+
+      const result = await call(d, "GET", "/api/projects/alpha");
+      expect(result.status).toBe(200);
+      expect(result.json.messages).toEqual([
+        { id: incoming.id, senderName: "blue/reader", senderKind: "helper", recipientName: "red/reader", body: "Incoming", sentAt: at(1), waiting: true },
+        { id: internal.id, senderName: "red/reader", senderKind: "helper", recipientName: "green/reader", body: "Another team", sentAt: at(2), waiting: false },
+        { id: outgoing.id, senderName: "red/writer", senderKind: "helper", recipientName: "blue/reader", body: "Outgoing", sentAt: at(3), waiting: true },
+        { id: owner.id, senderName: S.conversation.you, senderKind: "owner", recipientName: "red/reader", body: "Owner note", sentAt: at(4), waiting: true },
+      ]);
+      expect(result.json.helpers).toEqual([
+        { ref: "red/reader", name: "red/reader", running: false },
+        { ref: "red/writer", name: "red/writer", running: false },
+        { ref: "green/reader", name: "green/reader", running: false },
+      ]);
+      expect(listMessages().every((message) => !message.read)).toBe(true);
+    });
+
+    it("sends to one helper as the owner and clears waiting when its next task starts, including on another project", async () => {
+      const result = await call(d, "POST", "/api/projects/alpha/messages", {
+        body: { to: "red/reader", body: "Keep this\nline break", from: "blue/reader" },
+      });
+      expect(result.status).toBe(201);
+      expect(result.json).toEqual([expect.objectContaining({ from: "owner", to: "red/reader", body: "Keep this\nline break" })]);
+      const id = result.json[0].id;
+      expect((await call(d, "GET", "/api/projects/alpha")).json.messages[0]).toMatchObject({ id, waiting: true });
+      process.env.CODEC_AGENT_COMMAND = "sleep 30";
+      const run = startRun({ project: "beta", member: "red/reader", task: "Check messages" });
+      const active = (await call(d, "GET", "/api/projects/alpha")).json;
+      expect(active.messages[0]).toMatchObject({ id, waiting: false });
+      expect(active.helpers[0].running).toBe(true);
+      const live = await call(d, "POST", "/api/projects/alpha/messages", { body: { to: "red/reader", body: "While working" } });
+      expect(live.json[0]).toMatchObject({ deliveredAt: expect.any(String), runId: run.runId });
+      stopRun(run.runId);
+      const stopped = (await call(d, "GET", "/api/projects/alpha")).json;
+      expect(stopped.helpers[0].running).toBe(false);
+      expect(stopped.messages.every((message: { waiting: boolean }) => !message.waiting)).toBe(true);
+    });
+
+    it("sends all to each helper across the project's teams exactly once", async () => {
+      const result = await call(d, "POST", "/api/projects/alpha/messages", { body: { to: "all", body: "Please coordinate" } });
+      expect(result.status).toBe(201);
+      expect(result.json.map((message: { to: string }) => message.to)).toEqual(["red/reader", "red/writer", "green/reader"]);
+      expect(new Set(result.json.map((message: { id: string }) => message.id)).size).toBe(3);
+      expect(listMessages()).toHaveLength(3);
+      expect(listMessages({ to: "blue/reader" })).toEqual([]);
+    });
+
+    it.each(["missing/helper", "red/missing", "blue/reader", undefined, 42])("rejects recipient %s without sending", async (to) => {
+      const result = await call(d, "POST", "/api/projects/alpha/messages", { body: { to, body: "Hello" } });
+      expect(result.status).toBe(400);
+      expect(result.json).toMatchObject({ code: "message_helper_not_on_project", error: S.errors.message_helper_not_on_project });
+      expect(listMessages()).toEqual([]);
+    });
+
+    it.each(["", " \n\t ", undefined, 42])("rejects empty or invalid body %s before sending to anyone", async (body) => {
+      const result = await call(d, "POST", "/api/projects/alpha/messages", { body: { to: "all", body } });
+      expect(result.status).toBe(400);
+      expect(result.json).toMatchObject({ code: "missing_message", error: S.errors.missing_message });
+      expect(listMessages()).toEqual([]);
+    });
+
+    it("returns an empty feed and a friendly send error when a project has no helpers", async () => {
+      addProject(makeRepo("empty"));
+      expect((await call(d, "GET", "/api/projects/empty")).json).toMatchObject({ helpers: [], messages: [], messagesError: false });
+      const result = await call(d, "POST", "/api/projects/empty/messages", { body: { to: "all", body: "Hello" } });
+      expect(result.status).toBe(400);
+      expect(result.json.code).toBe("message_no_helpers");
+      expect((await call(d, "POST", "/api/projects/missing/messages", { body: { to: "all", body: "Hello" } })).status).toBe(404);
+    });
+
+    it("keeps the board available on a feed read error and recovers on the next request", async () => {
+      const saved = postMessage({ from: "owner", to: "red/reader", body: "Recover me" });
+      writeFileSync(inboxFile("red", "reader"), "invalid JSON");
+      const result = await call(d, "GET", "/api/projects/alpha");
+      expect(result.status).toBe(200);
+      expect(result.json).toMatchObject({ project: { name: "alpha" }, lanes: { working: [] }, messagesError: true, messages: [] });
+      writeJsonAtomic(inboxFile("red", "reader"), [saved]);
+      expect((await call(d, "GET", "/api/projects/alpha")).json).toMatchObject({ messagesError: false, messages: [{ id: saved.id }] });
+    });
+
+    it("uses the existing token, JSON and POST protections for message writes", async () => {
+      const body = { to: "red/reader", body: "Hello" };
+      const path = "/api/projects/alpha/messages";
+      expect((await call(d, "POST", path, { body, token: null, cookie: `codec_token_${d.port}=${d.token}` })).status).toBe(401);
+      expect((await call(d, "POST", path, { body, type: "text/plain" })).status).toBe(415);
+      expect((await call(d, "GET", path)).status).toBe(404);
+      expect(listMessages()).toEqual([]);
+    });
   });
 });
 

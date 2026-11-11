@@ -33,7 +33,8 @@ import {
 } from "../ui/src/overview";
 import { Markdown } from "../ui/src/chat";
 import { fixture } from "./ui-fixtures";
-let data: PageData;
+import type { ConversationMessage } from "../ui/src/conversation-feed";
+let data: ReturnType<typeof fixture>;
 let handler:
   | ((path: string, body: Record<string, unknown>) => Response | undefined)
   | undefined;
@@ -59,6 +60,7 @@ beforeEach(() => {
   handler = undefined;
   calls = [];
   localStorage.clear();
+  sessionStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   vi.stubGlobal(
     "ResizeObserver",
@@ -135,6 +137,191 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+describe("project conversation", () => {
+  const note = (id: string, extra: Partial<ConversationMessage> = {}): ConversationMessage => ({
+    id, senderName: "web/tester", senderKind: "helper", recipientName: "web/tester",
+    body: "Helper update " + id, sentAt: "2026-11-11T12:00:00.000Z", waiting: false, ...extra,
+  });
+  const conversation = () => screen.getByRole("tab", { name: /^Conversation/ });
+  const board = () => screen.getByRole("tab", { name: S.conversation.board });
+  const compose = () => screen.getByRole("textbox", { name: S.conversation.message }) as HTMLTextAreaElement;
+  const sends = () => calls.filter((call) => call.path === "projects/site/messages");
+  async function open() {
+    await mount("#/project/site", false);
+    await userEvent.click(conversation());
+  }
+  async function poll() {
+    const before = calls.filter((call) => call.path === "projects/site").length;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)); });
+    expect(calls.filter((call) => call.path === "projects/site").length).toBeGreaterThan(before);
+  }
+  async function chooseHelper() {
+    await userEvent.click(screen.getByRole("combobox", { name: S.conversation.to }));
+    await userEvent.click(await screen.findByRole("option", { name: "web/tester (stopped)" }));
+  }
+
+  it("keeps the aside in both tabs, gives tasks only on Board, and renders flat chronological rows", async () => {
+    data.project.messages = [note("first"), note("second", {
+      senderName: S.conversation.you, senderKind: "owner", body: "Please check this\nThen report back", waiting: true,
+      sentAt: "2026-11-11T12:01:00.000Z",
+    })];
+    await mount("#/project/site", false);
+    expect(board().getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("button", { name: S.wording.giveTask })).toBeTruthy();
+    expect(within(conversation()).queryByLabelText(/unread/)).toBeNull();
+    const aside = screen.getByRole("heading", { name: S.projects.team });
+    await userEvent.click(conversation());
+    expect(screen.getByRole("heading", { name: S.projects.team })).toBe(aside);
+    expect(screen.queryByRole("button", { name: S.wording.giveTask })).toBeNull();
+    const rows = screen.getAllByTestId("conversation-message");
+    expect(rows.map((row) => row.querySelector("p")?.textContent)).toEqual(data.project.messages.map((message) => message.body));
+    expect(within(rows[0]).getByText("web/tester")).toBeTruthy();
+    expect(within(rows[1]).getByText(S.conversation.you)).toBeTruthy();
+    expect(rows[0].className).toContain("bg-background");
+    expect(rows[1].className).toContain("bg-muted/40");
+    for (const [index, row] of rows.entries()) {
+      expect(row.querySelector("time")?.dateTime).toBe(data.project.messages[index].sentAt);
+      expect(row.querySelector("time")?.textContent).toBe(new Date(data.project.messages[index].sentAt).toLocaleString());
+    }
+    expect(within(rows[0]).queryByText(S.conversation.waiting)).toBeNull();
+    expect(within(rows[1]).getByText(S.conversation.waiting).className).toContain("text-status-needs");
+    await userEvent.click(screen.getByRole("button", { name: S.projects.newTask }));
+    expect(board().getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("task-text")).toBeTruthy();
+  });
+
+  it("shows the empty state and leaves compose available for stopped helpers", async () => {
+    await open();
+    expect(screen.getByText(S.conversation.empty)).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: S.conversation.to }).textContent).toBe(S.conversation.all);
+    await chooseHelper();
+    await userEvent.type(compose(), "Please check");
+    expect((screen.getByRole("button", { name: S.conversation.send }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows the no-helpers notice and prevents both Send and Enter from posting", async () => {
+    data.project.helpers = [];
+    data.project.members = [];
+    await open();
+    expect(screen.getByText(S.conversation.noHelpers)).toBeTruthy();
+    await userEvent.type(compose(), "Hello{Enter}");
+    expect((screen.getByRole("button", { name: S.conversation.send }) as HTMLButtonElement).disabled).toBe(true);
+    expect(sends()).toEqual([]);
+  });
+
+  it("sends on Enter, inserts Shift+Enter, clears text and retains the picker across sends and remounts", async () => {
+    await open();
+    await chooseHelper();
+    const input = compose();
+    await userEvent.type(input, "First line{Shift>}{Enter}{/Shift}Second line");
+    expect(input.value).toBe("First line\nSecond line");
+    expect(sends()).toEqual([]);
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(input.value).toBe(""));
+    expect(sends()).toEqual([{ path: "projects/site/messages", body: { to: "web/tester", body: "First line\nSecond line" } }]);
+    expect(screen.getByRole("combobox", { name: S.conversation.to }).textContent).toBe("web/tester (stopped)");
+    expect(document.activeElement).toBe(input);
+    cleanup();
+    await open();
+    expect(screen.getByRole("combobox", { name: S.conversation.to }).textContent).toBe("web/tester (stopped)");
+  });
+
+  it("sends All helpers in one request and guards against duplicate submissions while in flight", async () => {
+    await open();
+    const fetchBefore = globalThis.fetch;
+    let finish!: () => void;
+    const sent = vi.fn();
+    vi.stubGlobal("fetch", async (url: string, options: RequestInit) => {
+      if (url === "/api/projects/site/messages") {
+        sent(JSON.parse(String(options.body)));
+        await new Promise<void>((resolve) => { finish = resolve; });
+        return response([]);
+      }
+      return fetchBefore(url, options);
+    });
+    await userEvent.type(compose(), "Everyone, check in");
+    const send = screen.getByRole("button", { name: S.conversation.send }) as HTMLButtonElement;
+    await userEvent.click(send);
+    expect(send.disabled).toBe(true);
+    fireEvent.keyDown(compose(), { key: "Enter" });
+    fireEvent.submit(send.closest("form")!);
+    expect(sent).toHaveBeenCalledExactlyOnceWith({ to: "all", body: "Everyone, check in" });
+    await act(async () => { finish(); });
+    await waitFor(() => expect(compose().value).toBe(""));
+  });
+
+  it("retains the draft and recipient when a send fails and ignores composition Enter", async () => {
+    handler = (path) => path === "projects/site/messages"
+      ? response({ code: "message_helper_not_on_project", error: S.errors.message_helper_not_on_project }, 400) : undefined;
+    await open();
+    await chooseHelper();
+    await userEvent.type(compose(), "Keep this draft");
+    fireEvent.keyDown(compose(), { key: "Enter", isComposing: true });
+    expect(sends()).toEqual([]);
+    await userEvent.keyboard("{Enter}");
+    await screen.findByText(S.errors.message_helper_not_on_project);
+    expect(compose().value).toBe("Keep this draft");
+    expect(screen.getByRole("combobox", { name: S.conversation.to }).textContent).toBe("web/tester (stopped)");
+    expect((screen.getByRole("button", { name: S.conversation.send }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("counts only new ids on Board, clears on opening Conversation and does not count delivery updates", async () => {
+    data.project.messages = [note("existing", { waiting: true })];
+    await mount("#/project/site", false);
+    expect(within(conversation()).queryByLabelText(/unread/)).toBeNull();
+    data.project.messages.push(note("new-one"), note("new-two"));
+    await poll();
+    expect(within(conversation()).getByLabelText("2 unread messages").textContent).toBe("2");
+    data.project.messages[0].waiting = false;
+    await poll();
+    expect(within(conversation()).getByLabelText("2 unread messages").textContent).toBe("2");
+    await userEvent.click(conversation());
+    expect(within(conversation()).queryByLabelText(/unread/)).toBeNull();
+    expect(screen.queryByText(S.conversation.waiting)).toBeNull();
+    data.project.messages.push(note("while-reading"));
+    await poll();
+    expect(within(conversation()).queryByLabelText(/unread/)).toBeNull();
+    await userEvent.click(board());
+    data.project.messages.push(note("later"));
+    await poll();
+    expect(within(conversation()).getByLabelText("1 unread messages").textContent).toBe("1");
+  });
+
+  it("preserves draft, picker, focus, selection and tab while the 2s poll appends messages", async () => {
+    await open();
+    await chooseHelper();
+    const input = compose();
+    await userEvent.type(input, "Keep typing here");
+    input.setSelectionRange(5, 11);
+    const picker = screen.getByRole("combobox", { name: S.conversation.to });
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView");
+    data.project.messages.push(note("new"));
+    await poll();
+    expect(compose()).toBe(input);
+    expect(input.value).toBe("Keep typing here");
+    expect(input.selectionStart).toBe(5);
+    expect(input.selectionEnd).toBe(11);
+    expect(document.activeElement).toBe(input);
+    expect(screen.getByRole("combobox", { name: S.conversation.to })).toBe(picker);
+    expect(picker.textContent).toBe("web/tester (stopped)");
+    expect(conversation().getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Helper update new")).toBeTruthy();
+    expect(scroll).toHaveBeenCalled();
+  });
+
+  it("shows the review's load error and retries without losing the draft", async () => {
+    data.project.messagesError = true;
+    await open();
+    expect(screen.getByText(S.conversation.loadError).closest("[role=alert]")?.className).toContain("text-destructive");
+    await userEvent.type(compose(), "Keep this through retry");
+    data.project.messagesError = false;
+    data.project.messages.push(note("recovered"));
+    await userEvent.click(screen.getByRole("button", { name: S.conversation.retry }));
+    await screen.findByText("Helper update recovered");
+    expect(screen.queryByText(S.conversation.loadError)).toBeNull();
+    expect(compose().value).toBe("Keep this through retry");
+  });
 });
 describe("React screens and routes", () => {
   it.each([

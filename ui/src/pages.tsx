@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { Collapsible } from "radix-ui";
 import { ProjectList } from "./project-list";
+import { ConversationFeed, useConversationTab, type ProjectConversation } from "./conversation-feed";
+import { Badge } from "./components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import {
   S,
@@ -347,7 +349,8 @@ function TaskForm({ data, name }: { data: PageData; name: string }) {
   );
 }
 export function ProjectPage({ data, name }: { data: PageData; name: string }) {
-  const v = data.project!;
+  const v: NonNullable<PageData["project"]> & Partial<ProjectConversation> = data.project!;
+  const { tab, changeTab, unread } = useConversationTab(v.messagesError ? undefined : v.messages);
   const [compose, setCompose] = useState(
     !LANES.some(([lane]) => v.lanes[lane].length),
   );
@@ -363,6 +366,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
           <Button
             data-testid="task-new"
             onClick={() => {
+              changeTab("board");
               setCompose(true);
               requestAnimationFrame(() =>
                 document
@@ -390,85 +394,99 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
             <AccountSettings data={data} scope="project" name={name} />
           </Card>
         </Disclosure>
-        <Collapsible.Root open={compose} onOpenChange={setCompose}>
-          <Collapsible.Trigger asChild>
-            <Button variant="outline" data-testid="task-new-open">
-              {S.wording.giveTask}
-            </Button>
-          </Collapsible.Trigger>
-          <Collapsible.Content>
-            <Card className="panel">
-              <h2>{S.wording.giveTask}</h2>
-              <Hint>{S.wording.helperIntro}</Hint>
-              {!v.members.length && (
-                <Notice>
-                  {S.projects.noTeam}
-                  <a className="link font-semibold" href="#/teams">
-                    {S.members.addTeam}
-                  </a>
-                  {S.projects.noTeamAfter}
-                </Notice>
-              )}
-              <TaskForm data={data} name={name} />
-            </Card>
-          </Collapsible.Content>
-        </Collapsible.Root>
-        <section>
-          <h2>{S.projects.board}</h2>
-          <Hint>{S.wording.workspace}</Hint>
-          <div className="board">
-            {LANES.map(([lane, text]) => (
-              <section key={lane} className="lane">
-                <div className="button-row justify-between">
-                  <h3>
-                    <StatusBadge
-                      text={text}
-                      tone={
-                        lane === "needsYou"
-                          ? "needs"
-                          : lane === "inReview"
-                            ? "review"
-                            : lane
-                      }
-                    />
-                  </h3>
-                  <span className="badge">{v.lanes[lane].length}</span>
-                </div>
-                <Hint>{laneHint(lane)}</Hint>
-                <div className="lane-tasks">
-                  {v.lanes[lane].length ? (
-                    v.lanes[lane].map((r) => (
-                      <a
-                        className="card-link"
-                        key={r.runId}
-                        href={"#/run/" + enc(r.runId)}
-                        data-testid="task-open"
-                        data-key={r.runId}
-                      >
-                        <Card className="task-card">
-                          <strong>{whoText(r)}</strong>
-                          <p className="line-clamp-3">{r.task}</p>
-                          {r.specialist && (
-                            <Hint>
-                              {fmt(S.wording.teamRole, {
-                                team: r.team,
-                                role: r.specialist,
-                              })}
-                            </Hint>
-                          )}
-                          <StatusBadge run={r} />
-                          <Hint>{when(r.startedAt)}</Hint>
-                        </Card>
+        <Tabs value={tab} onValueChange={changeTab}>
+          <TabsList>
+            <TabsTrigger value="board">{S.conversation.board}</TabsTrigger>
+            <TabsTrigger value="conversation">
+              {S.conversation.title}
+              {unread > 0 && <Badge variant="secondary" aria-label={fmt(S.conversation.unread, { count: unread })}>{unread}</Badge>}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="board" className="space-y-6">
+            <Collapsible.Root open={compose} onOpenChange={setCompose}>
+              <Collapsible.Trigger asChild>
+                <Button variant="outline" data-testid="task-new-open">
+                  {S.wording.giveTask}
+                </Button>
+              </Collapsible.Trigger>
+              <Collapsible.Content>
+                <Card className="panel">
+                  <h2>{S.wording.giveTask}</h2>
+                  <Hint>{S.wording.helperIntro}</Hint>
+                  {!v.members.length && (
+                    <Notice>
+                      {S.projects.noTeam}
+                      <a className="link font-semibold" href="#/teams">
+                        {S.members.addTeam}
                       </a>
-                    ))
-                  ) : (
-                    <Hint>{S.common.empty}</Hint>
+                      {S.projects.noTeamAfter}
+                    </Notice>
                   )}
-                </div>
-              </section>
-            ))}
-          </div>
-        </section>
+                  <TaskForm data={data} name={name} />
+                </Card>
+              </Collapsible.Content>
+            </Collapsible.Root>
+            <section>
+              <h2>{S.projects.board}</h2>
+              <Hint>{S.wording.workspace}</Hint>
+              <div className="board">
+                {LANES.map(([lane, text]) => (
+                  <section key={lane} className="lane">
+                    <div className="button-row justify-between">
+                      <h3>
+                        <StatusBadge
+                          text={text}
+                          tone={
+                            lane === "needsYou"
+                              ? "needs"
+                              : lane === "inReview"
+                                ? "review"
+                                : lane
+                          }
+                        />
+                      </h3>
+                      <span className="badge">{v.lanes[lane].length}</span>
+                    </div>
+                    <Hint>{laneHint(lane)}</Hint>
+                    <div className="lane-tasks">
+                      {v.lanes[lane].length ? (
+                        v.lanes[lane].map((r) => (
+                          <a
+                            className="card-link"
+                            key={r.runId}
+                            href={"#/run/" + enc(r.runId)}
+                            data-testid="task-open"
+                            data-key={r.runId}
+                          >
+                            <Card className="task-card">
+                              <strong>{whoText(r)}</strong>
+                              <p className="line-clamp-3">{r.task}</p>
+                              {r.specialist && (
+                                <Hint>
+                                  {fmt(S.wording.teamRole, {
+                                    team: r.team,
+                                    role: r.specialist,
+                                  })}
+                                </Hint>
+                              )}
+                              <StatusBadge run={r} />
+                              <Hint>{when(r.startedAt)}</Hint>
+                            </Card>
+                          </a>
+                        ))
+                      ) : (
+                        <Hint>{S.common.empty}</Hint>
+                      )}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </section>
+          </TabsContent>
+          <TabsContent value="conversation" forceMount hidden={tab !== "conversation"} className="h-[min(36rem,70dvh)] min-h-80 flex-none data-[state=inactive]:hidden">
+            <ConversationFeed name={name} messages={v.messages} helpers={v.helpers} messagesError={v.messagesError} active={tab === "conversation"} />
+          </TabsContent>
+        </Tabs>
       </section>
       <aside className="page-content project-detail">
         <Card className="panel">
