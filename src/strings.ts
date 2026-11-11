@@ -89,6 +89,13 @@ export const S = {
     title: "# Messages for this helper",
     entry: "## From {from} — {sentAt}\n\n{body}\n",
   },
+  conversation: {
+    board: "Board", title: "Conversation", you: "You", waiting: "(waiting)",
+    to: "To:", all: "All helpers", stopped: "{name} (stopped)", send: "Send",
+    message: "Message", empty: "No messages yet.", noHelpers: "Add helpers before sending.",
+    loadError: "Couldn't load messages. Try refreshing.", retry: "Retry",
+    unread: "{count} unread messages",
+  },
   common: {
     add: "Add", edit: "Edit", remove: "Remove", save: "Save", cancel: "Cancel", yes: "Yes", no: "No",
     none: "None", defaultModel: "Default", defaultModelUsed: "Default ({model})", noneAvailable: "None yet", name: "Name", optionalName: "Name (optional)",
@@ -298,6 +305,8 @@ export const S = {
     missing_tool: "Choose who should do this task.", missing_task: "Write what you'd like the helper to do.",
     missing_path: "Choose a folder before continuing.",
     missing_message: "Write a message for the helper before sending it.",
+    message_helper_not_on_project: "Choose a helper on this project before sending.",
+    message_no_helpers: "Add helpers before sending.",
     helper_task_required: "Run this command inside a running helper task. Codec supplies your task details there.",
     invalid_helper_status: "Choose a status: progress, stuck, or done.",
     missing_stuck_note: "Explain what you need from a person when reporting stuck.",

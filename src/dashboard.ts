@@ -56,6 +56,7 @@ import {
 } from "./org.js";
 import { getSkill, importSkill, importSkillFiles, listSkills } from "./skills.js";
 import { projectSkills, type GivenSkill } from "./inject.js";
+import { listMessages, postMessage } from "./messages.js";
 import {
   cleanRun,
   findRun,
@@ -293,11 +294,37 @@ export function homeView() {
   };
 }
 
+function projectHelpers(name: string) {
+  return listTeams().filter((team) => team.projects.includes(name))
+    .flatMap((team) => team.members.map((member) => ({ ref: `${team.name}/${member.name}`, name: `${team.name}/${member.name}` })));
+}
+
 export function projectView(name: string) {
   const project = listProjects().find((p) => p.name === name);
   if (!project) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
   const lanes: Record<Lane, ReturnType<typeof runSummary>[]> = { working: [], needsYou: [], inReview: [], done: [] };
-  for (const r of listRuns({ project: name }).reverse()) lanes[laneOf(r)].push(runSummary(r));
+  const runs = listRuns();
+  for (const r of runs.filter((run) => run.project === name).reverse()) lanes[laneOf(r)].push(runSummary(r));
+  const running = new Set(runs.filter((run) => run.state === "running").map((run) => `${run.team}/${run.member}`));
+  const helpers = projectHelpers(name).map((helper) => ({ ...helper, running: running.has(helper.ref) }));
+  const refs = new Set(helpers.map((helper) => helper.ref));
+  const feed = () => listMessages().reverse()
+    .filter((message) => refs.has(message.from) || refs.has(message.to))
+    .map((message) => ({
+      id: message.id,
+      senderName: message.from === "owner" ? S.conversation.you : message.from,
+      senderKind: message.from === "owner" ? "owner" as const : "helper" as const,
+      recipientName: message.to,
+      body: message.body,
+      sentAt: message.sentAt,
+      waiting: !message.deliveredAt,
+    }));
+  let messages: ReturnType<typeof feed> = [];
+  let messagesError = false;
+  try { messages = feed(); } catch (error) {
+    friendlyError(error, `/api/projects/${encodeURIComponent(name)}`);
+    messagesError = true;
+  }
   // Who can be started here: members of every team assigned to this project.
   const members = listTeams()
     .filter((t) => t.projects.includes(name))
@@ -312,7 +339,7 @@ export function projectView(name: string) {
       }),
     )
     .filter(Boolean);
-  return { project, lanes, members };
+  return { project, lanes, members, helpers, messages, messagesError };
 }
 
 export function runView(ref: string) {
@@ -708,6 +735,19 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     }
     if (!isGet && a === "projects" && b && c === "remove" && parts.length === 3) {
       return sendJson(res, 200, removeProjectChecked(b));
+    }
+    if (!isGet && a === "projects" && b && c === "messages" && n === 3) {
+      if (!getProject(b)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
+      const text = s(body.body) ?? "";
+      if (!text.trim()) throw new ApiError(400, "missing_message", S.errors.missing_message);
+      const helpers = projectHelpers(b);
+      const to = s(body.to);
+      if (to !== "all" && !helpers.some((helper) => helper.ref === to)) {
+        throw new ApiError(400, "message_helper_not_on_project", S.errors.message_helper_not_on_project);
+      }
+      if (!helpers.length) throw new ApiError(400, "message_no_helpers", S.errors.message_no_helpers);
+      const recipients = to === "all" ? helpers.map((helper) => helper.ref) : [to!];
+      return sendJson(res, 201, recipients.map((recipient) => postMessage({ from: "owner", to: recipient, body: text })));
     }
     if (!isGet && a === "projects" && b && c === "runs" && parts.length === 3) {
       const member = s(body.member)?.trim() || undefined;

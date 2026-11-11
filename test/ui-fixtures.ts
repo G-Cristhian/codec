@@ -1,4 +1,5 @@
 import type { PageData, Run } from "../ui/src/lib/api";
+import type { ProjectConversation } from "../ui/src/conversation-feed";
 export const runFixture: Run = {
   runId: "run-demo",
   project: "site",
@@ -24,7 +25,7 @@ export const runFixture: Run = {
   ],
   log: Array.from({ length: 100 }, (_, i) => "Activity " + i).join("\n"),
 };
-export function fixture(): PageData {
+export function fixture(): PageData & { project: NonNullable<PageData["project"]> & ProjectConversation } {
   return {
     setup: {
       tools: ["claude", "codex"].map((tool) => ({
@@ -76,6 +77,9 @@ export function fixture(): PageData {
     settings: { identity: { name: "Owner", email: "owner@example.invalid" } },
     project: {
       project: { name: "site", path: "/tmp/site" },
+      messages: [],
+      messagesError: false,
+      helpers: [{ ref: "web/tester", name: "web/tester", running: false }],
       members: [
         {
           ref: "web/tester",
