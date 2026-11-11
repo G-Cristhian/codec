@@ -8,11 +8,13 @@ import { startDashboard } from "./dashboard.js";
 import { readFileSync } from "fs";
 import {
   cleanRun,
+  currentHelperRun,
   findRun,
   listRuns,
   removeMemberChecked,
   removeProjectChecked,
   removeTeamChecked,
+  reportHelperStatus,
   runOutput,
   skillsUsed,
   startRun,
@@ -35,8 +37,9 @@ import {
 } from "./org.js";
 import { importSkill, listSkills } from "./skills.js";
 import { codecHome } from "./store.js";
+import { postMessage } from "./messages.js";
 import { saveIdentity } from "./settings.js";
-import { S } from "./strings.js";
+import { S, wording } from "./strings.js";
 
 const HELP = `codec — run AI coding agents on many projects at once
 
@@ -84,6 +87,8 @@ Dashboard
   codec dashboard [--port N]                 local web page (default port 4777)
 
 ${S.cli.identityHelp}
+
+${S.cli.helperHelp}
 
 Time limits: run > team member > specialist > 60 minutes. Positive minutes, up to 1440; fractions allowed.
 
@@ -173,7 +178,10 @@ function stateLabel(r: RunStatus): string {
 }
 
 export function main(argv: string[]): number {
-  const { positional, flags } = parse(argv);
+  // Helper text is positional, including quoted text that starts with a dash.
+  const { positional, flags }: Parsed = argv[0] === "message" || argv[0] === "report"
+    ? { positional: argv, flags: {} }
+    : parse(argv);
   const [cmd, sub, ...rest] = positional;
   const out = (s: string) => process.stdout.write(s + "\n");
 
@@ -183,6 +191,19 @@ export function main(argv: string[]): number {
   }
 
   switch (cmd) {
+    case "message": {
+      const run = currentHelperRun();
+      if (!sub || rest.length > 1) throw new Error(S.cli.messageUsage);
+      const message = postMessage({ from: `${run.team}/${run.member}`, to: sub, body: rest[0] ?? "" });
+      out(wording(S.cli.messageSent, { helper: message.to }));
+      return 0;
+    }
+    case "report": {
+      if (rest.length > 1) throw new Error(S.cli.reportUsage);
+      const status = reportHelperStatus(sub ?? "", rest[0]);
+      out(wording(S.cli.statusReported, { state: status.state }));
+      return 0;
+    }
     case "settings": {
       if (sub !== "identity") throw new Error(S.cli.identityUsage);
       saveIdentity({ name: str(flags, "name") ?? "", email: str(flags, "email") ?? "" });

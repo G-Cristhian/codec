@@ -87,13 +87,13 @@ export const LANES: Lane[] = ["working", "needsYou", "inReview", "done"];
 
 /**
  * Which board lane a run belongs on.
- *  working   running
- *  needsYou  failed or stopped (until its worktree is cleaned)
+ *  working   running without a stuck report
+ *  needsYou  running and stuck, or failed or stopped (until its worktree is cleaned)
  *  inReview  finished OK and the worktree still exists
  *  done      finished OK and the worktree is gone; also any cleaned run
  */
 export function laneOf(run: RunStatus): Lane {
-  if (run.state === "running") return "working";
+  if (run.state === "running") return run.helperStatus?.state === "stuck" ? "needsYou" : "working";
   const cleaned = !!run.cleanedAt || !existsSync(run.worktree);
   if (cleaned) return "done";
   if (run.reviewStatus === "unsaved" || run.reviewStatus === "unavailable") return "needsYou";
@@ -180,6 +180,7 @@ function runSummary(r: RunStatus) {
     project: r.project,
     agent: r.agent,
     state: r.state,
+    helperStatus: r.helperStatus,
     reviewStatus: r.reviewStatus,
     stateText: r.state === "stopped" ? S.tasks.stopped : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : r.state === "failed" ? (r.lostAt ? S.wording.lost : S.tasks.failed) : r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
     lostAt: r.lostAt,

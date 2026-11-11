@@ -101,6 +101,7 @@ export function instructionsText(m: ResolvedMember | undefined, tool: Agent, ski
       { member: m.member, specialty: m.specialty ?? "", team: m.team, role: m.specialist ?? "" }));
     if (m.instructions) parts.push(`${S.helperInstructions.standing}\n${m.instructions}`);
     parts.push(S.helperInstructions.messages);
+    parts.push(S.helperInstructions.sendMessage, S.helperInstructions.reportStatus);
   }
   parts.push(S.helperInstructions.attribution);
   return parts.join("\n\n") + "\n";
