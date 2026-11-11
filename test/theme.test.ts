@@ -1,65 +1,103 @@
-import { describe, expect, it } from "vitest";
-import { renderLocked, renderPage, THEME_KEY } from "../src/ui.js";
-
-const page = renderPage("tok");
-const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-
-describe("theme switch", () => {
-  it("applies a saved choice in <head> before any styles or body", () => {
-    const head = page.slice(0, page.indexOf("</head>"));
-    expect(head.indexOf("<script>")).toBeGreaterThan(-1);
-    expect(head.indexOf("<script>")).toBeLessThan(head.indexOf("<style>"));
-    expect(scripts[0]).toContain(`localStorage.getItem(${JSON.stringify(THEME_KEY)})`);
-    expect(scripts[0]).toContain('setAttribute("data-theme",t)');
+// @vitest-environment jsdom
+import { createElement } from "react";
+import { render, fireEvent, cleanup, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { THEME_BOOT, THEME_KEY, renderLocked } from "../src/ui.js";
+import { useTheme } from "../ui/src/lib/theme";
+import { S } from "../src/strings.js";
+const html = readFileSync(
+  join(import.meta.dirname, "../ui/index.html"),
+  "utf8",
+);
+const css = readFileSync(
+  join(import.meta.dirname, "../ui/src/index.css"),
+  "utf8",
+);
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  document.documentElement.removeAttribute("data-theme");
+});
+function Switch() {
+  const [theme, set] = useTheme();
+  return createElement(
+    "div",
+    {},
+    theme,
+    ...(["auto", "light", "dark"] as const).map((t) =>
+      createElement("button", { key: t, onClick: () => set(t) }, S.theme[t]),
+    ),
+  );
+}
+describe("theme contract", () => {
+  it("uses the exact existing boot before all CSS and JS", () => {
+    expect(html).toContain(THEME_BOOT);
+    expect(html.indexOf(THEME_BOOT)).toBeLessThan(html.indexOf("<body>"));
+    expect(THEME_KEY).toBe("codec-theme");
   });
-
-  it("boot script sets data-theme only for light/dark, and survives blocked storage", () => {
-    const run = (stored: string | null, throws = false) => {
-      const attrs: Record<string, string> = {};
-      const document = { documentElement: { setAttribute: (k: string, v: string) => (attrs[k] = v) } };
-      const localStorage = {
-        getItem: () => {
-          if (throws) throw new Error("blocked");
-          return stored;
+  it.each([
+    ["light", "light"],
+    ["dark", "dark"],
+    [null, null],
+    ["invalid", null],
+  ])("boots saved %s as %s", (value, expected) => {
+    localStorage.clear();
+    if (value) localStorage.setItem(THEME_KEY, value);
+    new Function(THEME_BOOT.slice(8, -9))();
+    expect(document.documentElement.getAttribute("data-theme")).toBe(expected);
+  });
+  it("survives storage being blocked", () => {
+    expect(() =>
+      new Function("localStorage", THEME_BOOT.slice(8, -9))({
+        getItem() {
+          throw Error("blocked");
         },
-      };
-      new Function("document", "localStorage", scripts[0])(document, localStorage);
-      return attrs["data-theme"];
-    };
-    expect(run("dark")).toBe("dark");
-    expect(run("light")).toBe("light");
-    expect(run(null)).toBeUndefined();
-    expect(run("purple")).toBeUndefined();
-    expect(run(null, true)).toBeUndefined();
+      }),
+    ).not.toThrow();
   });
-
-  it("offers Auto / Light / Dark in the header, Auto first (default)", () => {
-    const header = page.slice(page.indexOf("<header>"), page.indexOf("</header>"));
-    const opts = [...header.matchAll(/<option value="(\w+)">(\w+)<\/option>/g)].map((m) => [m[1], m[2]]);
-    expect(opts).toEqual([["auto", "Auto"], ["light", "Light"], ["dark", "Dark"]]);
+  it("changes and persists light and dark, and removes the attribute/key for Auto", () => {
+    render(createElement(Switch));
+    for (const t of ["light", "dark", "auto"] as const) {
+      fireEvent.click(screen.getByText(S.theme[t]));
+      expect(document.documentElement.getAttribute("data-theme")).toBe(
+        t === "auto" ? null : t,
+      );
+      expect(localStorage.getItem(THEME_KEY)).toBe(t === "auto" ? null : t);
+    }
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
-
-  it("dark palette applies when chosen or on auto+OS dark; light wins when chosen", () => {
-    const css = page.slice(page.indexOf("<style>"), page.indexOf("</style>"));
-    expect(css).toMatch(/:root \{\s*color-scheme: light;/);
-    expect(css).toMatch(/:root\[data-theme="dark"\] \{\s*color-scheme: dark;[^}]*--bg: #0f1115/);
-    // OS-dark only applies with no explicit choice, so [data-theme=light] keeps the light vars.
-    expect(css).toMatch(
-      /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme\]\) \{\s*color-scheme: dark;[^}]*--bg: #0f1115/,
+  it("defines the light and dark token blocks plus OS-dark Auto, and the block-form variant", () => {
+    expect(css).toContain(':root[data-theme="dark"]');
+    expect(css.replace(/\s+/g, "")).toContain(
+      "@media(prefers-color-scheme:dark){:root:not([data-theme])",
     );
-    expect(css).not.toMatch(/@media \(prefers-color-scheme: dark\) \{\s*:root \{/);
+    expect(css.replace(/\s+/g, "")).toContain(
+      "&:where([data-theme=dark],[data-theme=dark]*){@slot;}",
+    );
+    expect(css.replace(/\s+/g, "")).toContain(
+      "&:where(:root:not([data-theme]),:root:not([data-theme])*){@slot;}",
+    );
+    for (const color of [
+      "#f6f7f9",
+      "#0f1115",
+      "#b45309",
+      "#5b6474",
+      "#e6e8ee",
+      "#6d8dff",
+      "#0b0d11",
+    ])
+      expect(css).toContain(color);
   });
-
-  it("all inline scripts parse (no template-literal breakage)", () => {
-    expect(scripts.length).toBe(2);
-    for (const s of scripts) expect(() => new Function(s)).not.toThrow();
-    expect(scripts[1]).toContain(JSON.stringify(THEME_KEY));
-  });
-
-  it("locked page follows the OS theme", () => {
-    const html = renderLocked();
-    expect(html).toContain("color-scheme:light");
-    expect(html).toMatch(/@media \(prefers-color-scheme: dark\)\{:root\{color-scheme:dark;/);
-    expect(html).toContain("background:var(--bg)");
+  it("serves an OS-themed locked card without scripts, tokens or bundle", () => {
+    const locked = renderLocked();
+    expect(locked).toContain(S.locked.title);
+    expect(locked).toContain("max-width:448px");
+    expect(locked).toContain('aria-hidden="true"');
+    expect(locked).toContain("prefers-color-scheme: dark");
+    expect(locked).not.toContain("<script");
+    expect(locked).not.toContain("codec-token");
+    expect(locked).not.toContain("/assets/");
   });
 });

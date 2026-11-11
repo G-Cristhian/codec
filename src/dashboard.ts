@@ -28,7 +28,7 @@ import { createSetupChecker, type SetupOptions } from "./setup.js";
 import { checkTool } from "./tools.js";
 import { checkTimeLimit, formatTimeLimit } from "./limits.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
-import { randomBytes, timingSafeEqual } from "crypto";
+import { randomBytes, timingSafeEqual, createHash } from "crypto";
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { codecHome } from "./store.js";
@@ -68,10 +68,13 @@ import {
   stopRun,
   type RunStatus,
 } from "./runs.js";
-import { renderPage, renderLocked } from "./ui.js";
+import { renderLocked } from "./ui.js";
+import { isUiAssetPath, readUiAsset, renderNextPage } from "./ui-bundle.js";
 
 export const DEFAULT_PORT = 4777;
 export const HOST = "127.0.0.1";
+// All dashboard screens now use the production React bundle.
+const REACT_AT_ROOT = true;
 const LOG_LINES = 200;
 const MAX_BODY = 64 * 1024;
 const MAX_UPLOAD = 8 * 1024 * 1024; // skill folder upload (base64)
@@ -335,49 +338,49 @@ export function runView(ref: string) {
 
 /** Describe the same dependencies and blockers enforced by engine removals. */
 export function removePreview(kind: string, name: string) {
-  const effects: { what: string }[] = [];
+  const effects: { what: string; kind: "lost" | "kept" }[] = [];
   let blockedReason: string | undefined;
   const runs = listRuns();
   let related: RunStatus[] = [];
-  const effect = (what: string) => effects.push({ what });
+  const effect = (kind: "lost" | "kept", what: string) => effects.push({ what, kind });
   if (kind === "project") {
     if (!getProject(name)) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
     related = runs.filter((run) => run.project === name);
     for (const team of listTeams().filter((team) => team.projects.includes(name))) {
-      effect(wording(S.wording.teamEffect, { name: team.name }));
+      effect("lost", wording(S.wording.teamEffect, { name: team.name }));
     }
-    effect(S.wording.projectEffect);
+    effect("kept", S.wording.projectEffect);
   } else if (kind === "team") {
     const team = getTeam(name);
     if (!team) throw new CodecError("team_not_found", `no team named "${name}"`, { name: name }, 404);
     related = runs.filter((run) => run.team === name);
-    effect(wording(S.wording.helpersRemoved, { count: team.members.length }));
-    effect(S.wording.rolesKept);
+    effect("lost", wording(S.wording.helpersRemoved, { count: team.members.length }));
+    effect("kept", S.wording.rolesKept);
   } else if (kind === "member") {
     const ref = parseMemberRef(name);
     const team = getTeam(ref.team);
     if (!team) throw new CodecError("team_not_found", `no team named "${ref.team}"`, { name: ref.team }, 404);
     if (!team.members.some((member) => member.name === ref.member)) throw new CodecError("member_not_found", `no member named "${name}"`, {}, 404);
     related = runs.filter((run) => run.team === ref.team && run.member === ref.member);
-    effect(wording(S.wording.memberEffect, { member: ref.member, team: ref.team }));
-    effect(S.wording.roleKept);
+    effect("lost", wording(S.wording.memberEffect, { member: ref.member, team: ref.team }));
+    effect("kept", S.wording.roleKept);
   } else if (kind === "specialist") {
     if (!getSpecialist(name)) throw new CodecError("specialist_not_found", `no specialist named "${name}"`, { name }, 404);
     const clones = clonesOf(name);
     if (clones.length) blockedReason = wording(S.wording.roleBlocked, { name, count: clones.length, list: clones.map((c) => wording(S.wording.helperTeam, c)).join(", ") });
     related = runs.filter((run) => run.specialist === name);
-    effect(S.wording.roleRemoved);
-    effect(S.wording.skillsKept);
+    effect("lost", S.wording.roleRemoved);
+    effect("kept", S.wording.skillsKept);
   } else if (kind === "skill") {
     if (!getSkill(name)) throw new CodecError("invalid_skill", `no skill named "${name}"`, { name });
     const holders = skillHolders(name);
-    effect(wording(S.wording.rolesLose, { count: holders.specialists.length }));
+    effect("lost", wording(S.wording.rolesLose, { count: holders.specialists.length }));
     // Clones also lose access through their specialist, even without an extra assignment.
     const members = new Set([...holders.members, ...holders.specialists.flatMap((specialist) => clonesOf(specialist).map((clone) => `${clone.team}/${clone.member}`))]);
-    effect(wording(S.wording.helpersLose, { count: members.size }));
-    effect(S.wording.taskCopies);
-    effect(S.wording.originalKept);
-    effect(wording(S.wording.removeSkill, { name, list: [...holders.specialists.map((name) => wording(S.members.copyOf, { name })), ...Array.from(members, (ref) => wording(S.wording.helperTeam, parseMemberRef(ref)))].join(", ") || S.wording.noHolders }));
+    effect("lost", wording(S.wording.helpersLose, { count: members.size }));
+    effect("kept", S.wording.taskCopies);
+    effect("kept", S.wording.originalKept);
+    effect("lost", wording(S.wording.removeSkill, { name, list: [...holders.specialists.map((name) => wording(S.members.copyOf, { name })), ...Array.from(members, (ref) => wording(S.wording.helperTeam, parseMemberRef(ref)))].join(", ") || S.wording.noHolders }));
   } else {
     throw new ApiError(400, "invalid_kind", "Choose a project, team, specialist, skill or member to remove.");
   }
@@ -386,7 +389,7 @@ export function removePreview(kind: string, name: string) {
   }
   if (kind !== "skill") {
     const count = related.filter((run) => run.state !== "running").length;
-    effect(wording(S.wording.history, { count }));
+    effect("kept", wording(S.wording.history, { count }));
   }
   const removalText = kind === "project" ? wording(S.wording.removeProject, { name })
     : kind === "team" ? wording(S.wording.removeTeam, { name })
@@ -408,9 +411,18 @@ const BASE_HEADERS = {
   "X-Frame-Options": "DENY",
 };
 
-function send(res: ServerResponse, status: number, body: string, type: string, extra: Record<string, string> = {}) {
+function send(res: ServerResponse, status: number, body: string | Buffer, type: string, extra: Record<string, string> = {}) {
   res.writeHead(status, { ...BASE_HEADERS, "Content-Type": type, ...extra });
   res.end(body);
+}
+
+function sendLocked(res: ServerResponse) {
+  const html = renderLocked();
+  const style = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+  const hash = createHash("sha256").update(style).digest("base64");
+  return send(res, 401, html, "text/html; charset=utf-8", {
+    "Content-Security-Policy": `default-src 'none'; script-src 'none'; style-src 'sha256-${hash}'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+  });
 }
 
 function sendJson(res: ServerResponse, status: number, data: unknown) {
@@ -471,7 +483,7 @@ export interface Dashboard {
   close(): Promise<void>;
 }
 
-export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions } = {}): Promise<Dashboard> {
+export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions; uiBundleDir?: string } = {}): Promise<Dashboard> {
   const token = opts.token ?? randomBytes(24).toString("base64url");
   let port = opts.port ?? DEFAULT_PORT;
   const cookieName = () => `codec_token_${port}`;
@@ -492,6 +504,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       if ((req.url ?? "").startsWith("/api/")) throw new ApiError(421, "unexpected_host", "Open the dashboard using its local Codec link.");
       return send(res, 421, "Codec dashboard: unexpected Host header\n", "text/plain; charset=utf-8");
     }
+    const rawPath = (req.url ?? "/").split("?")[0];
     const url = new URL(req.url ?? "/", `http://${host}`);
     const path = url.pathname;
     const headerToken = s(req.headers["x-codec-token"]);
@@ -499,22 +512,35 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
 
     // 2. The page. ?token=... (the printed link) sets the cookie, then
     //    redirects so the token doesn't linger in the address bar.
-    if (path === "/" && req.method === "GET") {
+    if ((path === "/" || path === "/next" || path === "/next/") && req.method === "GET" && !isUiAssetPath(rawPath)) {
       const q = url.searchParams.get("token") ?? undefined;
       if (q !== undefined) {
-        if (!tokenEquals(q, token)) return send(res, 401, renderLocked(), "text/html; charset=utf-8");
+        if (!tokenEquals(q, token)) return sendLocked(res);
         res.writeHead(303, {
           ...BASE_HEADERS,
-          Location: "/",
+          Location: path,
           "Set-Cookie": `${cookieName()}=${token}; HttpOnly; SameSite=Strict; Path=/`,
         });
         return void res.end();
       }
-      if (!tokenEquals(cookieToken, token)) return send(res, 401, renderLocked(), "text/html; charset=utf-8");
-      return send(res, 200, renderPage(token), "text/html; charset=utf-8", {
-        "Content-Security-Policy":
-          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-      });
+      if (!tokenEquals(cookieToken, token)) return sendLocked(res);
+      // /next remains an authenticated alias for step 1 bookmarks.
+      if (REACT_AT_ROOT || path !== "/") {
+        const html = renderNextPage(token, opts.uiBundleDir);
+        if (html === undefined) return send(res, 503, "Codec's new interface has not been built. Run npm run build, then refresh this page.\n", "text/plain; charset=utf-8");
+        const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => "'sha256-" + createHash("sha256").update(m[1]).digest("base64") + "'");
+        return send(res, 200, html, "text/html; charset=utf-8", {
+          "Content-Security-Policy":
+            `default-src 'none'; script-src 'self' ${hashes.join(" ")}; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+        });
+      }
+    }
+
+    if (isUiAssetPath(rawPath) && req.method === "GET") {
+      if (!tokenEquals(cookieToken, token)) return sendLocked(res);
+      const asset = readUiAsset(rawPath, opts.uiBundleDir);
+      if (!asset) return send(res, 404, "Asset not found.\n", "text/plain; charset=utf-8");
+      return send(res, 200, asset.body, asset.type, { "Cache-Control": asset.cache });
     }
 
     if (!path.startsWith("/api/")) throw new ApiError(404, "not_found", "That page could not be found. Refresh the dashboard and try again.");

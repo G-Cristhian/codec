@@ -16,6 +16,13 @@ export function cleanupTemps(): void {
   while (temps.length) rmSync(temps.pop()!, { recursive: true, force: true });
 }
 
+/** HTTP authentication tests use an isolated page; ui-bundle.test builds the real UI. */
+export function makeUiBundle(): string {
+  const dir = tempDir("codec-ui-auth-");
+  writeFileSync(join(dir, "index.html"), '<!doctype html><html><head><title>Codec</title><meta name="codec-token" content="__CODEC_TOKEN__"></head><body><div id="root"></div></body></html>');
+  return dir;
+}
+
 /** A fresh git repo with one commit. */
 export function makeRepo(name = "repo"): string {
   const dir = join(tempDir(), name);

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { startDashboard, type Dashboard } from "../src/dashboard.js";
 import { runDesktop } from "../src/desktop.js";
 import { helperNodeExecutable } from "../src/runtime.js";
+import { cleanupTemps, makeUiBundle } from "./helpers.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -317,10 +318,11 @@ describe("macOS Dock activation", () => {
 
 describe("desktop free ports and real dashboard authentication", () => {
   const servers: Dashboard[] = [];
-  afterEach(async () => { await Promise.all(servers.splice(0).map((d) => d.close())); });
+  afterEach(async () => { await Promise.all(servers.splice(0).map((d) => d.close())); cleanupTemps(); });
   it("allocates distinct loopback ports, accepts the cookie handoff, then releases the ports", async () => {
-    const a = await startDashboard({ port: 0 }); servers.push(a);
-    const b = await startDashboard({ port: 0 }); servers.push(b);
+    const uiBundleDir = makeUiBundle();
+    const a = await startDashboard({ port: 0, uiBundleDir }); servers.push(a);
+    const b = await startDashboard({ port: 0, uiBundleDir }); servers.push(b);
     expect(a.port).toBeGreaterThan(0);
     expect(b.port).not.toBe(a.port);
     expect(a.server.address()).toMatchObject({ address: "127.0.0.1" });

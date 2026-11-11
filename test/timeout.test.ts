@@ -8,7 +8,7 @@ import { getRunStatus, listRuns, runOutput, startRun, stopRun, type RunRecord } 
 import { readEvents } from "../src/events.js";
 import { startDashboard, type Dashboard } from "../src/dashboard.js";
 import { checkTimeLimit, formatTimeLimit } from "../src/limits.js";
-import { renderPage } from "../src/ui.js";
+import { stateText } from "../ui/src/lib/api";
 import { cleanupTemps, cli, makeRepo, useIsolatedHome, waitFor } from "./helpers.js";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -284,11 +284,7 @@ describe("run time limits", () => {
     expect(detail.log).toContain("saved output");
     const board = (await call("projects/alpha")).json;
     expect(board.lanes.needsYou[0]).toMatchObject({ runId: id, stateText: detail.stateText, timeLimitMinutes: 0.05, deadline: detail.deadline });
-    const page = renderPage("test-token");
-    expect(page).toContain('if (r.state === "timed_out") return r.stateText');
-    expect(page).toContain('text: "Time limit"');
-    expect(page).toContain('Time limit (minutes)');
-    const script = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)![1];
-    expect(() => new Function(script)).not.toThrow();
+    expect(stateText(detail)).toBe(detail.stateText);
+
   });
 });

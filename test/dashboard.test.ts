@@ -4,7 +4,7 @@ import { existsSync } from "fs";
 import { addProject } from "../src/registry.js";
 import { cleanRun, getRunStatus, listRuns, startRun, stopRun, type RunStatus } from "../src/runs.js";
 import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src/dashboard.js";
-import { cleanupTemps, makeRepo, useIsolatedHome, waitFor } from "./helpers.js";
+import { cleanupTemps, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
 
 const FAKE = `sleep 1; echo "fake agent says hi"; echo "task: $(cat "$CODEC_TASK_FILE")"; echo saved > notes.txt`;
 
@@ -53,7 +53,7 @@ describe("dashboard", () => {
   let d: Dashboard;
   beforeEach(async () => {
     useIsolatedHome(FAKE);
-    d = await startDashboard({ port: 0 });
+    d = await startDashboard({ port: 0, uiBundleDir: makeUiBundle() });
   });
   afterEach(async () => {
     await d.close();

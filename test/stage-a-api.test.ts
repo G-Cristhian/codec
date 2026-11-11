@@ -192,14 +192,32 @@ describe("removal previews and runs", () => {
       const result = await preview(kind, name);
       expect(result).toMatchObject({ status: 200, json: { kind, name, blocked: kind === "specialist" } });
       expect(result.json.effects.length).toBeGreaterThan(0);
-      expect(result.json.effects.every((effect: any) => typeof effect.what === "string")).toBe(true);
+      expect(result.json.effects.every((effect: any) => typeof effect.what === "string" && ["lost", "kept"].includes(effect.kind))).toBe(true);
+      const expectedKinds: Record<string, string[]> = { project: ["lost", "kept", "kept"], team: ["lost", "kept", "kept"], member: ["lost", "kept", "kept"], specialist: ["lost", "kept", "kept"], skill: ["lost", "lost", "kept", "kept", "lost"] };
+      expect(result.json.effects.map((effect: {kind: string}) => effect.kind)).toEqual(expectedKinds[kind]);
       expect(result.json.blockedReason).toEqual(kind === "specialist" ? expect.any(String) : undefined);
     }
-    expect((await preview("project", "alpha")).json.effects).toContainEqual({ what: wording(S.wording.teamEffect, { name: "Alpha" }) });
-    expect((await preview("skill", "review")).json.effects).toContainEqual({ what: wording(S.wording.helpersLose, { count: 1 }) });
+    expect((await preview("project", "alpha")).json.effects).toContainEqual({ what: wording(S.wording.teamEffect, { name: "Alpha" }), kind: "lost" });
+    expect((await preview("skill", "review")).json.effects).toContainEqual({ what: wording(S.wording.helpersLose, { count: 1 }), kind: "lost" });
     expect((await post("/api/specialists/reviewer/remove")).json.code).toBe("specialist_in_use");
     await post("/api/teams/Alpha/members/copy/remove");
     expect((await preview("specialist", "reviewer")).json.blocked).toBe(false);
+  });
+  it.each([
+    ["project", "alpha", ["lost", "kept", "kept"]],
+    ["team", "Alpha", ["lost", "kept", "kept"]],
+    ["member", "Alpha/copy", ["lost", "kept", "kept"]],
+    ["specialist", "reviewer", ["lost", "kept", "kept"]],
+    ["skill", "review", ["lost", "lost", "kept", "kept", "lost"]],
+  ])("types every %s preview effect at the API boundary", async (kind, name, kinds) => {
+    await team();
+    await post("/api/skills", { path: skillFolder() });
+    await post("/api/specialists", { name: "reviewer", specialty: "review", tool: "claude", skills: ["review"] });
+    await post("/api/teams/Alpha/members", { name: "copy", specialist: "reviewer" });
+    const result = await preview(kind as string, name as string);
+    expect(result.status).toBe(200);
+    expect(result.json.effects.map((effect: {kind: string}) => effect.kind)).toEqual(kinds);
+    expect(result.json.effects.every((effect: {what: string}) => effect.what.length > 0)).toBe(true);
   });
   it("previews and enforces running task blockers for project, team and member, then retains history", async () => {
     await team();
@@ -217,7 +235,7 @@ describe("removal previews and runs", () => {
     for (const [kind, name] of [["project", "alpha"], ["team", "Alpha"], ["member", "Alpha/worker"]]) {
       const result = (await preview(kind, name)).json;
       expect(result.blocked).toBe(false);
-      expect(result.effects).toContainEqual({ what: wording(S.wording.history, { count: 1 }) });
+      expect(result.effects).toContainEqual({ what: wording(S.wording.history, { count: 1 }), kind: "kept" });
     }
     expect((await post(`/api/runs/${id}/clean`, { force: true, deleteBranch: true })).json.lane).toBe("done");
     expect((await post("/api/projects/alpha/remove")).status).toBe(200);
@@ -230,7 +248,7 @@ describe("removal previews and runs", () => {
     const started = await post("/api/projects/alpha/runs", { agent: "claude", task: "complete", timeLimitMinutes: 1 });
     expect(started.status).toBe(201);
     await waitFor(started.json.runId);
-    expect((await preview("project", "alpha")).json.effects).toContainEqual({ what: wording(S.wording.history, { count: 1 }) });
+    expect((await preview("project", "alpha")).json.effects).toContainEqual({ what: wording(S.wording.history, { count: 1 }), kind: "kept" });
     expect((await post(`/api/runs/${started.json.runId}/clean`)).json.lane).toBe("done");
   });
   it("requires explicit force to discard unsaved task changes", async () => {
@@ -433,7 +451,7 @@ describe("Wave 2 checkpoint and source preservation", () => {
     expect(copy.startsWith(join(home, "skills"))).toBe(true);
     expect(readFileSync(join(copy, "SKILL.md"))).toEqual(before);
     expect(readFileSync(join(copy, "extra.bin"))).toEqual(extra);
-    expect((await preview("skill", "review")).json.effects).toContainEqual({ what: S.wording.originalKept });
+    expect((await preview("skill", "review")).json.effects).toContainEqual({ what: S.wording.originalKept, kind: "kept" });
     expect((await post("/api/skills/review/remove")).status).toBe(200);
     expect(existsSync(copy)).toBe(false);
     expect(existsSync(dir)).toBe(true);

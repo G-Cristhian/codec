@@ -15,7 +15,7 @@ npm run build
 npm link        # optional: puts `codec` on your PATH
 ```
 
-Requires Node 20+, git, and the `claude` and/or `codex` CLI for real runs.
+Requires Node 20.19+ or 22.12+, git, and the `claude` and/or `codex` CLI for real runs.
 
 ## Commands
 
@@ -65,6 +65,28 @@ Because the page can start agents that have full permissions, it is locked down:
   `POST` carrying the token in a header, so other websites can't trigger
   actions. Don't share the link.
 
+The React dashboard is served at `/` after opening the printed link. `/next`
+remains an authenticated alias. `npm run build` builds both the server and the
+UI into `dist/`; if the UI is missing, the page explains how to build it.
+`npm run build`, `npm run app`, and `npm run install-launcher`
+automatically run `npm install` when installed packages are out of date after
+a pull. There is one root package manifest and lockfile for both server and UI.
+
+For UI development, start a dashboard on an unused port, then pass its printed
+link to the Vite proxy in a second terminal:
+
+```sh
+CODEC_DASHBOARD_URL='http://127.0.0.1:<port>/?token=<token>' npm run dev:ui
+```
+
+Open `http://127.0.0.1:5173`. The development proxy supplies the token to the
+page only while serving it; production builds retain an empty placeholder for
+the dashboard to fill. `npm run typecheck` checks both server/tests and UI.
+The base components in `ui/src/components/ui` use shadcn/ui's
+[manual setup](https://ui.shadcn.com/docs/installation/manual) and official
+`new-york-v4` registry sources, with local `cn` imports. The registry components
+are checked in so they can be adapted when the screens are ported.
+
 ## Run on your Mac
 
 Install **Node.js 22.12 or newer**, **Homebrew**, and **tmux** first (in Terminal,
@@ -103,7 +125,7 @@ With Node 22.12+ and the development dependencies installed, run:
 npm run app
 ```
 
-This builds the TypeScript code and opens **Codec** in its own window. The app
+This builds the server and React UI and opens **Codec** in its own window. The app
 starts the same dashboard on an OS-assigned loopback port, independently of any
 `codec dashboard` on port 4777. It passes authentication directly to the window
 as an HttpOnly cookie in a memory-only session; no private link is printed or
