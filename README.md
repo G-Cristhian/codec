@@ -26,6 +26,8 @@ Requires Node 20.19+ or 22.12+, git, and the `claude` and/or `codex` CLI for rea
 | `codec project remove <name>` | Unregister a project. The repository is not touched. Refused while agents are running on it. |
 | `codec run <project> --agent claude\|codex --task "<text>"` | Create a fresh worktree + branch `codec/<run>` and start the agent there in the background. |
 | `codec status [--project <name>] [--json]` | Every run across all projects: project, agent, state, start time, worktree. |
+| `codec message <team/helper> "<text>"` | From inside a helper task, send a message to another helper. It arrives now if they are working, or waits in their inbox for their next task. |
+| `codec report progress\|stuck\|done ["<note>"]` | From inside a helper task, report progress, ask for a person, or say the work is finished. Stuck needs a note and moves the task to Needs you. |
 | `codec logs <run> [--lines N]` | Recent output from a run. |
 | `codec stop <run>` | Stop a running agent (and anything it started). |
 | `codec clean <run> [--force] [--delete-branch]` | Remove a finished run's worktree. `--force` discards uncommitted changes; the branch is kept unless `--delete-branch`. |

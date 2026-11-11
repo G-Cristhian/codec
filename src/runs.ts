@@ -28,6 +28,7 @@ import { spawn } from "child_process";
 import { helperNodeExecutable } from "./runtime.js";
 import { existsSync, mkdirSync, openSync, closeSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { fileURLToPath } from "url";
 import { randomBytes } from "crypto";
 import { logEvent } from "./events.js";
 import { getProject, git, removeProject, type Project } from "./registry.js";
@@ -64,7 +65,14 @@ import { AGENTS, type Agent } from "./tools.js";
 export { AGENTS, type Agent };
 export type RunState = "running" | "done" | "failed" | "stopped" | "timed_out";
 
+export interface HelperStatus {
+  state: "progress" | "stuck" | "done";
+  note: string;
+  at: string;
+}
+
 export interface RunRecord {
+  helperStatus?: HelperStatus;
   account?: { id: string; name: string };
   limitHit?: boolean;
   runId: string;
@@ -110,6 +118,17 @@ const START_GRACE_MS = 10_000;
 
 const runDir = (runId: string): string => join(runsDir(), runId);
 const recordFile = (runId: string): string => join(runDir(runId), "run.json");
+
+/** The built CLI runs directly; source runs need a loader resolved outside the worktree. */
+function helperCli(dir: string): string {
+  if (!import.meta.url.endsWith(".ts")) return fileURLToPath(new URL("./cli.js", import.meta.url));
+  const launcher = join(dir, "helper-cli.mjs");
+  writeFileSync(launcher, `import { register } from ${JSON.stringify(import.meta.resolve("tsx/esm/api"))};
+register();
+await import(${JSON.stringify(new URL("./cli.ts", import.meta.url).href)});
+`);
+  return launcher;
+}
 
 /**
  * The CLI command for each agent. Both run headless and fully autonomous
@@ -343,6 +362,7 @@ function startAccountRun(input: StartInput): RunStatus {
   writeFileSync(join(dir, "run.sh"), WRAPPER);
   writeFileSync(join(dir, "strip-attribution.cjs"), COMMIT_ATTRIBUTION_SCRIPT);
   writeFileSync(join(dir, "capture.cjs"), ACTIVITY_SCRIPT);
+  const cli = helperCli(dir);
 
   const record: RunRecord = {
     account: { id: account.id, name: account.name },
@@ -393,6 +413,7 @@ function startAccountRun(input: StartInput): RunStatus {
         CODEC_PROJECT: project.name,
         CODEC_AGENT: agent,
         CODEC_NODE: helperNodeExecutable(),
+        CODEC_CLI: cli,
         CODEC_WORKTREE: worktree,
         CODEC_RUN_DIR: dir,
         CODEC_TASK_FILE: join(dir, "task.txt"),
@@ -407,7 +428,9 @@ function startAccountRun(input: StartInput): RunStatus {
   }
   if (!pid) throw new CodecError("spawn_failed", `failed to spawn agent for ${runId} (see ${join(dir, "output.log")})`, { tool: agent === "claude" ? S.setup.claude : S.setup.codex });
 
-  writeJsonAtomic(recordFile(runId), redactValue({ ...record, pid }));
+  withLock(`run-${runId}`, () => {
+    writeJsonAtomic(recordFile(runId), redactValue({ ...readRecord(runId)!, pid }));
+  });
   // Verified registration (from the hive): never report a launch the
   // status view can't see. If the record didn't persist, kill and fail.
   const check = readRecord(runId);
@@ -462,6 +485,33 @@ function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
   if (processAlive(rec)) return "running";
   if (!rec.pid && Date.now() - Date.parse(rec.startedAt) < START_GRACE_MS) return "running";
   return "failed";
+}
+
+/** Only a full task id from the wrapper can identify the calling helper. */
+export function currentHelperRun(): RunRecord & { team: string; member: string } {
+  const runId = process.env.CODEC_RUN_ID;
+  const run = runId && /^run-[a-f0-9]{8}$/.test(runId) ? readRecord(runId) : undefined;
+  if (!run || !run.team || !run.member || deriveState(run, readExitCode(run.runId)) !== "running") {
+    throw new CodecError("helper_task_required", S.errors.helper_task_required);
+  }
+  return { ...run, team: run.team, member: run.member };
+}
+
+/** Reports describe the helper's work; the wrapper still owns task completion. */
+export function reportHelperStatus(state: string, note = ""): HelperStatus {
+  const run = currentHelperRun();
+  if (state !== "progress" && state !== "stuck" && state !== "done") {
+    throw new CodecError("invalid_helper_status", S.errors.invalid_helper_status);
+  }
+  if (state === "stuck" && !note.trim()) {
+    throw new CodecError("missing_stuck_note", S.errors.missing_stuck_note);
+  }
+  return withLock(`run-${run.runId}`, () => {
+    const fresh = currentHelperRun();
+    const helperStatus: HelperStatus = { state, note: redactSecrets(note), at: new Date().toISOString() };
+    writeJsonAtomic(recordFile(run.runId), { ...fresh, helperStatus });
+    return helperStatus;
+  });
 }
 
 export function getRunStatus(runId: string): RunStatus | undefined {
