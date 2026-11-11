@@ -32,15 +32,28 @@ import {
 } from "./shared";
 import {
   AccountsPage,
-  HomePage,
+  ProjectsPage,
   MemberPage,
   ProjectPage,
   RolesPage,
-  SetupPage,
   SkillsPage,
   TaskPage,
   TeamsPage,
 } from "./pages";
+import { HomePage, HelpersPage, ProfilePage, initials } from "./overview";
+import { ChatPage } from "./chat";
+import {
+  House,
+  MessageSquare,
+  Users,
+  Folder,
+  UsersRound,
+  Contact,
+  BookOpen,
+  KeyRound,
+  PanelLeftClose,
+  User,
+} from "lucide-react";
 function parts(hash: string) {
   try {
     return hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
@@ -59,7 +72,7 @@ export async function loadPage(
     api<Home>("state", undefined, signal),
   ]);
   const data: PageData = { setup, accounts, home };
-  if (p[0] === "setup")
+  if (p[0] === "setup" || p[0] === "profile")
     data.settings = await api("settings", undefined, signal);
   else if (p[0] === "project" && p[1])
     data.project = await api<ProjectView>(
@@ -86,6 +99,9 @@ export async function loadPage(
     ]);
     Object.assign(data, { member, skills });
   }
+  if (["", "helpers"].includes(p[0]))
+    data.teams = await api<Team[]>("teams", undefined, signal);
+  if (p[0] === "chat") data.chat = await api("chat", undefined, signal);
   return data;
 }
 export function App() {
@@ -98,7 +114,21 @@ export function App() {
   const [dialog, setDialog] = useState<Confirmation | null>(null);
   const [dialogSerial, setDialogSerial] = useState(0);
   const routeRef = useRef(route);
-  const first = useRef(true);
+  const profileBack = useRef("#/");
+  const [helperTeam, setHelperTeam] = useState("");
+  const [openProjectAdd, setOpenProjectAdd] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("codec-sidebar") === "collapsed";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    if (collapsed)
+      document.documentElement.setAttribute("data-sidebar", "collapsed");
+    else document.documentElement.removeAttribute("data-sidebar");
+  }, [collapsed]);
   const refreshNow = useRef<() => void>(() => {});
   const trigger = useRef<HTMLElement | null>(null);
   const alive = useRef(true);
@@ -147,8 +177,18 @@ export function App() {
   useEffect(() => {
     alive.current = true;
     const change = () => {
-      const next = location.hash || "#/";
+      let next = location.hash || "#/";
+      if (next === "#/setup") {
+        next = "#/profile/setup";
+        location.hash = next;
+      }
+      if (
+        next.startsWith("#/profile") &&
+        !routeRef.current.startsWith("#/profile")
+      )
+        profileBack.current = routeRef.current;
       if (next === routeRef.current) return;
+      if (routeRef.current === "#/projects") setOpenProjectAdd(false);
       routeRef.current = next;
       setRoute(next);
       setMessages({});
@@ -156,6 +196,7 @@ export function App() {
       setConnection("");
       window.scrollTo(0, 0);
     };
+    if (location.hash === "#/setup") location.hash = "#/profile/setup";
     window.addEventListener("hashchange", change);
     return () => {
       alive.current = false;
@@ -175,13 +216,6 @@ export function App() {
       try {
         const data = await loadPage(route, controller.signal);
         if (stopped || n !== generation) return;
-        if (first.current) {
-          first.current = false;
-          if (data.setup.shouldOpen && route !== "#/setup") {
-            location.hash = "#/setup";
-            return;
-          }
-        }
         setPage({ route, data });
         setConnection("");
       } catch (e) {
@@ -202,37 +236,68 @@ export function App() {
   }, [route]);
   const data = page?.route === route ? page.data : undefined;
   const p = parts(route);
+  const profile = p[0] === "profile" || p[0] === "setup";
   const active = ["member", "teams"].includes(p[0])
     ? "teams"
-    : ["specialists", "skills", "accounts", "setup"].includes(p[0])
-      ? p[0]
-      : "projects";
+    : ["project", "run", "projects"].includes(p[0])
+      ? "projects"
+      : p[0] || "home";
   const nav = [
-    ["projects", "#/", S.nav.projects],
-    ["teams", "#/teams", S.nav.teams],
-    ["specialists", "#/specialists", S.nav.specialists],
-    ["skills", "#/skills", S.nav.skills],
-    ["accounts", "#/accounts", S.nav.accounts],
-  ];
+    ["home", "#/", S.nav.home, House],
+    ["chat", "#/chat", S.nav.chat, MessageSquare],
+    ["helpers", "#/helpers", S.nav.helpers, Users],
+    ["projects", "#/projects", S.nav.projects, Folder],
+    ["teams", "#/teams", S.nav.teams, UsersRound],
+    ["specialists", "#/specialists", S.nav.specialists, Contact],
+    ["skills", "#/skills", S.nav.skills, BookOpen],
+    ["accounts", "#/accounts", S.nav.accounts, KeyRound],
+  ] as const;
   return (
     <Actions.Provider
       value={{ messages, pending, tell, act, confirm, refresh }}
     >
       <Tooltip.Provider delayDuration={300}>
-        <header className="topbar">
-          <div className="topbar-inner">
-            <a className="wordmark" href="#/">
-              {S.checkpoints.fallbackName}
-            </a>
+        <div className={"app-shell" + (profile ? " full-profile" : "")}>
+          <header className="app-sidebar" hidden={profile}>
+            <div className="sidebar-brand">
+              <a className="wordmark" href="#/">
+                {S.checkpoints.fallbackName}
+              </a>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="sidebar-toggle"
+                data-testid="sidebar-toggle"
+                aria-expanded={!collapsed}
+                aria-label={collapsed ? S.nav.expand : S.nav.collapse}
+                title={collapsed ? S.nav.expand : S.nav.collapse}
+                onClick={() => {
+                  const next = !collapsed;
+                  setCollapsed(next);
+                  try {
+                    if (next)
+                      localStorage.setItem("codec-sidebar", "collapsed");
+                    else localStorage.removeItem("codec-sidebar");
+                  } catch {
+                    /* Keep this window's choice. */
+                  }
+                }}
+              >
+                <PanelLeftClose aria-hidden="true" />
+                <span>{collapsed ? S.nav.expand : S.nav.collapse}</span>
+              </Button>
+            </div>
             <nav className="main-nav">
-              {nav.map(([id, href, text]) => (
+              {nav.map(([id, href, text, Icon]) => (
                 <Button asChild variant="ghost" size="sm" key={id}>
                   <a
                     href={href}
+                    title={text}
                     data-testid={"nav-" + id}
                     aria-current={active === id ? "page" : undefined}
                   >
-                    {text}
+                    <Icon aria-hidden="true" />
+                    <span className="nav-label">{text}</span>
                   </a>
                 </Button>
               ))}
@@ -263,15 +328,6 @@ export function App() {
                   </span>
                 </Tip>
               </div>
-              <Button asChild variant="ghost" size="sm">
-                <a
-                  href="#/setup"
-                  data-testid="setup-open"
-                  aria-current={active === "setup" ? "page" : undefined}
-                >
-                  {S.nav.setup}
-                </a>
-              </Button>
               <ToggleGroup.Root
                 type="single"
                 value={theme}
@@ -289,50 +345,91 @@ export function App() {
                   </ToggleGroup.Item>
                 ))}
               </ToggleGroup.Root>
+              <a
+                href="#/profile"
+                className="profile-open"
+                data-testid="profile-open"
+                title={S.profile.open}
+              >
+                <span className="avatar" aria-hidden="true">
+                  {initials(data?.setup.profileName) || <User />}
+                </span>
+                <span className="profile-name">
+                  {data?.setup.profileName || S.profile.title}
+                  {data?.setup.profileName && (
+                    <span className="hint">{S.profile.title}</span>
+                  )}
+                </span>
+              </a>
             </div>
-          </div>
-        </header>
-        {connection && (
-          <div
-            role="status"
-            data-testid="connection-message"
-            data-message-key="connection"
-            className="connection-banner"
-          >
-            {connection}
-          </div>
-        )}
-        <main
-          className={
-            p[0] === "project" ? "wide" : p[0] === "setup" ? "setup-main" : ""
-          }
-        >
-          {!data ? (
-            <Skeleton />
-          ) : (
-            <div key={route} className="page-content">
-              {p[0] === "setup" ? (
-                <SetupPage data={data} />
-              ) : p[0] === "accounts" ? (
-                <AccountsPage data={data} />
-              ) : p[0] === "project" && data.project ? (
-                <ProjectPage name={p[1]} data={data} />
-              ) : p[0] === "run" && data.run ? (
-                <TaskPage data={data} />
-              ) : p[0] === "teams" ? (
-                <TeamsPage data={data} />
-              ) : p[0] === "specialists" ? (
-                <RolesPage data={data} />
-              ) : p[0] === "skills" ? (
-                <SkillsPage data={data} />
-              ) : p[0] === "member" && data.member ? (
-                <MemberPage team={p[1]} name={p[2]} data={data} />
-              ) : (
-                <HomePage data={data} />
-              )}
+          </header>
+          {connection && (
+            <div
+              role="status"
+              data-testid="connection-message"
+              data-message-key="connection"
+              className="connection-banner"
+            >
+              {connection}
             </div>
           )}
-        </main>
+          <main
+            className={
+              ["project", "projects", "helpers", "chat"].includes(p[0])
+                ? "wide " + (p[0] === "chat" ? "chat-main" : "")
+                : profile
+                  ? "profile-main"
+                  : ""
+            }
+          >
+            {!data ? (
+              <Skeleton />
+            ) : (
+              <div key={route} className="page-content">
+                {profile ? (
+                  <ProfilePage
+                    data={data}
+                    tab={p[0] === "setup" ? "setup" : p[1]}
+                    back={profileBack.current}
+                  />
+                ) : p[0] === "chat" && data.chat ? (
+                  <ChatPage data={data} />
+                ) : p[0] === "helpers" ? (
+                  <HelpersPage
+                    data={data}
+                    team={helperTeam}
+                    setTeam={setHelperTeam}
+                  />
+                ) : p[0] === "projects" ? (
+                  <ProjectsPage data={data} openAdd={openProjectAdd} />
+                ) : p[0] === "accounts" ? (
+                  <AccountsPage data={data} />
+                ) : p[0] === "project" && data.project ? (
+                  <ProjectPage name={p[1]} data={data} />
+                ) : p[0] === "run" && data.run ? (
+                  <TaskPage data={data} />
+                ) : p[0] === "teams" ? (
+                  <TeamsPage data={data} />
+                ) : p[0] === "specialists" ? (
+                  <RolesPage data={data} />
+                ) : p[0] === "skills" ? (
+                  <SkillsPage data={data} />
+                ) : p[0] === "member" && data.member ? (
+                  <MemberPage team={p[1]} name={p[2]} data={data} />
+                ) : (
+                  <HomePage
+                    data={data}
+                    newProject={() => {
+                      setOpenProjectAdd(true);
+                      location.hash = "#/projects";
+                    }}
+                    selectTeam={setHelperTeam}
+                  />
+                )}
+              </div>
+            )}
+          </main>
+        </div>
         <ConfirmDialog key={dialogSerial} dialog={dialog} close={close} />
       </Tooltip.Provider>
     </Actions.Provider>

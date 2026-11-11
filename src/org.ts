@@ -94,7 +94,7 @@ function checkSkills(skills: string[] | undefined): string[] {
   return out;
 }
 
-function cleanModel(model: string | undefined): string | undefined {
+export function cleanModel(model: string | undefined): string | undefined {
   const m = model?.trim();
   if (!m) return undefined;
   if (!/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(m)) throw new CodecError("invalid_model", `invalid model name "${m}"`, { name: m });

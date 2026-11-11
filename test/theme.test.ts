@@ -19,6 +19,7 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-sidebar");
 });
 function Switch() {
   const [theme, set] = useTheme();
@@ -48,6 +49,14 @@ describe("theme contract", () => {
     new Function(THEME_BOOT.slice(8, -9))();
     expect(document.documentElement.getAttribute("data-theme")).toBe(expected);
   });
+  it("restores the owner's collapsed sidebar before the first paint", () => {
+    localStorage.setItem("codec-sidebar", "collapsed");
+    new Function(THEME_BOOT.slice(8, -9))();
+    expect(document.documentElement.getAttribute("data-sidebar")).toBe(
+      "collapsed",
+    );
+    expect(css).toContain("--radius: 6px;");
+  });
   it("survives storage being blocked", () => {
     expect(() =>
       new Function("localStorage", THEME_BOOT.slice(8, -9))({
@@ -74,7 +83,7 @@ describe("theme contract", () => {
       "@media(prefers-color-scheme:dark){:root:not([data-theme])",
     );
     expect(css.replace(/\s+/g, "")).toContain(
-      "&:where([data-theme=dark],[data-theme=dark]*){@slot;}",
+      '&:where([data-theme="dark"],[data-theme="dark"]*){@slot;}',
     );
     expect(css.replace(/\s+/g, "")).toContain(
       "&:where(:root:not([data-theme]),:root:not([data-theme])*){@slot;}",

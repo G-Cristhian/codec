@@ -261,7 +261,7 @@ export function Crumbs({ children }: { children?: ReactNode }) {
     <nav aria-label={S.nav.projects} className="crumbs">
       <ol>
         <li>
-          <a href="#/">{S.nav.projects}</a>
+          <a href="#/projects">{S.nav.projects}</a>
         </li>
         {children && (
           <li>
@@ -430,6 +430,7 @@ function CheckRow({
 }
 export interface Option {
   value: string;
+  dataKey?: string;
   label: string;
   tool?: string;
   group?: string;
@@ -469,7 +470,7 @@ export function Picker({
             .map((o) => o.tool && toolProblem(setup!, o.tool))
             .filter((v, i, a) => a.indexOf(v) === i)
             .join(" ")}{" "}
-          <a className="link" href="#/setup">
+          <a className="link" href="#/profile/setup">
             {S.nav.setup}
           </a>
         </Notice>
@@ -499,7 +500,7 @@ export function Picker({
                   <SelectItem
                     key={o.value}
                     value={o.value}
-                    data-key={o.value}
+                    data-key={o.dataKey ?? o.value}
                     disabled={!!(setup && o.tool && !toolOK(setup, o.tool))}
                     textValue={o.label}
                   >
@@ -560,15 +561,21 @@ export function Submit({
   id,
   children,
   actionKey,
+  disabled,
 }: {
   id: string;
   children: ReactNode;
   actionKey: string;
+  disabled?: boolean;
 }) {
   const { pending } = useActions();
   return (
     <div className="submit-row">
-      <Button type="submit" data-testid={id} disabled={pending[actionKey]}>
+      <Button
+        type="submit"
+        data-testid={id}
+        disabled={disabled || pending[actionKey]}
+      >
         {pending[actionKey] && (
           <LoaderCircle className="spin" aria-hidden="true" />
         )}
@@ -673,7 +680,7 @@ export function Message({ actionKey }: { actionKey: string }) {
             ["tool_unavailable", "spawn_failed", "identity_missing"].includes(
               e.code,
             ) && (
-              <a className="link" href="#/setup">
+              <a className="link" href="#/profile/setup">
                 {S.nav.setup}
               </a>
             )}

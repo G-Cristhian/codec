@@ -5,6 +5,7 @@ export const runFixture: Run = {
   task: "Check the website",
   agent: "claude",
   state: "done",
+  lane: "inReview",
   reviewStatus: "ready",
   team: "web",
   member: "tester",
@@ -34,6 +35,7 @@ export function fixture(): PageData {
       })),
       ready: true,
       identityReady: true,
+      profileName: "Owner",
     },
     accounts: {
       accounts: [
@@ -62,12 +64,24 @@ export function fixture(): PageData {
       teamsCount: 1,
       memoryBytes: 0,
     },
+    chat: {
+      tool: "claude",
+      busy: false,
+      messages: [],
+      models: {
+        claude: [{ id: "opus", label: "Opus" }],
+        codex: [{ id: "gpt-6-sol", label: "GPT-6-Sol" }],
+      },
+    },
     settings: { identity: { name: "Owner", email: "owner@example.invalid" } },
     project: {
       project: { name: "site", path: "/tmp/site" },
       members: [
         {
           ref: "web/tester",
+          member: "tester",
+          team: "web",
+          specialty: "Reviewer",
           tool: "claude",
           label: "tester (web team) · Reviewer · Claude",
         },

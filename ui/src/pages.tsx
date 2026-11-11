@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Collapsible } from "radix-ui";
+import { ProjectList } from "./project-list";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import {
   S,
@@ -12,7 +13,6 @@ import {
   whoText,
   stateText,
   when,
-  mem,
   memberHref,
   laneHint,
   limitText,
@@ -134,7 +134,7 @@ function AccountPicker({
     </div>
   );
 }
-function ProjectAdd() {
+export function ProjectAdd() {
   const [tracking, setTracking] = useState<{
     body: { name?: string; path: string };
     question: string;
@@ -225,82 +225,41 @@ function ProjectAdd() {
     </Form>
   );
 }
-export function HomePage({ data }: { data: PageData }) {
-  const h = data.home;
+export function ProjectsPage({
+  data,
+  openAdd = false,
+}: {
+  data: PageData;
+  openAdd?: boolean;
+}) {
   return (
-    <>
-      <Disclosure
-        id="project-add-open"
-        header={{ title: S.projects.title, description: S.wording.helperIntro }}
-        title={S.projects.addTitle}
-        initial={!h.projects.length}
-        beforeContent={
-          !!h.projects.length && (
-            <>
-              <div className="summary-grid">
-                {[
-                  [h.teamsCount, S.common.teamCount],
-                  [h.agentsRunning, S.common.running],
-                  [mem(h.memoryBytes), S.common.memory],
-                ].map(([n, l]) => (
-                  <Card className="panel" key={l}>
-                    <strong className="stat-number">{n}</strong>
-                    <Hint>{l}</Hint>
-                  </Card>
-                ))}
-              </div>
-              <div className="project-grid">
-                {h.projects.map((p) => (
-                  <a
-                    key={p.name}
-                    className="card-link"
-                    href={"#/project/" + enc(p.name)}
-                  >
-                    <Card className="panel">
-                      <h3>{p.name}</h3>
-                      <Tip text={p.path}>
-                        <p className="mono truncate">{p.path}</p>
-                      </Tip>
-                      <div className="badge-row">
-                        {LANES.map(([lane, text]) => (
-                          <Tip key={lane} text={laneHint(lane)}>
-                            <span>
-                              <StatusBadge
-                                text={text + " " + p.lanes[lane]}
-                                tone={
-                                  lane === "needsYou"
-                                    ? "needs"
-                                    : lane === "inReview"
-                                      ? "review"
-                                      : lane
-                                }
-                                muted={!p.lanes[lane]}
-                              />
-                            </span>
-                          </Tip>
-                        ))}
-                      </div>
-                    </Card>
-                  </a>
-                ))}
-              </div>
-            </>
-          )
-        }
-      >
-        <Card className={!h.projects.length ? "panel empty-card" : "panel"}>
-          {!h.projects.length && <p>{S.projects.empty}</p>}
-          <ProjectAdd />
-        </Card>
-      </Disclosure>
-
-      <section>
-        <h2>{S.wording.allTasks}</h2>
-        <TaskTable runs={h.runs} />
+    <div className="project-split index">
+      <ProjectList projects={data.home.projects} />
+      <section className="page-content">
+        <Disclosure
+          id="project-add-open"
+          header={{
+            title: S.projects.title,
+            description: S.wording.helperIntro,
+          }}
+          title={S.projects.addTitle}
+          initial={openAdd || !data.home.projects.length}
+        >
+          <Card className="panel">
+            {!data.home.projects.length && <p>{S.projects.empty}</p>}
+            <ProjectAdd />
+          </Card>
+        </Disclosure>
+        {!!data.home.projects.length && <Hint>{S.projects.pick}</Hint>}
+        <section>
+          <h2>{S.wording.allTasks}</h2>
+          <TaskTable runs={data.home.runs} />
+        </section>
       </section>
-    </>
+    </div>
   );
 }
+
 function PageIntro({
   title,
   description,
@@ -389,99 +348,157 @@ function TaskForm({ data, name }: { data: PageData; name: string }) {
 }
 export function ProjectPage({ data, name }: { data: PageData; name: string }) {
   const v = data.project!;
+  const [compose, setCompose] = useState(
+    !LANES.some(([lane]) => v.lanes[lane].length),
+  );
   return (
-    <>
-      <Crumbs>{name}</Crumbs>
-      <PageIntro
-        title={name}
-        description={<span className="mono">{v.project.path}</span>}
-      >
-        <Remove
-          kind="project"
-          name={name}
-          route={"projects/" + enc(name) + "/remove"}
-          actionKey={"project-" + name}
-          after={() => go("#/")}
+    <div className="project-split">
+      <ProjectList projects={data.home.projects} active={name} />
+      <section className="page-content">
+        <Crumbs>{name}</Crumbs>
+        <PageIntro
+          title={name}
+          description={<span className="mono">{v.project.path}</span>}
         >
-          {S.projects.remove}
-        </Remove>
-      </PageIntro>
-      <Disclosure id="project-account-settings" title={S.accounts.label}>
-        <Card className="panel">
-          <AccountSettings data={data} scope="project" name={name} />
-        </Card>
-      </Disclosure>
-      <Card className="panel">
-        <h2>{S.wording.giveTask}</h2>
-        <Hint>{S.wording.helperIntro}</Hint>
-        {!v.members.length && (
-          <Notice>
-            {S.projects.noTeam}
-            <a className="link font-semibold" href="#/teams">
-              {S.members.addTeam}
-            </a>
-            {S.projects.noTeamAfter}
-          </Notice>
-        )}
-        <TaskForm data={data} name={name} />
-      </Card>
-      <section>
-        <h2>{S.projects.board}</h2>
-        <Hint>{S.wording.workspace}</Hint>
-        <div className="board">
-          {LANES.map(([lane, text]) => (
-            <section key={lane} className="lane">
-              <div className="button-row justify-between">
-                <h3>
-                  <StatusBadge
-                    text={text}
-                    tone={
-                      lane === "needsYou"
-                        ? "needs"
-                        : lane === "inReview"
-                          ? "review"
-                          : lane
-                    }
-                  />
-                </h3>
-                <span className="badge">{v.lanes[lane].length}</span>
-              </div>
-              <Hint>{laneHint(lane)}</Hint>
-              <div className="lane-tasks">
-                {v.lanes[lane].length ? (
-                  v.lanes[lane].map((r) => (
-                    <a
-                      className="card-link"
-                      key={r.runId}
-                      href={"#/run/" + enc(r.runId)}
-                      data-testid="task-open"
-                      data-key={r.runId}
-                    >
-                      <Card className="task-card">
-                        <strong>{whoText(r)}</strong>
-                        <p className="line-clamp-3">{r.task}</p>
-                        {r.specialist && (
-                          <Hint>
-                            {fmt(S.wording.teamRole, {
-                              team: r.team,
-                              role: r.specialist,
-                            })}
-                          </Hint>
-                        )}
-                        <StatusBadge run={r} />
-                        <Hint>{when(r.startedAt)}</Hint>
-                      </Card>
-                    </a>
-                  ))
-                ) : (
-                  <Hint>{S.common.empty}</Hint>
-                )}
-              </div>
-            </section>
-          ))}
-        </div>
+          <Button
+            data-testid="task-new"
+            onClick={() => {
+              setCompose(true);
+              requestAnimationFrame(() =>
+                document
+                  .querySelector<HTMLTextAreaElement>(
+                    '[data-testid="task-text"]',
+                  )
+                  ?.focus(),
+              );
+            }}
+          >
+            {S.projects.newTask}
+          </Button>
+          <Remove
+            kind="project"
+            name={name}
+            route={"projects/" + enc(name) + "/remove"}
+            actionKey={"project-" + name}
+            after={() => go("#/projects")}
+          >
+            {S.projects.remove}
+          </Remove>
+        </PageIntro>
+        <Disclosure id="project-account-settings" title={S.accounts.label}>
+          <Card className="panel">
+            <AccountSettings data={data} scope="project" name={name} />
+          </Card>
+        </Disclosure>
+        <Collapsible.Root open={compose} onOpenChange={setCompose}>
+          <Collapsible.Trigger asChild>
+            <Button variant="outline" data-testid="task-new-open">
+              {S.wording.giveTask}
+            </Button>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <Card className="panel">
+              <h2>{S.wording.giveTask}</h2>
+              <Hint>{S.wording.helperIntro}</Hint>
+              {!v.members.length && (
+                <Notice>
+                  {S.projects.noTeam}
+                  <a className="link font-semibold" href="#/teams">
+                    {S.members.addTeam}
+                  </a>
+                  {S.projects.noTeamAfter}
+                </Notice>
+              )}
+              <TaskForm data={data} name={name} />
+            </Card>
+          </Collapsible.Content>
+        </Collapsible.Root>
+        <section>
+          <h2>{S.projects.board}</h2>
+          <Hint>{S.wording.workspace}</Hint>
+          <div className="board">
+            {LANES.map(([lane, text]) => (
+              <section key={lane} className="lane">
+                <div className="button-row justify-between">
+                  <h3>
+                    <StatusBadge
+                      text={text}
+                      tone={
+                        lane === "needsYou"
+                          ? "needs"
+                          : lane === "inReview"
+                            ? "review"
+                            : lane
+                      }
+                    />
+                  </h3>
+                  <span className="badge">{v.lanes[lane].length}</span>
+                </div>
+                <Hint>{laneHint(lane)}</Hint>
+                <div className="lane-tasks">
+                  {v.lanes[lane].length ? (
+                    v.lanes[lane].map((r) => (
+                      <a
+                        className="card-link"
+                        key={r.runId}
+                        href={"#/run/" + enc(r.runId)}
+                        data-testid="task-open"
+                        data-key={r.runId}
+                      >
+                        <Card className="task-card">
+                          <strong>{whoText(r)}</strong>
+                          <p className="line-clamp-3">{r.task}</p>
+                          {r.specialist && (
+                            <Hint>
+                              {fmt(S.wording.teamRole, {
+                                team: r.team,
+                                role: r.specialist,
+                              })}
+                            </Hint>
+                          )}
+                          <StatusBadge run={r} />
+                          <Hint>{when(r.startedAt)}</Hint>
+                        </Card>
+                      </a>
+                    ))
+                  ) : (
+                    <Hint>{S.common.empty}</Hint>
+                  )}
+                </div>
+              </section>
+            ))}
+          </div>
+        </section>
       </section>
-    </>
+      <aside className="page-content project-detail">
+        <Card className="panel">
+          <h2>{S.projects.team}</h2>
+          {v.members.length ? (
+            v.members.map((m) => (
+              <div key={m.ref}>
+                <a className="link" href={memberHref(m.team, m.member)}>
+                  {m.member}
+                </a>
+                {" · "}
+                {m.specialty || S.members.worker}
+                <Hint>
+                  {fmt(S.wording.helperTeam, m)}
+                  {" · "}
+                  {toolName(m.tool)}
+                </Hint>
+              </div>
+            ))
+          ) : (
+            <Hint>{S.projects.noHelpers}</Hint>
+          )}
+        </Card>
+        <Card className="panel">
+          <h2>{S.projects.path}</h2>
+          <p className="mono">{v.project.path}</p>
+          <Hint>{S.wording.workspace}</Hint>
+        </Card>
+      </aside>
+    </div>
   );
 }
 export function TaskPage({ data }: { data: PageData }) {
@@ -1022,7 +1039,7 @@ export function TeamsPage({ data }: { data: PageData }) {
           />
           <Notice>
             {S.teams.noProjects}{" "}
-            <a className="link" href="#/">
+            <a className="link" href="#/projects">
               {S.nav.projects}
             </a>
           </Notice>
@@ -1781,7 +1798,7 @@ function AccountCard({
   );
 }
 export function SetupPage({ data }: { data: PageData }) {
-  const { act, pending, tell } = useActions();
+  const { act, pending } = useActions();
   const setup = data.setup;
   const working = setup.tools.filter((t) => toolOK(setup, t.tool));
   const needed = [
@@ -1807,96 +1824,12 @@ export function SetupPage({ data }: { data: PageData }) {
           <span className="step-number">1</span>
           {S.common.tool}
         </h2>
-        {setup.tools.map((t) => (
-          <section
-            key={t.tool}
-            className="setup-tool"
-            data-testid="setup-tool"
-            data-key={t.tool}
-          >
-            <div className="button-row">
-              <strong>{toolName(t.tool)}</strong>
-              <StatusBadge
-                text={
-                  toolOK(setup, t.tool)
-                    ? S.setup.ok
-                    : toolProblem(setup, t.tool)
-                }
-                tone={toolOK(setup, t.tool) ? "done" : "needs"}
-              />
-              {t.version && <span className="mono hint">{t.version}</span>}
-            </div>
-            {!toolOK(setup, t.tool) && (
-              <>
-                <pre className="fix" data-testid="setup-fix">
-                  {t.fix || S.setup.fixMissing}
-                </pre>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid="setup-copy"
-                  data-key={t.tool}
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(
-                        t.fix || S.setup.fixMissing,
-                      );
-                      tell("setup-" + t.tool, S.common.copied, true);
-                    } catch {
-                      tell("setup-" + t.tool, S.common.copyFailed);
-                    }
-                  }}
-                >
-                  {S.common.copy}
-                </Button>
-                <Message actionKey={"setup-" + t.tool} />
-              </>
-            )}
-          </section>
-        ))}
+        <ToolCards data={data} />
       </Card>
       <Card className="panel">
-        <h2>
-          <span className="step-number">2</span>
-          {S.setup.identity}
-        </h2>
+        <h2>{S.setup.identity}</h2>
         <Hint>{S.setup.identityHint}</Hint>
-        {!setup.identityReady && (
-          <Notice tone="needs" id="identity-missing">
-            {S.setup.identityMissing}
-          </Notice>
-        )}
-        <Form
-          id="identity-form"
-          actionKey="identity"
-          onSubmit={async (f) => {
-            await api("settings", {
-              identity: {
-                name: formValue(f, "identity-name"),
-                email: formValue(f, "identity-email"),
-              },
-            });
-          }}
-        >
-          <Field
-            id="identity-name"
-            label={S.setup.identityName}
-            required
-            autoComplete="name"
-            defaultValue={data.settings!.identity.name}
-          />
-          <Field
-            id="identity-email"
-            label={S.setup.identityEmail}
-            required
-            autoComplete="email"
-            type="email"
-            defaultValue={data.settings!.identity.email}
-          />
-          <Submit id="identity-save" actionKey="identity">
-            {S.common.save}
-          </Submit>
-        </Form>
+        <IdentityForm data={data} />
       </Card>
       <Message actionKey="setup" />
       <footer className="setup-footer">
@@ -1943,5 +1876,114 @@ export function SetupPage({ data }: { data: PageData }) {
         </Button>
       </footer>
     </section>
+  );
+}
+
+export function IdentityForm({
+  data,
+  plain = false,
+}: {
+  data: PageData;
+  plain?: boolean;
+}) {
+  return (
+    <>
+      {!data.setup.identityReady && (
+        <Notice tone="needs" id="identity-missing">
+          {S.setup.identityMissing}
+        </Notice>
+      )}
+      <Form
+        id="identity-form"
+        actionKey="identity"
+        onSubmit={async (f) => {
+          await api("settings", {
+            identity: {
+              name: formValue(f, "identity-name"),
+              email: formValue(f, "identity-email"),
+            },
+          });
+        }}
+      >
+        <Field
+          id="identity-name"
+          label={S.setup.identityName}
+          required
+          autoComplete="name"
+          defaultValue={data.settings!.identity.name}
+        />
+        <Field
+          id="identity-email"
+          label={S.setup.identityEmail}
+          required
+          autoComplete="email"
+          type="email"
+          defaultValue={data.settings!.identity.email}
+        />
+        <Submit id="identity-save" actionKey="identity">
+          {plain ? S.profile.saveChanges : S.common.save}
+        </Submit>
+      </Form>
+    </>
+  );
+}
+export function ToolCards({
+  data,
+  okText = S.setup.ok,
+}: {
+  data: PageData;
+  okText?: string;
+}) {
+  const { tell } = useActions();
+  return (
+    <>
+      {data.setup.tools.map((t) => (
+        <section
+          key={t.tool}
+          className="setup-tool"
+          data-testid="setup-tool"
+          data-key={t.tool}
+        >
+          <div className="button-row">
+            <strong>{toolName(t.tool)}</strong>
+            <StatusBadge
+              text={
+                toolOK(data.setup, t.tool)
+                  ? okText
+                  : toolProblem(data.setup, t.tool)
+              }
+              tone={toolOK(data.setup, t.tool) ? "done" : "needs"}
+            />
+            {t.version && <span className="mono hint">{t.version}</span>}
+          </div>
+          {!toolOK(data.setup, t.tool) && (
+            <>
+              <pre className="fix" data-testid="setup-fix">
+                {t.fix || S.setup.fixMissing}
+              </pre>
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="setup-copy"
+                data-key={t.tool}
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(
+                      t.fix || S.setup.fixMissing,
+                    );
+                    tell("setup-" + t.tool, S.common.copied, true);
+                  } catch {
+                    tell("setup-" + t.tool, S.common.copyFailed);
+                  }
+                }}
+              >
+                {S.common.copy}
+              </Button>
+              <Message actionKey={"setup-" + t.tool} />
+            </>
+          )}
+        </section>
+      ))}
+    </>
   );
 }

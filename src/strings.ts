@@ -1,8 +1,9 @@
 /**
  * Stable browser selectors. Repeated lists use data-key = name/path; scope
  * repeated form fields to their form or enclosing team.
- * Header: nav-projects, nav-teams, nav-specialists, nav-skills, setup-open, theme.
- * Setup: setup-wizard, setup-check, setup-continue, setup-tool, setup-fix, setup-copy.
+ * Header: nav-home, nav-chat, nav-helpers, nav-projects, nav-teams, nav-specialists, nav-skills, theme, profile-open.
+ * Profile: profile-tab (data-key = tab), profile-info, profile-check; reuses identity-form and setup-tool.
+ * Setup (profile tab "setup"): setup-wizard, setup-check, setup-continue, setup-tool, setup-fix, setup-copy.
  * Projects: project-add-open, project-add-form, project-name, project-path,
  * project-save, project-remove, project-tracking, tracking-yes, tracking-no.
  * Folder picker (scope to project-add-form / skill-add-form): folder-picker,
@@ -18,7 +19,15 @@
  * member-edit-form, member-remove.
  * Skills: skill-add-open, skill-add-form, skill-path, skill-save, skill-remove,
  * skill-upload-form, skill-upload, skill-upload-save.
- * Tasks: task-form, task-who, task-text, task-limit, task-start, task-open,
+ * Chat: chat-tool, chat-model, chat-new, chat-log, chat-message (data-key = user/assistant/error), chat-copy, chat-thinking,
+ * chat-form, chat-text, chat-send.
+ * Home: home-summary, home-new-project, home-teams, home-team (data-key = team),
+ * home-important, home-note, home-mode (data-key = calendar/list), home-day
+ * (data-key = y-m-d), home-task.
+ * Helpers overview: helpers-team (data-key = team, "" for all), helper-row
+ * (data-key = team/helper or run:<id>), helper-detail, helper-stop,
+ * helper-task-form, helper-task-project, helper-task-text, helper-task-start.
+ * Tasks: task-new, task-form, task-who, task-text, task-limit, task-start, task-open,
  * task-stop, task-clean, task-delete-branch.
  * Dialogs/messages: confirm-dialog, confirm-effects, confirm-blocked,
  * confirm-submit, confirm-cancel, action-message, connection-message.
@@ -39,7 +48,7 @@ export const S = {
     title: "Codec dashboard",
     hint: "This page needs Codec's private link. Close this tab and open Codec again from the link Codec gave you when it started.",
   },
-  nav: { projects: "Projects", teams: "Teams", specialists: "Roles", skills: "Skills", accounts: "Accounts", setup: "Setup" },
+  nav: { home: "Home", chat: "Chat", helpers: "Helpers", projects: "Projects", teams: "Teams", specialists: "Roles", skills: "Skills", accounts: "Accounts", setup: "Setup", collapse: "Collapse sidebar", expand: "Expand sidebar" },
   accounts: {
     title: "Your accounts", label: "Account", computer: "This computer's login", add: "Add account", signIn: "Sign in",
     nameHint: "Give this account a name you will recognize, like Work or Personal.",
@@ -93,11 +102,59 @@ export const S = {
     notReady: "Set up one of these AI services, then check again.",
     claude: "Claude", codex: "Codex",
   },
+  profile: {
+    title: "Profile", open: "Open your profile", tabs: "Profile sections", info: "Info", back: "Back to Codec",
+    infoHint: "Your name, email and sign-ins.", saveChanges: "Save changes",
+    signIns: "Sign-ins", signInsHint: "Helpers sign in through Claude and Codex on this computer. Codec never sees or stores your passwords.",
+    signedIn: "Signed in", recheck: "Check sign-ins again",
+  },
   projects: {
     title: "Your projects", addTitle: "Add a project", add: "Add project", path: "Project folder", nameHint: "Leave blank to use the folder name.",
     empty: "No projects yet. Add a folder below to get started.", remove: "Remove project", board: "Tasks",
     noTeam: "No team works on this project yet. ", noTeamAfter: ", or use a quick helper below.",
+    all: "All projects", progress: "{percent}% done", needCount: "{count} need you", reviewCount: "{count} to review",
+    noTasks: "No tasks yet", onTrack: "On track", newTask: "New task", team: "Helpers on this project",
+    noHelpers: "No team works on this project yet.", pick: "Pick a project on the left to see its tasks.",
   },
+  helpers: {
+    title: "Helpers", all: "All teams", helper: "Helper", current: "Current task", noTask: "No task right now",
+    quick: "Quick helper", broken: "Needs fixing", pick: "Pick a helper to see what it's doing.",
+    empty: "No helpers yet. Create a team and add helpers to it, or give a quick helper a task from a project.",
+    workingOn: "Working on", openTask: "Open task", openHelper: "Open helper", startTask: "Start a task",
+    activity: "Latest activity", noActivity: "Nothing yet.", fullActivity: "See all activity",
+    compose: "Give {name} a task…", started: "Task started.",
+    quickHint: "A quick helper does one task. Start another from a project.",
+    noProjects: "Its team doesn't work on any projects yet. Add one on the Teams page.",
+  },
+  home: {
+    morning: "Good morning", afternoon: "Good afternoon", evening: "Good evening", named: "{greeting}, {name}",
+    itemOne: "1 item needs you", itemMany: "{count} items need you", itemNone: "Nothing needs you right now",
+    newProject: "New project", teams: "Teams", viewHelpers: "View helpers",
+    memberOne: "1 helper", memberMany: "{count} helpers", workingOn: "working on {projects}", noProject: "no projects yet",
+    countWorking: "{count} working", countNeeds: "{count} need you", countReview: "{count} to review", free: "Free",
+    isWorking: "{name} is working on “{task}”.", needsYou: "{name} needs you ({state}).",
+    toReview: "{name} finished “{task}”, ready to review.", broken: "{name} needs fixing.", more: "+{count} more.",
+    idleTeam: "No tasks right now. Give a helper a task to put this team to work.",
+    noTeams: "No teams yet. A team groups helpers that work on the same projects.", addTeam: "Create a team",
+    important: "Important", calm: "All clear", calmHint: "No tasks are waiting on you, and your tools are ready.",
+    needsOne: "1 task needs you", needsMany: "{count} tasks need you",
+    reviewOne: "1 task ready to review", reviewMany: "{count} tasks ready to review",
+    brokenOne: "1 helper needs fixing", brokenMany: "{count} helpers need fixing",
+    toolTitle: "{tool} isn't ready", identityTitle: "Add your name and email",
+    identityHint: "Codec needs them to save checkpoints of your helpers' work.",
+    week: "This week", calendar: "Calendar", list: "List", today: "Today",
+    taskOne: "1 task", taskMany: "{count} tasks", noDay: "No tasks started on this day.", noWeek: "No tasks started this week.",
+  },
+  chat: {
+    title: "Chat", intro: "Ask Claude or Codex anything. Chats aren't tied to a project and can't change your files.",
+    provider: "AI service", model: "AI model", defaultModel: "Default model", modelHint: "Used for the next replies. The conversation carries on.",
+    newChat: "New chat", switchHint: "Switching starts a new chat.", empty: "Say hello to start the conversation.",
+    message: "Message", placeholder: "Message {tool}…", send: "Send", thinking: "{tool} is thinking…", you: "You",
+    enterHint: "Enter to send · Shift+Enter for a new line", copy: "Copy reply",
+    failed: "No reply came back. Make sure the AI service is installed and signed in, then try again.",
+    timedOut: "That reply was stopped before it finished. Send your message again.",
+  },
+  time: { now: "just now", minutes: "{count} min ago", hours: "{count} h ago", days: "{count} d ago" },
   folder: {
     browse: "Browse folders", current: "Current folder", up: "Up", use: "Use this folder",
     tracked: "Tracks changes", skill: "Contains a skill", empty: "No subfolders here.",
@@ -199,6 +256,8 @@ export const S = {
     account_confirm: "Confirm that you want to remove this account first.",
     account_busy: "A helper is using this account. Wait for it to finish before changing its sign-in or removing it.",
     account_remove: "The saved sign-in could not be removed. Make sure your Mac's saved passwords are unlocked and try again.",
+    chat_message: "Write a message first. Keep it under 20,000 characters.",
+    chat_busy: "Wait for the reply before sending another message.",
     account_login: "Sign-in could not start. Try again.",
     account_login_busy: "Finish or cancel the current sign-in before starting another.",
     account_code: "Enter the full code from the sign-in page while sign-in is still open.",

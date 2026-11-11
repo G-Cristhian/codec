@@ -24,6 +24,7 @@ import { createAccountLogins, type AccountLoginOptions } from "./account-login.j
 import { redactValue } from "./secrets.js";
 import { ApiError, friendlyError } from "./friendly.js";
 import { hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking } from "./folders.js";
+import { createChat, type ChatOptions } from "./chat.js";
 import { createSetupChecker, type SetupOptions } from "./setup.js";
 import { checkTool } from "./tools.js";
 import { checkTimeLimit, formatTimeLimit } from "./limits.js";
@@ -303,7 +304,7 @@ export function projectView(name: string) {
       t.members.map((m) => {
         try {
           const r = resolveMember(t.name, m.name);
-          return { ref: `${t.name}/${m.name}`, tool: r.tool, label: wording(S.wording.helperOption, { member: m.name, team: t.name, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
+          return { ref: `${t.name}/${m.name}`, member: m.name, team: t.name, specialty: r.specialty, tool: r.tool, label: wording(S.wording.helperOption, { member: m.name, team: t.name, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
         } catch {
           return undefined;
         }
@@ -483,12 +484,13 @@ export interface Dashboard {
   close(): Promise<void>;
 }
 
-export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions; uiBundleDir?: string } = {}): Promise<Dashboard> {
+export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions; uiBundleDir?: string; chat?: ChatOptions } = {}): Promise<Dashboard> {
   const token = opts.token ?? randomBytes(24).toString("base64url");
   let port = opts.port ?? DEFAULT_PORT;
   const cookieName = () => `codec_token_${port}`;
   const checkSetup = createSetupChecker(opts.setup);
   const logins = createAccountLogins(opts.accounts);
+  const chat = createChat(opts.chat);
   async function setupStatus(fresh = false) {
     const status = await checkSetup(fresh);
     const saved = accountStore().accounts;
@@ -582,7 +584,11 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
-    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), shouldOpen: !getSettings().setupFinished });
+    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), profileName: getSettings().identity.name });
+    if (isGet && a === "chat" && n === 1) return sendJson(res, 200, chat.view());
+    if (!isGet && a === "chat" && n === 1) return sendJson(res, 202, chat.send(s(body.text) ?? ""));
+    if (!isGet && a === "chat" && b === "new" && n === 2) return sendJson(res, 200, chat.reset(s(body.tool)));
+    if (!isGet && a === "chat" && b === "model" && n === 2) return sendJson(res, 200, chat.setModel(s(body.model)));
     if (isGet && a === "accounts" && n === 1) {
       const saved = accountStore();
       return sendJson(res, 200, { accounts: await logins.accountsView(listRuns(), url.searchParams.get("fresh") === "1"),
@@ -754,6 +760,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
         url: `http://${HOST}:${port}/?token=${token}`,
         close: async () => {
           await logins.close();
+          await chat.close();
           await new Promise<void>((r) => {
             server.close(() => r());
             server.closeAllConnections();

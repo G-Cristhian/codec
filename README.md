@@ -42,11 +42,28 @@ died without reporting, e.g. after a reboot), `stopped`.
 `codec dashboard` prints a link like `http://127.0.0.1:4777/?token=…` and keeps
 running until you press Ctrl+C. Open the link in a browser to:
 
+- start on **Home**: a greeting with how many items need you, each team's
+  helpers and progress, an **Important** list (tasks to fix or review, broken
+  helpers, tools that aren't signed in) and this week's tasks by day, as a
+  calendar or a list;
+- open **Chat**: one conversation with Claude or Codex (pick which at the
+  top; switching or **New chat** starts over). It isn't tied to a project and
+  can't change files: Claude runs without extra permissions and Codex in its
+  read-only sandbox. The conversation is kept in `~/.codec/chat/`;
+- open **Helpers**: every team member (and any quick run that still needs
+  attention) in one table with its status, current task and project, plus
+  counts of working / ready to review / free / needs you. Select a helper to
+  see its latest output, open or stop its run, or give it a new task;
 - see how many agents are running and how much memory they use (Linux; "n/a"
-  elsewhere), every project with its run counts, and every run;
-- open a project board with four lanes: **Working** (running), **Needs you**
-  (failed or stopped), **In review** (finished, worktree still there) and
-  **Done** (worktree cleaned);
+  elsewhere) in the sidebar;
+- open **Projects**: the project list with progress bars beside a board with
+  four lanes: **Working** (running), **Needs you** (failed or stopped),
+  **In review** (finished, worktree still there) and **Done** (worktree
+  cleaned), and the project's helpers in a side panel;
+- open your **Profile** from the button at the bottom of the sidebar. Its
+  **Info** tab is where you edit the name and email used for saved checkpoints,
+  and see whether Claude and Codex are signed in (with the command to sign in
+  if they aren't);
 - start an agent (claude or codex) on a project, open a run to read its full
   task and live output, stop it, or clean its worktree;
 - add or remove projects.

@@ -110,6 +110,7 @@ export interface Run {
   skillsGiven: Skill[];
   skillsUsed: Skill[];
   log?: string;
+  lane?: Lane;
 }
 export interface Member {
   member: string;
@@ -153,7 +154,7 @@ export interface Setup {
   }[];
   ready: boolean;
   identityReady: boolean;
-  shouldOpen?: boolean;
+  profileName?: string;
 }
 export interface Account {
   id: string;
@@ -191,7 +192,14 @@ export interface Skills {
 }
 export interface ProjectView {
   project: { name: string; path: string };
-  members: { ref: string; tool: string; label: string }[];
+  members: {
+    ref: string;
+    member: string;
+    team: string;
+    specialty?: string;
+    tool: string;
+    label: string;
+  }[];
   lanes: Record<Lane, Run[]>;
 }
 export interface PageData {
@@ -205,6 +213,19 @@ export interface PageData {
   roles?: Role[];
   skills?: Skills;
   member?: Member;
+  chat?: ChatView;
+}
+export interface ChatView {
+  tool: string;
+  model?: string;
+  models: Record<string, { id: string; label: string }[]>;
+  messages: {
+    role: "user" | "assistant" | "error";
+    text: string;
+    at?: string;
+    model?: string;
+  }[];
+  busy: boolean;
 }
 export const toolName = (tool: string) =>
   tool === "claude"

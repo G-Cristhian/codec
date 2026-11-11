@@ -19,7 +19,19 @@ import {
   RequestError,
   sourceText,
   type PageData,
+  type Run,
 } from "../ui/src/lib/api";
+import {
+  ago,
+  dayKey,
+  greeting,
+  helperRows,
+  helperStatus,
+  homeNotes,
+  initials,
+  weekOf,
+} from "../ui/src/overview";
+import { Markdown } from "../ui/src/chat";
 import { fixture } from "./ui-fixtures";
 let data: PageData;
 let handler:
@@ -32,10 +44,12 @@ function response(value: unknown, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
-async function mount(route = "#/") {
+async function mount(route = "#/projects", openTask = true) {
   location.hash = route;
   render(createElement(App));
   await waitFor(() => expect(screen.queryByTestId("page-loading")).toBeNull());
+  if (route.startsWith("#/project/") && openTask)
+    fireEvent.click(screen.getByTestId("task-new"));
 }
 function message(key: string) {
   return document.querySelector('[data-message-key="' + key + '"]')!;
@@ -96,21 +110,23 @@ beforeEach(() => {
             ? data.accounts
             : path === "state"
               ? data.home
-              : path === "settings"
-                ? data.settings
-                : path === "projects/site"
-                  ? data.project
-                  : path === "runs/run-demo"
-                    ? data.run
-                    : path === "teams"
-                      ? data.teams
-                      : path === "specialists"
-                        ? data.roles
-                        : path === "skills"
-                          ? data.skills
-                          : path === "members/web/tester"
-                            ? data.member
-                            : {},
+              : path === "chat"
+                ? data.chat
+                : path === "settings"
+                  ? data.settings
+                  : path === "projects/site"
+                    ? data.project
+                    : path === "runs/run-demo"
+                      ? data.run
+                      : path === "teams"
+                        ? data.teams
+                        : path === "specialists"
+                          ? data.roles
+                          : path === "skills"
+                            ? data.skills
+                            : path === "members/web/tester"
+                              ? data.member
+                              : {},
       );
     }),
   );
@@ -122,7 +138,7 @@ afterEach(() => {
 });
 describe("React screens and routes", () => {
   it.each([
-    ["#/", S.projects.title],
+    ["#/projects", S.projects.title],
     ["#/project/site", "site"],
     ["#/run/run-demo", S.tasks.details],
     ["#/teams", S.teams.title],
@@ -130,20 +146,26 @@ describe("React screens and routes", () => {
     ["#/specialists", S.specialists.title],
     ["#/skills", S.skills.title],
     ["#/accounts", S.accounts.title],
-    ["#/setup", S.setup.title],
+    ["#/profile/setup", S.setup.title],
   ])("renders %s with the approved heading", async (route, title) => {
     await mount(route);
     expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
       title,
     );
-    expect(screen.getByTestId("nav-projects").getAttribute("href")).toBe("#/");
-  });
-  it("opens Setup on first run and finishes through settings", async () => {
-    data.setup.shouldOpen = true;
-    await mount();
-    await waitFor(() =>
-      expect(screen.queryByTestId("setup-wizard")).not.toBeNull(),
+    expect(screen.getByTestId("nav-projects").getAttribute("href")).toBe(
+      "#/projects",
     );
+  });
+  it("keeps Home on first run and finishes Setup only when opened", async () => {
+    data.setup.identityReady = false;
+    await mount("#/");
+    expect(screen.queryByTestId("setup-wizard")).toBeNull();
+    fireEvent.click(screen.getByTestId("profile-open"));
+    await screen.findByTestId("profile-info");
+    fireEvent.click(
+      document.querySelector('[data-testid="profile-tab"][data-key="setup"]')!,
+    );
+    await screen.findByTestId("setup-wizard");
     fireEvent.click(screen.getByTestId("setup-continue"));
     await waitFor(() =>
       expect(calls).toContainEqual({
@@ -393,7 +415,9 @@ describe("React screens and routes", () => {
     data.setup.tools.forEach((t) => (t.installed = false));
     await mount("#/project/site");
     expect(document.body.textContent).toContain(S.setup.notInstalled);
-    expect(document.querySelector('main a[href="#/setup"]')).not.toBeNull();
+    expect(
+      document.querySelector('main a[href="#/profile/setup"]'),
+    ).not.toBeNull();
   });
   it("saves a role with its skills using the shared strings and selectors", async () => {
     await mount("#/specialists");
@@ -551,13 +575,27 @@ describe("skill folder uploads", () => {
   it("uploads relative file paths and base64 content through the existing API", async () => {
     await mount("#/skills");
     fireEvent.click(screen.getByTestId("skill-add-open"));
-    fireEvent.mouseDown(screen.getByRole("tab", { name: S.skills.upload }), { button: 0, ctrlKey: false });
+    fireEvent.mouseDown(screen.getByRole("tab", { name: S.skills.upload }), {
+      button: 0,
+      ctrlKey: false,
+    });
     const input = await screen.findByTestId("skill-upload");
-    const file = new File(["Read carefully"], "SKILL.md", { type: "text/markdown" });
-    Object.defineProperty(file, "webkitRelativePath", { value: "review/SKILL.md" });
+    const file = new File(["Read carefully"], "SKILL.md", {
+      type: "text/markdown",
+    });
+    Object.defineProperty(file, "webkitRelativePath", {
+      value: "review/SKILL.md",
+    });
     fireEvent.change(input, { target: { files: [file] } });
     fireEvent.submit(screen.getByTestId("skill-upload-form"));
-    await waitFor(() => expect(calls).toContainEqual({ path: "skills", body: { files: [{ path: "review/SKILL.md", content: btoa("Read carefully") }] } }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "skills",
+        body: {
+          files: [{ path: "review/SKILL.md", content: btoa("Read carefully") }],
+        },
+      }),
+    );
   });
 });
 
@@ -716,5 +754,550 @@ describe("shared data presentation", () => {
       ),
     ).toBe(S.errors.identity_missing);
     expect(errorText(new Error("raw"))).toBe(S.common.error);
+  });
+});
+
+describe("owner's Home, Helpers, Profile and Chat port", () => {
+  it("greets by first name and time of day, and builds a Monday-to-Sunday week", () => {
+    expect(greeting(new Date(2026, 9, 29, 8), "Jordan Lee")).toBe(
+      "Good morning, Jordan",
+    );
+    expect(greeting(new Date(2026, 9, 29, 14), "")).toBe(S.home.afternoon);
+    expect(greeting(new Date(2026, 9, 29, 20), "Sam")).toBe(
+      "Good evening, Sam",
+    );
+    expect(weekOf(new Date(2026, 9, 29, 12)).map(dayKey)).toEqual([
+      "2026-10-26",
+      "2026-10-27",
+      "2026-10-28",
+      "2026-10-29",
+      "2026-10-30",
+      "2026-10-31",
+      "2026-11-1",
+    ]);
+    expect(dayKey(weekOf(new Date(2026, 10, 1))[0])).toBe("2026-10-26");
+    expect([
+      initials("Jordan Lee"),
+      initials("  ada  "),
+      initials("Mary Ann Smith"),
+      initials(""),
+      initials(undefined),
+    ]).toEqual(["JL", "A", "MA", "", ""]);
+  });
+  it("gives every helper its live or latest task, retaining quick helpers that need attention", () => {
+    data.teams![0].members = ["scout", "writer", "idle", "orphan"].map(
+      (member, i) => ({
+        ...data.member!,
+        member,
+        specialty: i === 0 ? "Research" : undefined,
+        error: i === 3 ? "role_missing" : undefined,
+      }),
+    );
+    const run = (
+      runId: string,
+      member: string | undefined,
+      lane: Run["lane"],
+      state = "done",
+    ) => ({
+      ...data.run!,
+      runId,
+      team: member ? "web" : undefined,
+      member,
+      lane,
+      state,
+    });
+    const runs = [
+      run("run-4", undefined, "needsYou", "failed"),
+      run("run-5", undefined, "done"),
+      run("run-3", "writer", "inReview"),
+      run("run-2", "scout", "done"),
+      run("run-1", "scout", "working", "running"),
+    ];
+    const rows = helperRows(data.teams!, runs);
+    expect(
+      rows.map((row) => [row.key, helperStatus(row)[0], row.run?.runId]),
+    ).toEqual([
+      ["web/scout", "working", "run-1"],
+      ["web/writer", "inReview", "run-3"],
+      ["web/idle", "idle", undefined],
+      ["web/orphan", "needsYou", undefined],
+      ["run:run-4", "needsYou", "run-4"],
+    ]);
+    expect(rows[0].sub).toBe("Research");
+    expect(rows[1].sub).toBe(S.members.worker);
+    expect(helperStatus(rows[3])[1]).toBe(S.helpers.broken);
+    const before = (minutes: number) =>
+      new Date(Date.now() - minutes * 60000).toISOString();
+    expect([
+      ago(before(0)),
+      ago(before(5)),
+      ago(before(180)),
+      ago(before(2 * 1440)),
+      ago(undefined),
+    ]).toEqual([
+      S.time.now,
+      "5 min ago",
+      "3 h ago",
+      "2 d ago",
+      S.common.unknown,
+    ]);
+  });
+  it("lists tasks, broken helpers, required tools and identity gaps, excluding unused tools", () => {
+    data.setup.identityReady = false;
+    data.setup.tools[1].signedIn = false;
+    const member = {
+      ...data.member!,
+      member: "orphan",
+      tool: "codex",
+      error: "role_missing",
+    };
+    data.teams![0].members.push(member);
+    data.home.runs[0].lane = "needsYou";
+    const notes = homeNotes(
+      helperRows(data.teams!, data.home.runs),
+      data.home.runs,
+      data.setup,
+    );
+    expect(notes.map((n) => n.title)).toEqual([
+      S.home.needsOne,
+      S.home.brokenOne,
+      "Codex isn't ready",
+      S.home.identityTitle,
+    ]);
+    expect(notes[0].href).toBe("#/run/run-demo");
+    data.setup.identityReady = true;
+    data.teams![0].members.pop();
+    expect(homeNotes(helperRows(data.teams!, []), [], data.setup)).toEqual([]);
+  });
+  it("puts the week before equal-height Teams and Important and opens the project form from Home", async () => {
+    await mount("#/");
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
+      "Owner",
+    );
+    const grid = screen.getByTestId("home-teams").parentElement!;
+    expect(grid.firstElementChild!.textContent).toContain(S.home.week);
+    expect(screen.getByTestId("home-summary").textContent).toContain(
+      S.home.itemOne,
+    );
+    fireEvent.click(screen.getByTestId("home-new-project"));
+    await screen.findByTestId("project-add-form");
+    expect(location.hash).toBe("#/projects");
+    expect(
+      screen.getByTestId("project-add-open").getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+  it("summarizes team helper states and progress and filters Helpers when its team is clicked", async () => {
+    const member = data.teams![0].members[0];
+    data.teams![0].members = [
+      { ...member, member: "scout" },
+      { ...member, member: "writer" },
+      { ...member, member: "orphan", error: "role_missing" },
+    ];
+    data.home.runs = [
+      {
+        ...data.run!,
+        runId: "r3",
+        member: "writer",
+        task: "Draft methods",
+        lane: "needsYou",
+        state: "failed",
+      },
+      {
+        ...data.run!,
+        runId: "r2",
+        member: "scout",
+        task: "Summarize papers",
+        lane: "working",
+        state: "running",
+      },
+      { ...data.run!, runId: "r1", member: "scout", lane: "done" },
+    ];
+    await mount("#/");
+    const team = screen.getByTestId("home-team");
+    expect(team.textContent).toContain("1 working");
+    expect(team.textContent).toContain("2 need you");
+    expect(team.querySelector(":scope > p")!.textContent).toBe(
+      "scout is working on “Summarize papers”. writer needs you (Didn't finish). orphan needs fixing.",
+    );
+    expect(team.querySelector<HTMLElement>(".progress i")!.style.width).toBe(
+      "33%",
+    );
+    fireEvent.click(team);
+    await screen.findByTestId("helper-detail");
+    expect(
+      document
+        .querySelector('[data-testid="helpers-team"][data-key="web"]')!
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+  it("shows the selected day in Calendar and the whole week in List, retaining mode across polls", async () => {
+    const days = weekOf(new Date());
+    data.home.runs = [
+      { ...data.run!, runId: "today", startedAt: new Date().toISOString() },
+      { ...data.run!, runId: "monday", startedAt: days[0].toISOString() },
+      {
+        ...data.run!,
+        runId: "old",
+        startedAt: new Date(2020, 0, 1).toISOString(),
+      },
+    ];
+    await mount("#/");
+    expect(screen.getAllByTestId("home-day")).toHaveLength(7);
+    const today = document.querySelector(
+      '[data-testid="home-day"][aria-pressed="true"]',
+    )!;
+    expect(today.getAttribute("data-key")).toBe(dayKey(new Date()));
+    expect(
+      screen.getAllByTestId("home-task").map((r) => r.getAttribute("data-key")),
+    ).toContain("today");
+    fireEvent.click(
+      document.querySelector('[data-testid="home-mode"][data-key="list"]')!,
+    );
+    expect(
+      screen.getAllByTestId("home-task").map((r) => r.getAttribute("data-key")),
+    ).toEqual(["today", "monday"]);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 2200));
+    });
+    expect(screen.queryByTestId("home-day")).toBeNull();
+  });
+  it("opens New task without changing the selected project", async () => {
+    await mount("#/project/site", false);
+    expect(screen.queryByTestId("task-form")).toBeNull();
+    fireEvent.click(screen.getByTestId("task-new"));
+    expect(screen.getByTestId("task-form")).toBeTruthy();
+    expect(location.hash).toBe("#/project/site");
+    expect(screen.getByText(S.projects.team)).toBeTruthy();
+  });
+  it("opens Info for an unknown Profile tab, saves identity, rechecks sign-ins and returns to the original page", async () => {
+    data.setup.tools[1].signedIn = false;
+    data.setup.tools[1].problem = "Sign in to Codex";
+    data.setup.tools[1].fix = "codex login";
+    await mount("#/projects");
+    fireEvent.click(screen.getByTestId("profile-open"));
+    await screen.findByTestId("profile-info");
+    expect(screen.getByTestId("profile-back").getAttribute("href")).toBe(
+      "#/projects",
+    );
+    expect(screen.getByTestId("identity-save").textContent).toBe(
+      S.profile.saveChanges,
+    );
+    expect(
+      (screen.getByTestId("identity-name") as HTMLInputElement).value,
+    ).toBe("Owner");
+    expect(screen.getAllByTestId("setup-tool")[0].textContent).toContain(
+      S.profile.signedIn,
+    );
+    expect(screen.getAllByTestId("setup-tool")[1].textContent).toContain(
+      "Sign in to Codex",
+    );
+    expect(screen.getByTestId("setup-fix").textContent).toBe("codex login");
+    fireEvent.change(screen.getByTestId("identity-name"), {
+      target: { value: "Jordan Lee" },
+    });
+    fireEvent.change(screen.getByTestId("identity-email"), {
+      target: { value: "jordan@example.invalid" },
+    });
+    fireEvent.submit(screen.getByTestId("identity-form"));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "settings",
+        body: {
+          identity: { name: "Jordan Lee", email: "jordan@example.invalid" },
+        },
+      }),
+    );
+    fireEvent.click(screen.getByTestId("profile-check"));
+    await waitFor(() =>
+      expect(calls.some((c) => c.path === "setup?fresh=1")).toBe(true),
+    );
+    await act(async () => {
+      location.hash = "#/profile/unknown-tab";
+      fireEvent(window, new HashChangeEvent("hashchange"));
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector('[data-testid="profile-tab"][data-key="info"]'),
+      ).not.toBeNull(),
+    );
+    expect(
+      document
+        .querySelector('[data-testid="profile-tab"][data-key="info"]')!
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    fireEvent.click(
+      document.querySelector('[data-testid="profile-tab"][data-key="setup"]')!,
+    );
+    await screen.findByTestId("setup-wizard");
+    expect(screen.getByTestId("profile-back").getAttribute("href")).toBe(
+      "#/projects",
+    );
+    fireEvent.click(screen.getByTestId("profile-back"));
+    await screen.findByTestId("project-add-open");
+  });
+  it.each([
+    [0, false, S.setup.notReady + " " + S.setup.identityNeeded],
+    [0, true, S.setup.notReady],
+    [1, false, S.setup.identityNeeded],
+    [2, false, S.setup.identityNeeded],
+    [1, true, S.setup.oneReady.replace("{tool}", S.setup.claude)],
+    [2, true, S.setup.ready],
+  ])(
+    "Setup explains readiness with %s services and identity %s",
+    async (count, identityReady, expected) => {
+      data.setup.tools.forEach((t, i) => {
+        t.installed = i < count;
+        t.signedIn = i < count;
+      });
+      data.setup.ready = count > 0;
+      data.setup.identityReady = identityReady;
+      await mount("#/profile/setup");
+      expect(screen.getByTestId("setup-status").textContent).toContain(
+        expected,
+      );
+    },
+  );
+  it("keeps the old Setup link working and saves Skip through settings", async () => {
+    await mount("#/setup");
+    await screen.findByTestId("profile-setup");
+    expect(location.hash).toBe("#/profile/setup");
+    fireEvent.click(screen.getByTestId("setup-skip"));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "settings",
+        body: { setupFinished: true },
+      }),
+    );
+  });
+  it("starts helper tasks on the chosen project and stops them only after confirmation", async () => {
+    data.home.runs[0].lane = "working";
+    data.home.runs[0].state = "running";
+    await mount("#/helpers");
+    await screen.findByTestId("helper-task-form");
+    fireEvent.change(screen.getByTestId("helper-task-text"), {
+      target: { value: "Review changes" },
+    });
+    fireEvent.submit(screen.getByTestId("helper-task-form"));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "projects/site/runs",
+        body: { member: "web/tester", task: "Review changes" },
+      }),
+    );
+    expect(message("helper-web/tester").textContent).toContain(
+      S.helpers.started,
+    );
+    fireEvent.click(screen.getByTestId("helper-stop"));
+    expect(calls.some((c) => c.path.endsWith("/stop"))).toBe(false);
+    fireEvent.click(await screen.findByTestId("confirm-submit"));
+    await waitFor(() =>
+      expect(calls).toContainEqual({ path: "runs/run-demo/stop", body: {} }),
+    );
+  });
+  it("keeps the selected helper's draft when its task finishes during a poll", async () => {
+    data.teams![0].members.push({ ...data.member!, member: "writer" });
+    data.home.runs.push({
+      ...data.run!,
+      runId: "writer-run",
+      member: "writer",
+      state: "running",
+      lane: "working",
+    });
+    await mount("#/helpers");
+    const input = screen.getByTestId("helper-task-text") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Keep this helper draft" } });
+    input.focus();
+    data.home.runs[0].lane = "done";
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 2200));
+    });
+    expect(screen.getByTestId("helper-task-text")).toBe(input);
+    expect(input.value).toBe("Keep this helper draft");
+    expect(document.activeElement).toBe(input);
+    expect(
+      document
+        .querySelector('[data-testid="helper-row"][data-key="web/tester"]')!
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+  it("persists sidebar collapse through a remount", async () => {
+    await mount("#/");
+    fireEvent.click(screen.getByTestId("sidebar-toggle"));
+    expect(localStorage.getItem("codec-sidebar")).toBe("collapsed");
+    cleanup();
+    await mount("#/");
+    expect(
+      screen.getByTestId("sidebar-toggle").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(document.documentElement.getAttribute("data-sidebar")).toBe(
+      "collapsed",
+    );
+  });
+  it("shows who said what, model labels, errors and thinking, and selects models and services", async () => {
+    Object.assign(data.chat!, {
+      tool: "codex",
+      model: "gpt-6-sol",
+      busy: true,
+      messages: [
+        { role: "user", text: "Hi" },
+        { role: "assistant", text: "Hello!", model: "gpt-6-sol" },
+        { role: "error", text: S.chat.failed },
+      ],
+    });
+    await mount("#/chat");
+    expect(
+      screen
+        .getAllByTestId("chat-message")
+        .map((m) => m.getAttribute("data-key")),
+    ).toEqual(["user", "assistant", "error"]);
+    expect(screen.getByTestId("chat-thinking").getAttribute("aria-label")).toBe(
+      "Codex is thinking…",
+    );
+    expect(screen.getByTestId("chat-send").hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByTestId("chat-copy")).toHaveLength(1);
+    expect(document.querySelector(".chat-meta .hint")!.textContent).toBe(
+      "GPT-6-Sol",
+    );
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    fireEvent.click(screen.getByTestId("chat-model"));
+    expect(
+      (
+        await screen.findByRole("option", { name: S.chat.defaultModel })
+      ).getAttribute("data-key"),
+    ).toBe("");
+    fireEvent.click(
+      await screen.findByRole("option", { name: S.chat.defaultModel }),
+    );
+    await waitFor(() =>
+      expect(calls).toContainEqual({ path: "chat/model", body: { model: "" } }),
+    );
+    fireEvent.click(screen.getByTestId("chat-tool"));
+    const item = await screen.findByRole("option", { name: S.setup.claude });
+    expect(item.getAttribute("data-key")).toBe("claude");
+    fireEvent.click(item);
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "chat/new",
+        body: { tool: "claude" },
+      }),
+    );
+  });
+  it("keeps a saved unlisted model selectable, and New chat clears through the existing endpoint", async () => {
+    data.chat!.model = "older-model";
+    data.chat!.messages = [{ role: "assistant", text: "saved" }];
+    await mount("#/chat");
+    fireEvent.click(screen.getByTestId("chat-model"));
+    expect(
+      (await screen.findByRole("option", { name: "older-model" })).getAttribute(
+        "data-key",
+      ),
+    ).toBe("older-model");
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    fireEvent.click(screen.getByTestId("chat-new"));
+    await waitFor(() =>
+      expect(calls).toContainEqual({ path: "chat/new", body: {} }),
+    );
+  });
+  it("sends trimmed messages with Enter, keeps Shift+Enter and composition for typing, and shows existing error strings", async () => {
+    await mount("#/chat");
+    const input = screen.getByTestId("chat-text") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "  What's new?  " } });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(calls.filter((c) => c.path === "chat" && c.body.text)).toHaveLength(
+      0,
+    );
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "chat",
+        body: { text: "What's new?" },
+      }),
+    );
+    await waitFor(() => expect(input.value).toBe(""));
+    handler = (p, body) =>
+      p === "chat" && body.text
+        ? response({ code: "chat_busy" }, 409)
+        : undefined;
+    fireEvent.change(input, { target: { value: "Retry" } });
+    fireEvent.submit(screen.getByTestId("chat-form"));
+    await waitFor(() =>
+      expect(message("chat").textContent).toContain(S.errors.chat_busy),
+    );
+    expect(input.value).toBe("Retry");
+  });
+  it("preserves the composer, focus, selection and reader scroll while polls append and update replies", async () => {
+    data.chat!.messages = [{ role: "assistant", text: "Partial" }];
+    await mount("#/chat");
+    const input = screen.getByTestId("chat-text") as HTMLTextAreaElement,
+      log = screen.getByTestId("chat-log"),
+      reply = screen.getByTestId("chat-message");
+    Object.defineProperties(log, {
+      clientHeight: { value: 100 },
+      scrollHeight: { value: 1000 },
+    });
+    log.scrollTop = 150;
+    fireEvent.scroll(log);
+    fireEvent.change(input, { target: { value: "Keep my draft" } });
+    input.focus();
+    input.setSelectionRange(5, 8);
+    data.chat!.messages[0].text = "Completed reply";
+    data.chat!.messages.push({ role: "assistant", text: "Another reply" });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 2200));
+    });
+    expect(screen.getByTestId("chat-text")).toBe(input);
+    expect(screen.getByTestId("chat-log")).toBe(log);
+    expect(screen.getAllByTestId("chat-message")[0]).toBe(reply);
+    expect(reply.textContent).toContain("Completed reply");
+    expect(log.textContent).toContain("Another reply");
+    expect(input.value).toBe("Keep my draft");
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([5, 8]);
+    expect(log.scrollTop).toBe(150);
+    log.scrollTop = 900;
+    fireEvent.scroll(log);
+    data.chat!.messages.push({ role: "assistant", text: "At bottom" });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 2200));
+    });
+    expect(log.scrollTop).toBe(1000);
+  });
+  it("renders the owner's Markdown subset with escaped HTML and safe links", () => {
+    const fence = "```";
+    const { container } = render(
+      createElement(Markdown, {
+        text:
+          "**Root cause:** the `.topbar` rule\n\n1. one\n2. two\n\n- a\n- [docs](https://example.com)\n\n" +
+          fence +
+          "js\n<b>x</b>\n" +
+          fence +
+          "\n<img src=x onerror=alert(1)>",
+      }),
+    );
+    expect([...container.children].map((el) => el.tagName)).toEqual([
+      "P",
+      "OL",
+      "UL",
+      "PRE",
+      "P",
+    ]);
+    expect(container.querySelector("strong")!.textContent).toBe("Root cause:");
+    expect(container.querySelector("code")!.textContent).toBe(".topbar");
+    expect(container.querySelectorAll("ol li")).toHaveLength(2);
+    expect(container.querySelector("a")!.getAttribute("href")).toBe(
+      "https://example.com",
+    );
+    expect(container.querySelector("a")!.getAttribute("rel")).toBe(
+      "noopener noreferrer",
+    );
+    expect(container.querySelector("pre code")!.textContent).toBe("<b>x</b>");
+    expect(container.querySelector("img")).toBeNull();
+    cleanup();
+    const unsafe = render(
+      createElement(Markdown, { text: "[bad](javascript:alert(1))" }),
+    );
+    expect(unsafe.container.querySelector("a")).toBeNull();
+    expect(unsafe.container.textContent).toBe("[bad](javascript:alert(1))");
   });
 });
