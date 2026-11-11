@@ -162,7 +162,7 @@ describe("background sign-in lifecycle", () => {
   });
   it.each(["cancel", "timeout", "close"] as const)("%s ends a real fake-login process without signing in", async (action) => {
     const a = addAccount("claude", "Work"); let child: ChildProcess | undefined;
-    const f = manager({ binary: (tool) => tool, timeoutMs: action === "timeout" ? 75 : 5000,
+    const f = manager({ binary: (tool) => tool, timeoutMs: action === "timeout" ? 500 : 5000,
       spawn: (_command, _args, env, cwd) => child = spawn(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(claudeUrl + "\n")}); setInterval(() => {}, 1000);`], { env, cwd, detached: true, stdio: "pipe" }),
       status: async () => ({ status: 1, stdout: "" }) });
     f.start(a.id);
