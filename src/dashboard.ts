@@ -558,7 +558,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
-    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), profileName: getSettings().identity.name, shouldOpen: !getSettings().setupFinished });
+    if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), profileName: getSettings().identity.name });
     if (isGet && a === "chat" && n === 1) return sendJson(res, 200, chat.view());
     if (!isGet && a === "chat" && n === 1) return sendJson(res, 202, chat.send(s(body.text) ?? ""));
     if (!isGet && a === "chat" && b === "new" && n === 2) return sendJson(res, 200, chat.reset(s(body.tool)));

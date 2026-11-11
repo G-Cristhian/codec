@@ -525,7 +525,7 @@ describe("Wave 2 wording and actions", () => {
     await action.props.onclick({ currentTarget: {} });
     expect(api).toHaveBeenLastCalledWith("settings", { setupFinished: true });
     expect(location.hash).toBe("#/");
-    expect(page).toContain('if (setupState.shouldOpen && location.hash !== "#/profile/setup")');
+    expect(page).not.toContain("shouldOpen");
   });
 
   it.each([

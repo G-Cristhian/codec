@@ -66,6 +66,10 @@ ${THEME_BOOT}
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; display: grid; grid-template-columns: 176px minmax(0, 1fr); min-height: 100vh; }
+/* Pin the sidebar and page to their cells so elements that browser extensions add to <body> can't push them out of place. */
+body > header { grid-column: 1; grid-row: 1; }
+body > main { grid-column: 2; grid-row: 1; }
+body.full > main { grid-column: 1; grid-row: auto; }
 a { color: inherit; text-decoration: none; }
 /* The header is the left sidebar: brand, navigation, live counts and theme. */
 header { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 4px; padding: 18px 8px 14px; background: var(--side); border-right: 1px solid var(--border); overflow-y: auto; }
@@ -267,7 +271,8 @@ table.helpers tr.alert td { background: var(--needs-bg); }
 .homehead { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
 .homehead h1 { font-size: 28px; }
 .homehead p { margin: 4px 0 0; color: var(--muted); }
-.home { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+/* Week view on top; panels in a row share one height so no gaps open between them. */
+.home { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: stretch; }
 .home > .wide { grid-column: 1 / -1; }
 .panel { background: var(--panel); border: 1px solid var(--border); padding: 18px 20px; min-width: 0; }
 .panel h2 { margin: 0; font-size: 16px; }
@@ -316,8 +321,8 @@ select.pill { color: var(--accent); font-weight: 500; cursor: pointer; }
 .msg .body p, .msg .body ul, .msg .body ol, .msg .body pre { margin: 0 0 12px; }
 .msg .body li { margin: 3px 0; }
 .msg .body h3 { font-size: 16px; margin: 16px 0 8px; }
-.msg .body code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--review); }
-.msg .body pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.msg .body code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 1px 5px; color: var(--review); }
+.msg .body pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; overflow-x: auto; }
 .msg .body pre code { background: none; border: 0; padding: 0; color: var(--text); }
 .msg .body a { color: var(--accent); text-decoration: underline; }
 .msg.error .body { color: var(--needs); }
@@ -327,7 +332,7 @@ select.pill { color: var(--accent); font-weight: 500; cursor: pointer; }
 @keyframes typing { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .msg .typing i { animation: none; opacity: .6; } }
 .chatform { flex: none; padding: 0 28px 20px; }
-.composer { max-width: 920px; margin: 0 auto; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 12px 14px 10px; box-shadow: 0 1px 3px #00000010; }
+.composer { max-width: 920px; margin: 0 auto; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px 10px; box-shadow: 0 1px 3px #00000010; }
 .composer:focus-within { border-color: var(--muted); }
 .composer textarea { display: block; width: 100%; border: 0; background: none; padding: 4px 6px; min-height: 48px; max-height: 40vh; resize: none; font-size: 15px; outline: none; }
 .composer .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
@@ -337,6 +342,9 @@ select.pill { color: var(--accent); font-weight: 500; cursor: pointer; }
 .composer select.pill { max-width: 200px; }
 .chatform .message { max-width: 920px; margin-left: auto; margin-right: auto; }
 table.due td:first-child { font-weight: 600; white-space: nowrap; }
+/* Every box shares one corner radius. Pills and circles keep their own shapes. */
+header .err, .card, table, form.row, input, select, textarea, button, a.btn, .kv, form.stack, .folder-panel, dialog,
+.chip, .statcard, .callout, .panel, .note, .settings-nav a { border-radius: 6px; }
 @media (max-width: 1100px) {
   .home { grid-template-columns: minmax(0, 1fr); }
   .split.helpers, .split.projects, .split.projects.index { grid-template-columns: minmax(0, 1fr); }
@@ -347,6 +355,7 @@ table.due td:first-child { font-weight: 600; white-space: nowrap; }
 }
 @media (max-width: 760px) {
   body { grid-template-columns: minmax(0, 1fr); }
+  body > main { grid-column: 1; grid-row: 2; }
   header { position: static; height: auto; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-right: 0; border-bottom: 1px solid var(--border); }
   header .brand { margin: 0 8px 0 0; }
   .sidetoggle { display: none; }
@@ -405,7 +414,6 @@ const enc = encodeURIComponent;
 const folders = new Map();
 const messages = new Map();
 let setupState = { tools: [], ready: false };
-let setupChecked = false;
 let accountsState = { accounts: [], defaults: {}, choices: {} };
 let timer = null;
 let renderSeq = 0;
@@ -750,7 +758,7 @@ function toolCards(okText = S.setup.ok) {
         }, { "data-key": t.tool }), message("setup-" + t.tool)));
   });
 }
-// The profile's Setup tab: the first-run checklist, also opened automatically until setup is finished.
+// The profile's Setup tab: the first-run checklist.
 function setupTab(settings) {
   const working = setupState.tools.filter((t) => toolOK(t.tool));
   const needed = [];
@@ -1088,12 +1096,12 @@ async function homePage(seq) {
       h("div", {}, h("h1", { text: greeting(now, setupState.profileName) }), h("p", { "data-testid": "home-summary", text: date + " · " + (count ? plural(count, S.home.itemOne, S.home.itemMany) : S.home.itemNone) })),
       button("home-new-project", S.home.newProject, () => { projectAddOpen = true; go("#/projects"); }, { class: "primary" })),
     h("div.home", {},
+      weekTasks(state.runs, now),
       h("section.panel", { "data-testid": "home-teams" }, h("div.headrow", {}, h("h2", { text: S.home.teams }), h("a.link.hint", { href: "#/helpers", text: S.home.viewHelpers })),
         teamList.length ? teamList.map((t) => teamCard(t, rows, state.runs)) : h("p.muted", {}, S.home.noTeams + " ", h("a.link", { href: "#/teams", text: S.home.addTeam }))),
       h("section.panel", { "data-testid": "home-important" }, h("h2", { text: S.home.important }), h("div.notes", {}, notes.length
         ? notes.map((note, i) => h("a.note" + (i === 0 ? ".urgent" : "") + (note.tone ? "." + note.tone : ""), { href: note.href, "data-testid": "home-note" }, h("b", { text: note.title }), h("span", { text: note.body })))
-        : h("div.note", { "data-testid": "home-note" }, h("b", { text: S.home.calm }), h("span", { text: S.home.calmHint })))),
-      weekTasks(state.runs, now)));
+        : h("div.note", { "data-testid": "home-note" }, h("b", { text: S.home.calm }), h("span", { text: S.home.calmHint }))))));
 }
 async function home(seq) {
   const state = await api("state");
@@ -1464,10 +1472,6 @@ async function refresh() {
     setupState = await api("setup");
     accountsState = await api("accounts");
     if (seq !== renderSeq) return;
-    if (!setupChecked) {
-      setupChecked = true;
-      if (setupState.shouldOpen && location.hash !== "#/profile/setup") { go("#/profile/setup"); return; }
-    }
     const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
     let page = "projects";
     document.body.classList.toggle("full", parts[0] === "profile");
