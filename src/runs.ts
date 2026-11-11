@@ -43,6 +43,7 @@ import {
   type Team,
 } from "./org.js";
 import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "./inject.js";
+import { receiveMessages } from "./messages.js";
 import { modelFromClaudeStream, renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
 import { modelFromCodexOutput } from "./codex-output.js";
 import { COMMIT_ATTRIBUTION_SCRIPT } from "./commit-attribution.js";
@@ -366,6 +367,15 @@ function startAccountRun(input: StartInput): RunStatus {
     outputFormat: agent === "claude" ? "claude-stream" : "text",
   };
   writeJsonAtomic(recordFile(runId), redactValue(record));
+  try {
+    if (who) receiveMessages(`${who.team}/${who.member}`, runId);
+  } catch (error) {
+    // Delivery failed before launch; don't leave a task looking like it is starting.
+    withLock(`run-${runId}`, () => {
+      writeJsonAtomic(recordFile(runId), redactValue({ ...record, lostAt: new Date().toISOString() }));
+    });
+    throw error;
+  }
 
   const log = openSync(join(dir, "output.log"), "a", 0o600);
   let pid: number | undefined;

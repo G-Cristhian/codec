@@ -73,6 +73,11 @@ export const S = {
     claude: "Before doing anything else, use the Skill tool on every skill below that could apply to this task and follow it. These skills override your default habits for file content and naming.",
     codex: "Before doing anything else, open every SKILL.md below that could apply to this task and follow it. These skills override your default habits for file content and naming.",
     noDescription: "Read the skill for its instructions.",
+    messages: "Messages from the owner and other helpers arrive in messages.md in your project folder. Check it before starting work, regularly during the task, and before finishing.",
+  },
+  messages: {
+    title: "# Messages for this helper",
+    entry: "## From {from} — {sentAt}\n\n{body}\n",
   },
   common: {
     add: "Add", edit: "Edit", remove: "Remove", save: "Save", cancel: "Cancel", yes: "Yes", no: "No",
@@ -282,6 +287,9 @@ export const S = {
     member_busy: "This helper still has {count} task(s) working. Stop those tasks first, then try again.",
     missing_tool: "Choose who should do this task.", missing_task: "Write what you'd like the helper to do.",
     missing_path: "Choose a folder before continuing.",
+    missing_message: "Write a message for the helper before sending it.",
+    message_run_mismatch: "This task belongs to a different helper. Choose a task for the intended helper.",
+    message_file_conflict: "The project folder already tracks messages.md. Rename that file before starting a helper task.",
     project_not_assigned: "The {team} team isn't set up to work on {project}. Add {project} to the {team} team on the Teams page, or pick another helper.",
     tool_mismatch: "{member} uses {tool}, not {requested}. Pick the helper again from the list.",
     role_tool_mismatch: "This helper uses its role's AI service ({tool}). To change it, edit the {name} role.",
