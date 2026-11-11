@@ -1553,6 +1553,15 @@ tr[aria-selected="true"] {
   margin-left: auto;
 }
 @media (min-width: 761px) {
+  /* Paint the full column while the sidebar stays a viewport-height sticky pane. */
+  .app-shell:not(.full-profile)::before {
+    content: "";
+    grid-column: 1;
+    grid-row: 1;
+    background: var(--card);
+    border-right: 1px solid var(--border);
+    pointer-events: none;
+  }
   :root[data-sidebar="collapsed"] .app-shell:not(.full-profile) {
     grid-template-columns: 52px minmax(0, 1fr);
   }
