@@ -40,6 +40,8 @@
  * account-cancel, account-code-form, account-send-code, account-code-<id>.
  * Account settings: project-account-settings, project-account, team-account,
  * helper-account. Task limit: task-account-limit.
+ * Message limits: project-message-limit-form, project-message-limit, project-message-limit-save,
+ * team-message-limit-form, team-message-limit, team-message-limit-save.
  * All details summaries, buttons and fields are included above. Checkboxes
  * repeat their selector and use data-key for the skill/project name.
  */
@@ -64,6 +66,8 @@ export const S = {
   },
   theme: { label: "Theme", auto: "Auto", light: "Light", dark: "Dark" },
   cli: {
+    messageLimitUsage: "usage: codec {scope} message-limit <{scope}> <1-100|default>",
+    messageLimitHelp: "  codec {scope} message-limit <{scope}> <1-100|default>\n                                             limit messages between two helpers",
     coordinatorHelp: 'Coordinator\n  codec coordinator                         show settings and whether it is running\n  codec coordinator setup --tool claude|codex [--model <m>] [--time-limit <min>]\n                                             set up the coordinator for all projects\n  codec run <project> --member coordinator --task "<text>"\n                                             give the coordinator a task',
     coordinatorUsage: 'usage: codec coordinator [setup --tool claude|codex [--model <m>] [--time-limit <min>]]',
     coordinatorSettings: 'Coordinator: {tool}; model: {model}; time limit: {limit}; {state}.',
@@ -90,6 +94,16 @@ export const S = {
     messages: "Messages from the owner and other helpers arrive in messages.md in your project folder. Check it before starting work, regularly during the task, and before finishing.",
     sendMessage: 'Send a message to helper X: run `"$CODEC_NODE" "$CODEC_CLI" message <team/helper> "<text>"`, replacing <team/helper> with the helper\'s team/name and <text> with your message. Use this to share findings or ask another helper for help. Codec knows who you are and delivers the message to a running helper or keeps it in their inbox until their next task.',
     reportStatus: 'Report progress / I\'m stuck / done:\n- Report progress with `"$CODEC_NODE" "$CODEC_CLI" report progress "<note>"` while working or when you can continue after being stuck.\n- When you need a person, run `"$CODEC_NODE" "$CODEC_CLI" report stuck "<what you need>"`. Explain what you need; this moves your task to Needs you.\n- When finished, run `"$CODEC_NODE" "$CODEC_CLI" report done "<note>"`, then finish your task.\nThe note is optional for progress and done. Either clears Needs you while your task is still running.',
+  },
+  messageLimit: {
+    reached: "Message limit reached. The owner needs to continue this conversation.",
+    label: "Message limit between two helpers",
+    hint: "Default 10. After this many messages, the two helpers stop and wait for you.",
+    resetDefault: "Reset to default",
+    cappedPair: "{a} and {b} reached the message limit.",
+    continue: "Let them continue",
+    sender: "Codec",
+    settings: "Settings",
   },
   messages: {
     title: "# Messages for this helper",
@@ -283,6 +297,9 @@ export const S = {
     setupLogin: "Open {tool} and sign in, then press Check again.",
   },
   errors: {
+    invalid_message_limit: "Choose a whole number from 1 to 100, or use the default.",
+    message_limit_reached: "Message limit reached. The owner needs to continue this conversation.",
+    message_pair_not_found: "That conversation is no longer waiting. Refresh and try again.",
     coordinator_not_setup: "Set up the coordinator first with codec coordinator setup --tool claude|codex, or on the Helpers page.",
     coordinator_busy: "The coordinator is already working on a task. Wait for it to finish or stop it before starting another.",
     coordinator_only: "Only the coordinator can assign tasks.",

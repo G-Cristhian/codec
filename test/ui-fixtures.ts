@@ -79,6 +79,7 @@ export function fixture(): PageData & { project: NonNullable<PageData["project"]
     project: {
       project: { name: "site", path: "/tmp/site" },
       messages: [],
+      cappedPairs: [],
       messagesError: false,
       helpers: [{ ref: "web/tester", name: "web/tester", running: false }],
       members: [

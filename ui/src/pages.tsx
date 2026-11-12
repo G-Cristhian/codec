@@ -61,6 +61,31 @@ import {
 export const go = (route: string) => {
   location.hash = route;
 };
+function MessageLimitSettings({ scope, name, limit }: { scope: "project" | "team"; name: string; limit?: number }) {
+  // Keep the draft local: dashboard polls must not replace edits or focus.
+  const [value, setValue] = useState(limit === undefined ? "" : String(limit));
+  const { act, pending } = useActions();
+  const key = "message-limit-" + scope + "-" + name;
+  const route = (scope === "project" ? "projects/" : "teams/") + enc(name) + "/message-limit";
+  return (
+    <Form id={scope + "-message-limit-form"} actionKey={key}
+      onSubmit={() => api(route, value === "" ? {} : { messageLimit: Number(value) })}>
+      <Field id={scope + "-message-limit"} label={S.messageLimit.label} hint={S.messageLimit.hint}
+        type="number" min={1} max={100} step={1} value={value} className="limit"
+        onChange={(event) => setValue(event.target.value)} />
+      <div className="flex gap-2">
+        <Submit id={scope + "-message-limit-save"} actionKey={key}>{S.common.save}</Submit>
+        <Button type="button" variant="outline" disabled={!!pending[key]} onClick={async () => {
+          const draft = value;
+          if (await act(key, () => api(route, {}), S.common.saved)) {
+            setValue((current) => current === draft ? "" : current);
+          }
+        }}>{S.messageLimit.resetDefault}</Button>
+      </div>
+    </Form>
+  );
+}
+
 export function AccountSettings({
   scope,
   name,
@@ -389,8 +414,9 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
             {S.projects.remove}
           </Remove>
         </PageIntro>
-        <Disclosure id="project-account-settings" title={S.accounts.label}>
+        <Disclosure id="project-account-settings" title={S.messageLimit.settings}>
           <Card className="panel">
+            <MessageLimitSettings key={name} scope="project" name={name} limit={v.project.messageLimit} />
             <AccountSettings data={data} scope="project" name={name} />
           </Card>
         </Disclosure>
@@ -484,7 +510,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
             </section>
           </TabsContent>
           <TabsContent value="conversation" forceMount hidden={tab !== "conversation"} className="h-[min(36rem,70dvh)] min-h-80 flex-none data-[state=inactive]:hidden">
-            <ConversationFeed name={name} messages={v.messages} helpers={v.helpers} messagesError={v.messagesError} active={tab === "conversation"} />
+            <ConversationFeed name={name} messages={v.messages} helpers={v.helpers} messagesError={v.messagesError} cappedPairs={v.cappedPairs} active={tab === "conversation"} />
           </TabsContent>
         </Tabs>
       </section>
@@ -1027,6 +1053,7 @@ function TeamForm({ team, data }: { team?: Team; data: PageData }) {
       {team && (
         <>
           <hr />
+          <MessageLimitSettings key={team.name} scope="team" name={team.name} limit={team.messageLimit} />
           <AccountSettings scope="team" name={team.name} data={data} />
         </>
       )}

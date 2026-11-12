@@ -93,6 +93,7 @@ export interface HelperRow {
   team?: string;
   tool: string;
   broken?: boolean;
+  held?: boolean;
   projects: string[];
   sub: string;
   href: string;
@@ -105,7 +106,7 @@ export function helperRows(teams: Team[], runs: Run[], projects: string[] = [], 
     const mine = runs.filter((run) => run.member === "coordinator" && !run.team);
     const run = mine.find((run) => run.state === "running") || mine[0];
     rows.push({
-      key: "coordinator", name: S.coordinator.name, tool: coordinator.tool, projects,
+      key: "coordinator", held: coordinator.held, name: S.coordinator.name, tool: coordinator.tool, projects,
       sub: toolName(coordinator.tool), href: run ? "#/run/" + enc(run.runId) : "#/helpers", run,
     });
   }
@@ -119,6 +120,7 @@ export function helperRows(teams: Team[], runs: Run[], projects: string[] = [], 
         team: t.name,
         tool: m.tool,
         broken: !!m.error,
+        held: m.held,
         projects: m.projects || t.projects,
         sub: m.error ? S.helpers.broken : m.specialty || S.members.worker,
         href: memberHref(t.name, name),
@@ -142,6 +144,7 @@ export function helperRows(teams: Team[], runs: Run[], projects: string[] = [], 
 export function helperStatus(
   row: HelperRow,
 ): [Exclude<Lane, "done"> | "idle", string] {
+  if (row.held || row.run?.held) return ["needsYou", S.tasks.needsYou];
   if (row.broken) return ["needsYou", S.helpers.broken];
   const lane = row.run?.lane;
   return lane === "working" || lane === "needsYou" || lane === "inReview"
@@ -251,7 +254,7 @@ export function TeamCard({
       );
     else if (k === "needsYou")
       lines.push(
-        fmt(S.home.needsYou, { name: row.name, state: stateText(row.run!) }),
+        fmt(S.home.needsYou, { name: row.name, state: row.held || row.run?.held ? S.messageLimit.reached : stateText(row.run!) }),
       );
     else if (k === "inReview")
       lines.push(

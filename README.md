@@ -22,6 +22,8 @@ Requires Node 20.19+ or 22.12+, git, and the `claude` and/or `codex` CLI for rea
 | Command | What it does |
 |---|---|
 | `codec project add <path> [--name <name>]` | Register a git repository (it needs at least one commit). |
+| `codec project message-limit <project> <1-100\|default>` | Set how many messages two helpers can exchange before they need you to continue. Default: 10. |
+| `codec team message-limit <team> <1-100\|default>` | Set a team message limit. The lower team limit wins over project settings. |
 | `codec project list` | List projects and how many agents are running on each. |
 | `codec project remove <name>` | Unregister a project. The repository is not touched. Refused while agents are running on it. |
 | `codec run <project> --agent claude\|codex --task "<text>"` | Create a fresh worktree + branch `codec/<run>` and start the agent there in the background. |

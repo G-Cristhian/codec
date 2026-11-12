@@ -84,6 +84,7 @@ export interface Skill {
   members?: string[];
 }
 export interface Run {
+  held?: boolean;
   runId: string;
   project: string;
   task: string;
@@ -113,6 +114,7 @@ export interface Run {
   lane?: Lane;
 }
 export interface Member {
+  held?: boolean;
   member: string;
   name?: string;
   team?: string;
@@ -139,6 +141,7 @@ export interface Role {
   clones: { team: string; member: string }[];
 }
 export interface Team {
+  messageLimit?: number;
   name: string;
   projects: string[];
   members: Member[];
@@ -179,7 +182,7 @@ export interface Home {
   memoryBytes: number | null;
 }
 export interface CoordinatorView {
-  settings: { tool: string; model?: string; timeLimitMinutes?: number; createdAt: string } | null;
+  settings: { held?: boolean; tool: string; model?: string; timeLimitMinutes?: number; createdAt: string } | null;
   running: boolean;
 }
 export interface Skills {
@@ -196,7 +199,7 @@ export interface Skills {
   };
 }
 export interface ProjectView {
-  project: { name: string; path: string };
+  project: { name: string; path: string; messageLimit?: number };
   members: {
     ref: string;
     member: string;

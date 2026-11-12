@@ -5,7 +5,7 @@ import { promisify } from "util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodecError } from "../src/errors.js";
 import { listMessages, markRead, postMessage, receiveMessages, type MessageRecord } from "../src/messages.js";
-import { addMember, addTeam, deleteMember } from "../src/org.js";
+import { addMember, addTeam, deleteMember, setTeamMessageLimit } from "../src/org.js";
 import { addProject } from "../src/registry.js";
 import { listRuns, runOutput, startRun, stopRun } from "../src/runs.js";
 import * as store from "../src/store.js";
@@ -221,6 +221,7 @@ describe("helper messages", () => {
   });
 
   it("serializes posting, receiving and marking read across separate processes", async () => {
+    setTeamMessageLimit("red", 100); // This test exercises delivery above the default conversation cap.
     process.env.CODEC_AGENT_COMMAND = "sleep 60";
     const run = start();
     const initial = send("Initial note");
