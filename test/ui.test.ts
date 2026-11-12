@@ -1579,3 +1579,112 @@ describe("owner's Home, Helpers, Profile and Chat port", () => {
     expect(unsafe.container.textContent).toBe("[bad](javascript:alert(1))");
   });
 });
+
+describe("message limit settings and holds", () => {
+  it.each(["project", "team"])("shows and saves the %s limit, including default reset", async (scope) => {
+    data.project.project.messageLimit = 7;
+    data.teams![0].messageLimit = 4;
+    await mount(scope === "project" ? "#/project/site" : "#/teams", false);
+    fireEvent.click(screen.getByTestId(scope === "project" ? "project-account-settings" : "team-edit-open"));
+    const input = screen.getByRole("spinbutton", { name: S.messageLimit.label }) as HTMLInputElement;
+    expect(input.value).toBe(scope === "project" ? "7" : "4");
+    expect(input.min).toBe("1");
+    expect(input.max).toBe("100");
+    expect(input.step).toBe("1");
+    expect(screen.getByText(S.messageLimit.hint)).toBeTruthy();
+    await userEvent.clear(input);
+    await userEvent.type(input, "12");
+    await userEvent.click(screen.getByTestId(scope + "-message-limit-save"));
+    const path = scope === "project" ? "projects/site/message-limit" : "teams/web/message-limit";
+    await waitFor(() => expect(calls).toContainEqual({ path, body: { messageLimit: 12 } }));
+    await userEvent.click(screen.getByRole("button", { name: S.messageLimit.resetDefault }));
+    await waitFor(() => expect(input.value).toBe(""));
+    expect(calls).toContainEqual({ path, body: {} });
+    await userEvent.click(screen.getByTestId(scope + "-message-limit-save"));
+    await waitFor(() => expect(calls.filter((call) => call.path === path && !Object.hasOwn(call.body, "messageLimit"))).toHaveLength(2));
+  });
+
+  it.each(["project", "team"])("preserves the %s limit draft and focus during a poll", async (scope) => {
+    data.project.project.messageLimit = 7;
+    data.teams![0].messageLimit = 4;
+    await mount(scope === "project" ? "#/project/site" : "#/teams", false);
+    const toggle = screen.getByTestId(scope === "project" ? "project-account-settings" : "team-edit-open");
+    fireEvent.click(toggle);
+    const input = screen.getByRole("spinbutton", { name: S.messageLimit.label }) as HTMLInputElement;
+    await userEvent.clear(input);
+    await userEvent.type(input, "23");
+    data.project.project.messageLimit = 8;
+    data.teams![0].messageLimit = 8;
+    const before = calls.filter((call) => call.path === "state").length;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)); });
+    expect(calls.filter((call) => call.path === "state").length).toBeGreaterThan(before);
+    expect(screen.getByRole("spinbutton", { name: S.messageLimit.label })).toBe(input);
+    expect(input.value).toBe("23");
+    expect(document.activeElement).toBe(input);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps the default field empty and retains the draft when saving fails", async () => {
+    handler = (path) => path === "projects/site/message-limit"
+      ? response({ code: "invalid_message_limit", error: S.errors.invalid_message_limit }, 400) : undefined;
+    await mount("#/project/site", false);
+    fireEvent.click(screen.getByTestId("project-account-settings"));
+    const input = screen.getByRole("spinbutton", { name: S.messageLimit.label }) as HTMLInputElement;
+    expect(input.value).toBe("");
+    await userEvent.type(input, "5");
+    await userEvent.click(screen.getByTestId("project-message-limit-save"));
+    await screen.findByText(S.errors.invalid_message_limit);
+    expect(input.value).toBe("5");
+  });
+
+  it("renders Codec system rows and lets a capped pair continue through the reset route", async () => {
+    data.project.messages = [{
+      id: "system-note", senderName: "Codec", senderKind: "system", recipientName: "web/tester",
+      body: S.messageLimit.reached, sentAt: "2026-11-11T12:00:00Z", waiting: false,
+    }];
+    data.project.cappedPairs = [{ key: "coordinator|web/tester", a: "coordinator", b: "web/tester", limit: 10 }];
+    handler = (path) => {
+      if (path === "projects/site/message-limits/reset") {
+        data.project.cappedPairs = [];
+        return response({ ok: true });
+      }
+    };
+    await mount("#/project/site", false);
+    await userEvent.click(screen.getByRole("tab", { name: /^Conversation/ }));
+    const row = screen.getByTestId("conversation-message");
+    expect(within(row).getByText("Codec")).toBeTruthy();
+    expect(within(row).getByText(S.messageLimit.reached)).toBeTruthy();
+    expect(row.className).toContain("bg-background");
+    expect(screen.getByText("Coordinator and web/tester reached the message limit.")).toBeTruthy();
+    const composer = screen.getByRole("textbox", { name: S.conversation.message }) as HTMLTextAreaElement;
+    await userEvent.type(composer, "Keep this draft");
+    await userEvent.click(screen.getByRole("button", { name: S.messageLimit.continue }));
+    await waitFor(() => expect(calls).toContainEqual({ path: "projects/site/message-limits/reset", body: { pairKey: "coordinator|web/tester" } }));
+    await waitFor(() => expect(screen.queryByText("Coordinator and web/tester reached the message limit.")).toBeNull());
+    expect(composer.value).toBe("Keep this draft");
+  });
+
+  it("keeps the capped-pair control visible after a failed reset", async () => {
+    data.project.cappedPairs = [{ key: "web/tester|web/writer", a: "web/tester", b: "web/writer" }];
+    handler = (path) => path.endsWith("message-limits/reset")
+      ? response({ code: "message_pair_not_found", error: S.errors.message_pair_not_found }, 404) : undefined;
+    await mount("#/project/site", false);
+    await userEvent.click(screen.getByRole("tab", { name: /^Conversation/ }));
+    await userEvent.click(screen.getByRole("button", { name: S.messageLimit.continue }));
+    await screen.findByText(S.errors.message_pair_not_found);
+    expect((screen.getByRole("button", { name: S.messageLimit.continue }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows held helpers without tasks under Needs you on Helpers and in Home team counts", async () => {
+    data.home.runs = [];
+    data.teams![0].members[0].held = true;
+    data.home.coordinator = { settings: { tool: "codex", held: true, createdAt: "2026-11-11T12:00:00Z" }, running: false };
+    const rows = helperRows(data.teams!, [], ["site"], data.home.coordinator.settings);
+    expect(rows.map(helperStatus)).toEqual([["needsYou", S.tasks.needsYou], ["needsYou", S.tasks.needsYou]]);
+    await mount("#/helpers");
+    for (const row of screen.getAllByTestId("helper-row")) expect(within(row).getByText(S.tasks.needsYou)).toBeTruthy();
+    cleanup();
+    await mount("#/");
+    expect(screen.getByTestId("home-team").textContent).toContain(S.messageLimit.reached);
+  });
+});

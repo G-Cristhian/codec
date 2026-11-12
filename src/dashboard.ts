@@ -27,6 +27,7 @@ import { hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking } f
 import { createChat, type ChatOptions } from "./chat.js";
 import { createSetupChecker, type SetupOptions } from "./setup.js";
 import { checkTool } from "./tools.js";
+import { checkMessageLimit } from "./message-limits.js";
 import { checkTimeLimit, formatTimeLimit } from "./limits.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { randomBytes, timingSafeEqual, createHash } from "crypto";
@@ -34,7 +35,7 @@ import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { codecHome } from "./store.js";
 import { tmpdir } from "os";
-import { addProject, getProject, listProjects, type Project } from "./registry.js";
+import { addProject, getProject, listProjects, setProjectMessageLimit, type Project } from "./registry.js";
 import {
   addMember,
   addSpecialist,
@@ -51,12 +52,13 @@ import {
   removeSpecialist,
   resolveMember,
   setTeamProjects,
+  setTeamMessageLimit,
   skillHolders,
   type ResolvedMember,
 } from "./org.js";
 import { getSkill, importSkill, importSkillFiles, listSkills } from "./skills.js";
 import { projectSkills, type GivenSkill } from "./inject.js";
-import { listMessages, postMessage } from "./messages.js";
+import { cappedMessagePairs, isHelperHeld, listMessages, postMessage, resetMessageLimit } from "./messages.js";
 import { getCoordinator, helperRef, requireCoordinator, setupCoordinator } from "./coordinator.js";
 import {
   cleanRun,
@@ -89,13 +91,13 @@ export const LANES: Lane[] = ["working", "needsYou", "inReview", "done"];
 
 /**
  * Which board lane a run belongs on.
- *  working   running without a stuck report
- *  needsYou  running and stuck, or failed or stopped (until its worktree is cleaned)
+ *  working   running without a stuck report or a capped conversation
+ *  needsYou  running and stuck or held, or failed or stopped (until its worktree is cleaned)
  *  inReview  finished OK and the worktree still exists
  *  done      finished OK and the worktree is gone; also any cleaned run
  */
 export function laneOf(run: RunStatus): Lane {
-  if (run.state === "running") return run.helperStatus?.state === "stuck" ? "needsYou" : "working";
+  if (run.state === "running") return (run.helperStatus?.state === "stuck" || isHelperHeld(helperRef(run))) ? "needsYou" : "working";
   const cleaned = !!run.cleanedAt || !existsSync(run.worktree);
   if (cleaned) return "done";
   if (run.reviewStatus === "unsaved" || run.reviewStatus === "unavailable") return "needsYou";
@@ -183,6 +185,7 @@ function runSummary(r: RunStatus) {
     agent: r.agent,
     state: r.state,
     helperStatus: r.helperStatus,
+    held: isHelperHeld(helperRef(r)),
     reviewStatus: r.reviewStatus,
     stateText: r.state === "stopped" ? S.tasks.stopped : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : r.state === "failed" ? (r.lostAt ? S.wording.lost : S.tasks.failed) : r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
     lostAt: r.lostAt,
@@ -212,6 +215,7 @@ function memberView(team: string, member: string, running: RunStatus[]) {
   const r = resolveMember(team, member);
   return {
     ...r,
+    held: isHelperHeld(`${team}/${member}`),
     skills: memberSkills(r),
     working: running.filter((x) => x.team === team && x.member === member).map(runSummary),
   };
@@ -222,6 +226,7 @@ export function teamsView() {
   return listTeams().map((t) => ({
     name: t.name,
     projects: t.projects,
+    messageLimit: t.messageLimit,
     createdAt: t.createdAt,
     members: t.members.map((m) => {
       try {
@@ -297,7 +302,8 @@ export function homeView() {
 }
 
 function coordinatorView(runs = listRuns()) {
-  return { settings: getCoordinator() ?? null, running: runs.some((run) => run.state === "running" && helperRef(run) === "coordinator") };
+  const settings = getCoordinator();
+  return { settings: settings ? { ...settings, held: isHelperHeld("coordinator") } : null, running: runs.some((run) => run.state === "running" && helperRef(run) === "coordinator") };
 }
 
 function projectHelpers(name: string) {
@@ -318,12 +324,12 @@ export function projectView(name: string) {
   if (coordinator) helpers.unshift({ ref: "coordinator", name: S.coordinator.name, running: running.has("coordinator") });
   const feed = () => listMessages().reverse()
     .filter((message) => refs.has(message.from) || refs.has(message.to)
-      || message.from === "owner" && message.to === "coordinator"
+      || (message.from === "owner" || message.from === "codec") && message.to === "coordinator"
       || message.from === "coordinator" && message.to === "owner")
     .map((message) => ({
       id: message.id,
-      senderName: message.from === "owner" ? S.conversation.you : message.from === "coordinator" ? S.coordinator.name : message.from,
-      senderKind: message.from === "owner" ? "owner" as const : message.from === "coordinator" ? "coordinator" as const : "helper" as const,
+      senderName: message.from === "codec" ? S.messageLimit.sender : message.from === "owner" ? S.conversation.you : message.from === "coordinator" ? S.coordinator.name : message.from,
+      senderKind: message.from === "codec" ? "system" as const : message.from === "owner" ? "owner" as const : message.from === "coordinator" ? "coordinator" as const : "helper" as const,
       recipientName: message.to === "coordinator" ? S.coordinator.name : message.to === "owner" ? S.conversation.you : message.to,
       body: message.body,
       sentAt: message.sentAt,
@@ -350,7 +356,8 @@ export function projectView(name: string) {
     )
     .filter((member) => member !== undefined);
   if (coordinator) members.unshift({ ref: "coordinator", member: "coordinator", tool: coordinator.tool, label: S.coordinator.name });
-  return { project, lanes, members, helpers, messages, messagesError };
+  const cappedPairs = cappedMessagePairs().filter((pair) => refs.has(pair.a) || refs.has(pair.b));
+  return { project, lanes, members, helpers, messages, messagesError, cappedPairs };
 }
 
 export function runView(ref: string) {
@@ -691,6 +698,9 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       return sendJson(res, 201, addTeam({ name: s(body.name), projects: strs(body.projects) }));
     }
     if (!isGet && a === "teams" && b && n === 3 && c === "remove") return sendJson(res, 200, removeTeamChecked(b));
+    if (!isGet && a === "teams" && b && n === 3 && c === "message-limit") {
+      return sendJson(res, 200, setTeamMessageLimit(b, checkMessageLimit(body.messageLimit)));
+    }
     if (!isGet && a === "teams" && b && n === 3 && c === "projects") {
       return sendJson(res, 200, setTeamProjects(b, strs(body.projects) ?? []));
     }
@@ -756,6 +766,17 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     }
     if (!isGet && a === "projects" && b && c === "remove" && parts.length === 3) {
       return sendJson(res, 200, removeProjectChecked(b));
+    }
+    if (!isGet && a === "projects" && b && c === "message-limit" && n === 3) {
+      return sendJson(res, 200, setProjectMessageLimit(b, checkMessageLimit(body.messageLimit)));
+    }
+    if (!isGet && a === "projects" && b && c === "message-limits" && d2 === "reset" && n === 4) {
+      if (!getProject(b)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
+      const refs = new Set(projectHelpers(b).map((helper) => helper.ref));
+      const pair = cappedMessagePairs().find((pair) => pair.key === s(body.pairKey) && (refs.has(pair.a) || refs.has(pair.b)));
+      if (!pair) throw new ApiError(404, "message_pair_not_found", S.errors.message_pair_not_found);
+      resetMessageLimit(pair.key);
+      return sendJson(res, 200, { ok: true });
     }
     if (!isGet && a === "projects" && b && c === "messages" && n === 3) {
       if (!getProject(b)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);

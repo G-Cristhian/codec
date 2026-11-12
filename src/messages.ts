@@ -6,9 +6,10 @@ import { CodecError } from "./errors.js";
 import { helperRef, isPmHelper, requireCoordinator } from "./coordinator.js";
 import { addExcludes } from "./inject.js";
 import { getTeam, parseMemberRef } from "./org.js";
-import { git, PROJECT_NAME_RE } from "./registry.js";
+import { getProject, git, PROJECT_NAME_RE } from "./registry.js";
+import { DEFAULT_MESSAGE_LIMIT } from "./message-limits.js";
 import { listRuns, type RunStatus } from "./runs.js";
-import { coordinatorInboxFile, inboxFile, messagesDir, ownerInboxFile, readJson, withLock, writeJsonAtomic, writeTextAtomic } from "./store.js";
+import { coordinatorInboxFile, inboxFile, messageLimitsFile, messagesDir, ownerInboxFile, readJson, withLock, writeJsonAtomic, writeTextAtomic } from "./store.js";
 import { S, wording } from "./strings.js";
 
 export interface MessageRecord {
@@ -29,6 +30,54 @@ export interface MessageFilter {
   to?: string;
   from?: string;
   unread?: boolean;
+}
+
+interface PairLimit {
+  count: number;
+  cappedAt?: string;
+  limit?: number;
+}
+type MessageLimits = Record<string, PairLimit>;
+const pairKey = (a: string, b: string): string => [a, b].sort().join("|");
+// These two primitives are only used while holding the messages lock.
+const loadLimits = (): MessageLimits => readJson(messageLimitsFile(), {});
+const saveLimits = (limits: MessageLimits): void => writeJsonAtomic(messageLimitsFile(), limits);
+
+export function cappedMessagePairs(): { key: string; a: string; b: string; limit?: number }[] {
+  return withLock("messages", () => Object.entries(loadLimits())
+    .filter(([, pair]) => pair.cappedAt)
+    .map(([key, pair]) => {
+      const [a, b] = key.split("|");
+      return { key, a, b, limit: pair.limit };
+    }));
+}
+
+export function isHelperHeld(ref: string | undefined): boolean {
+  return !!ref && cappedMessagePairs().some((pair) => pair.a === ref || pair.b === ref);
+}
+
+export function resetMessageLimit(key: string): void {
+  withLock("messages", () => {
+    const limits = loadLimits();
+    if (!limits[key]?.cappedAt) throw new CodecError("message_pair_not_found", S.errors.message_pair_not_found, {}, 404);
+    limits[key] = { count: 0 };
+    saveLimits(limits);
+  });
+}
+
+function resolvedLimit(from: string, to: string): number {
+  const teams = [from, to].filter((ref) => ref !== "coordinator")
+    .map((ref) => getTeam(parseMemberRef(ref).team)!);
+  const teamLimits = teams.flatMap((team) => team.messageLimit === undefined ? [] : [team.messageLimit]);
+  if (teamLimits.length) return Math.min(...teamLimits);
+  const senderRun = listRuns({ state: "running" }).reverse().find((run) => helperRef(run) === from);
+  const projects = senderRun ? [senderRun.project]
+    : teams[0].projects.filter((project) => teams.every((team) => team.projects.includes(project)));
+  const projectLimits = projects.flatMap((name) => {
+    const limit = getProject(name)?.messageLimit;
+    return limit === undefined ? [] : [limit];
+  });
+  return projectLimits.length ? Math.min(...projectLimits) : DEFAULT_MESSAGE_LIMIT;
 }
 
 function helper(ref: string): { team?: string; member: string } {
@@ -92,34 +141,78 @@ export function postMessage(input: { from: string; to: string; body: string }): 
   return withLock("messages", () => postLocked(input));
 }
 
-/** Caller holds the messages lock, including while storing a declined message and its reply. */
+/** Caller holds the messages lock, including declined messages and their replies. */
 function postLocked(input: { from: string; to: string; body: string }): MessageRecord {
+  const limits = loadLimits();
+  const key = input.from !== "owner" && input.from !== "codec" && input.to !== "owner" && input.from !== input.to
+    ? pairKey(input.from, input.to) : undefined;
+  if (key && limits[key]?.cappedAt) throw new CodecError("message_limit_reached", S.messageLimit.reached, {}, 409);
+  const limit = key ? resolvedLimit(input.from, input.to) : undefined;
+  const message = storeMessage(input);
+  const pending = [message];
+  if (key) {
+    const pair: PairLimit = limits[key] = { count: (limits[key]?.count ?? 0) + 1, limit };
+    if (pair.count >= limit!) pair.cappedAt = message.sentAt;
+    saveLimits(limits);
+    if (pair.cappedAt) {
+      // Queue both notices before attempting delivery, even if a task's folder is unavailable.
+      for (const to of [input.from, input.to]) pending.push(storeMessage({ from: "codec", to, body: S.messageLimit.reached }));
+    }
+  } else if (input.from === "owner") {
+    let changed = false;
+    for (const [key, pair] of Object.entries(limits)) {
+      if (pair.cappedAt && key.split("|").includes(input.to)) {
+        limits[key] = { count: 0 };
+        changed = true;
+      }
+    }
+    if (changed) saveLimits(limits);
+  }
+  let result = message;
+  let deliveryError: unknown;
+  for (const entry of pending) {
+    try {
+      const delivered = deliverMessage(entry);
+      if (entry.id === message.id) result = delivered;
+    } catch (error) { deliveryError ??= error; }
+  }
+  if (deliveryError) throw deliveryError;
+  // A declined message can use the final slot. Its auto-reply must obey the same cap.
+  if (message.declined && !limits[key!]?.cappedAt) {
+    postLocked({ from: "coordinator", to: input.from, body: S.coordinator.pmOnly });
+  }
+  return result;
+}
+
+function storeMessage(input: { from: string; to: string; body: string }): MessageRecord {
   const file = messageFile(input.to);
   const messages = readJson<MessageRecord[]>(file, []);
   const message: MessageRecord = {
     id: randomUUID(), from: input.from, to: input.to, body: input.body,
     sentAt: new Date().toISOString(), read: false,
   };
-  if (input.to === "coordinator" && input.from !== "owner" && !isPmHelper(input.from)) {
+  if (input.to === "coordinator" && input.from !== "owner" && input.from !== "codec" && !isPmHelper(input.from)) {
     message.declined = true;
     message.deliveredAt = message.sentAt;
   } else if (input.to === "owner") {
-    // Owner messages are read in the conversation feed; there is no task to deliver to.
     message.deliveredAt = message.sentAt;
   }
   messages.push(message);
   // Persist first: a failed delivery leaves a recoverable message in the inbox.
   writeJsonAtomic(file, messages);
-  if (message.declined) {
-    postLocked({ from: "coordinator", to: input.from, body: S.coordinator.pmOnly });
-    return message;
-  }
-  if (input.to === "owner") return message;
+  return message;
+}
+
+function deliverMessage(message: MessageRecord): MessageRecord {
+  if (message.declined || message.to === "owner") return message;
   // A helper can have several tasks. Its most recently started running task receives messages.
-  const run = listRuns({ state: "running" }).reverse()
-    .find((run) => helperRef(run) === input.to);
+  const run = listRuns({ state: "running" }).reverse().find((run) => helperRef(run) === message.to);
   if (!run) return message;
-  return deliver(file, messages, run).find((delivered) => delivered.id === message.id)!;
+  const file = messageFile(message.to);
+  const messages = readJson<MessageRecord[]>(file, []);
+  deliver(file, messages, run);
+  // A preceding delivery in this batch may already have delivered this entry.
+  return readJson<MessageRecord[]>(file, []).find((entry) => entry.id === message.id)!;
 }
 
 /** Drain queued messages before launch, or retry delivery to a running helper. */

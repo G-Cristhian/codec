@@ -19,6 +19,7 @@
 import { S } from "./strings.js";
 import { CodecError, suggestName } from "./errors.js";
 import { checkTimeLimit } from "./limits.js";
+import { checkMessageLimit } from "./message-limits.js";
 import { getProject, PROJECT_NAME_RE } from "./registry.js";
 import { logEvent } from "./events.js";
 import { deleteSkillFolder, getSkill } from "./skills.js";
@@ -49,6 +50,7 @@ export interface Member {
 
 export interface Team {
   name: string;
+  messageLimit?: number;
   projects: string[];
   members: Member[];
   createdAt: string;
@@ -241,6 +243,21 @@ export function setTeamProjects(name: string, projects: string[]): Team {
   });
   logEvent("team.edit", { team: name, projects: list });
   return t;
+}
+
+export function setTeamMessageLimit(name: string, value: number | undefined): Team {
+  const messageLimit = checkMessageLimit(value);
+  const updated = withLock("org", () => {
+    const all = loadTeams();
+    const team = all.find((t) => t.name === name);
+    if (!team) throw new CodecError("team_not_found", `no team named "${name}"`, { name }, 404);
+    if (messageLimit === undefined) delete team.messageLimit;
+    else team.messageLimit = messageLimit;
+    saveTeams(all);
+    return team;
+  });
+  logEvent("team.edit", { team: name, messageLimit: messageLimit ?? null });
+  return updated;
 }
 
 /** Unchecked removal — use removeTeamChecked (runs.ts), which refuses while members work. */

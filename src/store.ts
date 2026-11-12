@@ -39,6 +39,7 @@ export const specialistsFile = (): string => join(codecHome(), "specialists.json
 export const teamsFile = (): string => join(codecHome(), "teams.json");
 export const coordinatorFile = (): string => join(codecHome(), "coordinator.json");
 export const messagesDir = (): string => join(codecHome(), "messages");
+export const messageLimitsFile = (): string => join(codecHome(), "message-limits.json");
 export const coordinatorInboxFile = (): string => join(messagesDir(), "_coordinator.json");
 export const ownerInboxFile = (): string => join(messagesDir(), "_owner.json");
 export const inboxFile = (team: string, member: string): string => join(messagesDir(), team, `${member}.json`);

@@ -3,7 +3,7 @@
  */
 
 import { checkTimeLimit, DEFAULT_TIME_LIMIT_MINUTES, formatTimeLimit } from "./limits.js";
-import { addProject, listProjects } from "./registry.js";
+import { addProject, listProjects, setProjectMessageLimit } from "./registry.js";
 import { startDashboard } from "./dashboard.js";
 import { readFileSync } from "fs";
 import {
@@ -33,6 +33,7 @@ import {
   removeSpecialist,
   resolveMember,
   setTeamProjects,
+  setTeamMessageLimit,
   skillHolders,
 } from "./org.js";
 import { importSkill, listSkills } from "./skills.js";
@@ -46,6 +47,7 @@ import { CodecError } from "./errors.js";
 const HELP = `codec — run AI coding agents on many projects at once
 
 Projects
+${wording(S.cli.messageLimitHelp, { scope: "project" })}
   codec project add <path> [--name <name>]   register a git repository
   codec project list                         list registered projects
   codec project remove <name>                unregister (the repo is not touched)
@@ -75,6 +77,7 @@ Specialists  (agent templates)
   codec specialist remove <name>             refused while it has clones in teams
 
 Teams
+${wording(S.cli.messageLimitHelp, { scope: "team" })}
   codec team add <name> --projects a,b       create a team working on these projects
   codec team edit <name> --projects a,b      change its projects
   codec team list [--json]                   teams, projects and members
@@ -242,7 +245,11 @@ export function main(argv: string[]): number {
       return 0;
     }
     case "project": {
-      if (sub === "add") {
+      if (sub === "message-limit") {
+        if (rest.length !== 2) throw new Error(wording(S.cli.messageLimitUsage, { scope: "project" }));
+        setProjectMessageLimit(rest[0], rest[1] === "default" ? undefined : Number(rest[1]));
+        out(S.common.saved);
+      } else if (sub === "add") {
         const p = addProject(need(rest[0], "codec project add <path> [--name <name>]"), str(flags, "name"));
         out(`added ${p.name}  ${p.path}`);
       } else if (sub === "list") {
@@ -263,7 +270,7 @@ export function main(argv: string[]): number {
         removeProjectChecked(name);
         out(`removed ${name} (repository and existing worktrees untouched)`);
       } else {
-        throw new Error("usage: codec project add|list|remove");
+        throw new Error("usage: codec project add|list|remove|message-limit");
       }
       return 0;
     }
@@ -360,7 +367,11 @@ export function main(argv: string[]): number {
     }
 
     case "team": {
-      if (sub === "member") {
+      if (sub === "message-limit") {
+        if (rest.length !== 2) throw new Error(wording(S.cli.messageLimitUsage, { scope: "team" }));
+        setTeamMessageLimit(rest[0], rest[1] === "default" ? undefined : Number(rest[1]));
+        out(S.common.saved);
+      } else if (sub === "member") {
         const [action, team, member] = rest;
         const addUsage = "codec team member add <team> (--specialist <name> | --tool claude|codex)";
         const rmUsage = "codec team member remove <team> <member>";

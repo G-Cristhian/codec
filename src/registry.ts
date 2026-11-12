@@ -9,10 +9,12 @@ import { spawnSync } from "child_process";
 import { existsSync, statSync } from "fs";
 import { basename, resolve } from "path";
 import { logEvent } from "./events.js";
+import { checkMessageLimit } from "./message-limits.js";
 import { projectsFile, readJson, withLock, writeJsonAtomic } from "./store.js";
 
 export interface Project {
   name: string;
+  messageLimit?: number;
   path: string; // absolute path to the repo's top level
   addedAt: string;
 }
@@ -69,6 +71,21 @@ export function listProjects(): Project[] {
 
 export function getProject(name: string): Project | undefined {
   return load().find((p) => p.name === name);
+}
+
+export function setProjectMessageLimit(name: string, value: number | undefined): Project {
+  const messageLimit = checkMessageLimit(value);
+  const updated = withLock("projects", () => {
+    const all = load();
+    const project = all.find((p) => p.name === name);
+    if (!project) throw new CodecError("project_not_found", `no project named "${name}"`, { name }, 404);
+    if (messageLimit === undefined) delete project.messageLimit;
+    else project.messageLimit = messageLimit;
+    save(all);
+    return project;
+  });
+  logEvent("project.edit", { project: name, messageLimit: messageLimit ?? null });
+  return updated;
 }
 
 /** Removes the project from Codec only — the repository itself is untouched. */

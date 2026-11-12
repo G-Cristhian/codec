@@ -16,6 +16,7 @@ import { redactValue } from "./secrets.js";
 export type EventKind =
   | "project.add"
   | "project.remove"
+  | "project.edit"
   | "run.start" // worktree created + agent spawned
   | "run.finish" // agent exited on its own (fields: exitCode)
   | "run.timeout" // time limit reached

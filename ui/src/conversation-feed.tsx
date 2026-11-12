@@ -16,7 +16,7 @@ import { Textarea } from "./components/ui/textarea";
 export interface ConversationMessage {
   id: string;
   senderName: string;
-  senderKind: "owner" | "helper" | "coordinator";
+  senderKind: "owner" | "helper" | "coordinator" | "system";
   recipientName: string;
   body: string;
   sentAt: string;
@@ -28,6 +28,7 @@ export interface ProjectConversation {
   messages: ConversationMessage[];
   helpers: { ref: string; name: string; running: boolean }[];
   messagesError: boolean;
+  cappedPairs: { key: string; a: string; b: string; limit?: number }[];
 }
 
 export function useConversationTab(messages?: ConversationMessage[]) {
@@ -60,6 +61,7 @@ export function ConversationFeed({
   messages,
   helpers = noHelpers,
   messagesError,
+  cappedPairs = [],
   active,
 }: Partial<ProjectConversation> & { name: string; active: boolean }) {
   const { act, pending, refresh } = useActions();
@@ -144,6 +146,22 @@ export function ConversationFeed({
         )) : <p className="p-8 text-center text-sm text-muted-foreground">{S.conversation.empty}</p>}
         <div ref={bottom} />
       </div>
+      {cappedPairs.map((pair) => {
+        const resetKey = "message-limit-reset-" + pair.key;
+        return (
+          <div key={pair.key} className="shrink-0 border-t border-border px-3 py-2 text-sm">
+            <p>{fmt(S.messageLimit.cappedPair, {
+              a: pair.a === "coordinator" ? S.coordinator.name : pair.a,
+              b: pair.b === "coordinator" ? S.coordinator.name : pair.b,
+            })}</p>
+            <Button variant="link" disabled={!!pending[resetKey]} onClick={() => void act(resetKey,
+              () => api("projects/" + enc(name) + "/message-limits/reset", { pairKey: pair.key }), "") }>
+              {S.messageLimit.continue}
+            </Button>
+            <Message actionKey={resetKey} />
+          </div>
+        );
+      })}
       <form
         className="flex shrink-0 flex-col gap-2 border-t border-border bg-background p-3"
         onSubmit={(event) => {
