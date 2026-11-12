@@ -14,6 +14,7 @@ import {
   toolOK,
   toolProblem,
   whoText,
+  type CoordinatorView,
   type Lane,
   type PageData,
   type Run,
@@ -26,6 +27,7 @@ import {
   Field,
   Form,
   Hint,
+  Limit,
   Message,
   Notice,
   Picker,
@@ -33,6 +35,7 @@ import {
   Submit,
   Table,
   formValue,
+  limitValue,
   useActions,
 } from "./shared";
 import { IdentityForm, SetupPage, ToolCards } from "./pages";
@@ -96,8 +99,16 @@ export interface HelperRow {
   run?: Run;
   quick?: boolean;
 }
-export function helperRows(teams: Team[], runs: Run[]): HelperRow[] {
+export function helperRows(teams: Team[], runs: Run[], projects: string[] = [], coordinator?: CoordinatorView["settings"]): HelperRow[] {
   const rows: HelperRow[] = [];
+  if (coordinator) {
+    const mine = runs.filter((run) => run.member === "coordinator" && !run.team);
+    const run = mine.find((run) => run.state === "running") || mine[0];
+    rows.push({
+      key: "coordinator", name: S.coordinator.name, tool: coordinator.tool, projects,
+      sub: toolName(coordinator.tool), href: run ? "#/run/" + enc(run.runId) : "#/helpers", run,
+    });
+  }
   for (const t of teams)
     for (const m of t.members) {
       const name = m.member || m.name!;
@@ -115,13 +126,13 @@ export function helperRows(teams: Team[], runs: Run[]): HelperRow[] {
       });
     }
   for (const r of runs)
-    if (!r.team && r.lane !== "done")
+    if (!r.team && r.lane !== "done" && (r.member !== "coordinator" || !rows.some((row) => row.key === "coordinator")))
       rows.push({
-        key: "run:" + r.runId,
-        name: S.helpers.quick,
+        key: r.member === "coordinator" ? "coordinator" : "run:" + r.runId,
+        name: r.member === "coordinator" ? S.coordinator.name : S.helpers.quick,
         tool: r.agent,
-        quick: true,
-        projects: [r.project],
+        quick: r.member !== "coordinator",
+        projects: r.member === "coordinator" ? projects : [r.project],
         sub: toolName(r.agent),
         href: "#/run/" + enc(r.runId),
         run: r,
@@ -441,7 +452,7 @@ export function HomePage({
   const now = new Date(),
     teams = data.teams || [],
     runs = data.home.runs;
-  const rows = helperRows(teams, runs),
+  const rows = helperRows(teams, runs, data.home.projects.map((project) => project.name), data.home.coordinator?.settings),
     notes = homeNotes(rows, runs, data.setup),
     count = notes.reduce((n, note) => n + note.count, 0);
   return (
@@ -680,6 +691,48 @@ function HelperDetail({ row, data }: { row: HelperRow; data: PageData }) {
     </>
   );
 }
+function CoordinatorForm({ data, saved }: { data: PageData; saved: () => void }) {
+  const settings = data.home.coordinator?.settings;
+  const [tool, setTool] = useState(settings?.tool || "claude");
+  return (
+    <Form id="coordinator-form" actionKey="coordinator" onSubmit={async (form) => {
+      await api("coordinator", {
+        tool, model: formValue(form, "coordinator-model"),
+        timeLimitMinutes: limitValue(form, "coordinator-limit"),
+      });
+      saved();
+    }}>
+      <Picker id="coordinator-tool" label={S.common.tool} value={tool} onChange={setTool}
+        options={["claude", "codex"].map((value) => ({ value, label: toolName(value) }))} />
+      <Field id="coordinator-model" label={S.common.model} defaultValue={settings?.model} />
+      <Limit id="coordinator-limit" value={settings?.timeLimitMinutes} />
+      <div className="button-row">
+        <Submit id="coordinator-save" actionKey="coordinator">{S.common.save}</Submit>
+        {settings && <Button variant="outline" onClick={saved}>{S.common.cancel}</Button>}
+      </div>
+    </Form>
+  );
+}
+
+function CoordinatorCard({ data }: { data: PageData }) {
+  const [editing, setEditing] = useState(false);
+  const { settings, running } = data.home.coordinator ?? { settings: null, running: false };
+  const current = data.home.runs.find((run) => run.member === "coordinator" && !run.team && run.state === "running");
+  return (
+    <Card className="panel" data-testid="coordinator-card">
+      <h2>{S.coordinator.name}</h2>
+      <Hint>{S.coordinator.explanation}</Hint>
+      {settings && <p>{toolName(settings.tool)} · {settings.model || S.common.defaultModel} · {running ? S.tasks.working : S.home.free}</p>}
+      {!settings || editing ? <CoordinatorForm data={data} saved={() => setEditing(false)} /> : (
+        <div className="button-row">
+          <Button variant="outline" onClick={() => setEditing(true)}>{S.coordinator.change}</Button>
+          <Button asChild><a href={current ? "#/run/" + enc(current.runId) : "#/projects"}>{current ? S.helpers.openTask : S.helpers.startTask}</a></Button>
+        </div>
+      )}
+      {settings && !editing && <Message actionKey="coordinator" />}
+    </Card>
+  );
+}
 export function HelpersPage({
   data,
   team,
@@ -690,7 +743,7 @@ export function HelpersPage({
   setTeam: (team: string) => void;
 }) {
   const [picked, setPicked] = useState(() => {
-    const rows = helperRows(data.teams || [], data.home.runs).filter(
+    const rows = helperRows(data.teams || [], data.home.runs, data.home.projects.map((project) => project.name), data.home.coordinator?.settings).filter(
       (row) => !team || row.team === team,
     );
     return (
@@ -700,7 +753,7 @@ export function HelpersPage({
   });
   const teams = data.teams || [],
     filter = teams.some((t) => t.name === team) ? team : "";
-  const rows = helperRows(teams, data.home.runs).filter(
+  const rows = helperRows(teams, data.home.runs, data.home.projects.map((project) => project.name), data.home.coordinator?.settings).filter(
     (row) => !filter || row.team === filter,
   );
   const row =
@@ -725,6 +778,7 @@ export function HelpersPage({
           </Button>
         </div>
       </div>
+      <CoordinatorCard data={data} />
       <div className="button-row">
         {[
           { name: "", label: S.helpers.all },

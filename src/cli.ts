@@ -2,7 +2,7 @@
  * cli.ts — the `codec` command.
  */
 
-import { checkTimeLimit, formatTimeLimit } from "./limits.js";
+import { checkTimeLimit, DEFAULT_TIME_LIMIT_MINUTES, formatTimeLimit } from "./limits.js";
 import { addProject, listProjects } from "./registry.js";
 import { startDashboard } from "./dashboard.js";
 import { readFileSync } from "fs";
@@ -40,6 +40,8 @@ import { codecHome } from "./store.js";
 import { postMessage } from "./messages.js";
 import { saveIdentity } from "./settings.js";
 import { S, wording } from "./strings.js";
+import { assignByRole, getCoordinator, helperRef, setupCoordinator } from "./coordinator.js";
+import { CodecError } from "./errors.js";
 
 const HELP = `codec — run AI coding agents on many projects at once
 
@@ -87,6 +89,8 @@ Dashboard
   codec dashboard [--port N]                 local web page (default port 4777)
 
 ${S.cli.identityHelp}
+
+${S.cli.coordinatorHelp}
 
 ${S.cli.helperHelp}
 
@@ -163,7 +167,7 @@ function list(flags: Parsed["flags"], key: string): string[] | undefined {
 }
 
 function who(r: RunStatus): string {
-  return r.team ? `${r.team}/${r.member}` : "unassigned worker";
+  return helperRef(r) === "coordinator" ? S.coordinator.name : helperRef(r) ?? "unassigned worker";
 }
 
 function skillList(r: RunStatus): string {
@@ -179,9 +183,12 @@ function stateLabel(r: RunStatus): string {
 
 export function main(argv: string[]): number {
   // Helper text is positional, including quoted text that starts with a dash.
-  const { positional, flags }: Parsed = argv[0] === "message" || argv[0] === "report"
-    ? { positional: argv, flags: {} }
-    : parse(argv);
+  let parsed: Parsed;
+  if (argv[0] === "assign") {
+    const options = parse(argv.slice(3));
+    parsed = { positional: argv.slice(0, 3).concat(options.positional), flags: options.flags };
+  } else parsed = argv[0] === "message" || argv[0] === "report" ? { positional: argv, flags: {} } : parse(argv);
+  const { positional, flags } = parsed;
   const [cmd, sub, ...rest] = positional;
   const out = (s: string) => process.stdout.write(s + "\n");
 
@@ -191,11 +198,35 @@ export function main(argv: string[]): number {
   }
 
   switch (cmd) {
+    case "coordinator": {
+      if (sub === "setup") {
+        if (rest.length) throw new Error(S.cli.coordinatorUsage);
+        setupCoordinator({ tool: str(flags, "tool") ?? "", model: str(flags, "model"), timeLimitMinutes: timeLimit(flags) });
+        out(S.common.saved);
+      } else if (sub) throw new Error(S.cli.coordinatorUsage);
+      const settings = getCoordinator();
+      if (!settings) out(S.coordinator.notSetup);
+      else out(wording(S.cli.coordinatorSettings, {
+        tool: S.setup[settings.tool], model: settings.model ?? S.common.defaultModel,
+        limit: formatTimeLimit(settings.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES),
+        state: listRuns({ state: "running" }).some((run) => helperRef(run) === "coordinator") ? S.tasks.working : S.home.free,
+      }));
+      return 0;
+    }
+    case "assign": {
+      let run;
+      try { run = currentHelperRun(); } catch { throw new CodecError("coordinator_only", S.errors.coordinator_only); }
+      if (helperRef(run) !== "coordinator") throw new CodecError("coordinator_only", S.errors.coordinator_only);
+      if (!sub || rest.length !== 1 || Object.keys(flags).some((key) => key !== "project")) throw new Error(S.cli.assignUsage);
+      const assigned = assignByRole({ project: str(flags, "project") ?? run.project, role: sub, task: rest[0] });
+      out(wording(S.cli.assigned, assigned));
+      return 0;
+    }
     case "message": {
       const run = currentHelperRun();
       if (!sub || rest.length > 1) throw new Error(S.cli.messageUsage);
-      const message = postMessage({ from: `${run.team}/${run.member}`, to: sub, body: rest[0] ?? "" });
-      out(wording(S.cli.messageSent, { helper: message.to }));
+      const message = postMessage({ from: helperRef(run)!, to: sub, body: rest[0] ?? "" });
+      out(message.declined ? S.coordinator.pmOnly : wording(S.cli.messageSent, { helper: message.to === "coordinator" ? S.coordinator.name : message.to }));
       return 0;
     }
     case "report": {

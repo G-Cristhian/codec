@@ -171,11 +171,16 @@ export interface Accounts {
   choices: Record<string, Record<string, string>>;
 }
 export interface Home {
+  coordinator?: CoordinatorView;
   projects: { name: string; path: string; lanes: Record<Lane, number> }[];
   runs: Run[];
   agentsRunning: number;
   teamsCount: number;
   memoryBytes: number | null;
+}
+export interface CoordinatorView {
+  settings: { tool: string; model?: string; timeLimitMinutes?: number; createdAt: string } | null;
+  running: boolean;
 }
 export interface Skills {
   skills: Skill[];
@@ -195,7 +200,7 @@ export interface ProjectView {
   members: {
     ref: string;
     member: string;
-    team: string;
+    team?: string;
     specialty?: string;
     tool: string;
     label: string;
@@ -271,7 +276,7 @@ export function stateText(r: Run): string {
   );
 }
 export const whoText = (r: { team?: string; member?: string }) =>
-  r.team
+  r.member === "coordinator" && !r.team ? S.coordinator.name : r.team
     ? fmt(S.wording.helperTeam, { team: r.team, member: r.member })
     : S.wording.quick;
 export const memberHref = (team: string, member: string) =>

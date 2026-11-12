@@ -16,7 +16,7 @@ import { Textarea } from "./components/ui/textarea";
 export interface ConversationMessage {
   id: string;
   senderName: string;
-  senderKind: "owner" | "helper";
+  senderKind: "owner" | "helper" | "coordinator";
   recipientName: string;
   body: string;
   sentAt: string;

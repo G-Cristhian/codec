@@ -19,7 +19,7 @@
 import { CodecError } from "./errors.js";
 import { S, wording } from "./strings.js";
 import { checkpointIdentity, getSettings, saveSettings, saveAccountSettings } from "./settings.js";
-import { accountStore, addAccount, builtinId, getAccount, removeAccount, resolveAccount, setDefaultAccount } from "./accounts.js";
+import { accountStore, addAccount, builtinId, getAccount, removeAccount, resolveAccount, setAccountChoice, setDefaultAccount } from "./accounts.js";
 import { createAccountLogins, type AccountLoginOptions } from "./account-login.js";
 import { redactValue } from "./secrets.js";
 import { ApiError, friendlyError } from "./friendly.js";
@@ -57,6 +57,7 @@ import {
 import { getSkill, importSkill, importSkillFiles, listSkills } from "./skills.js";
 import { projectSkills, type GivenSkill } from "./inject.js";
 import { listMessages, postMessage } from "./messages.js";
+import { getCoordinator, helperRef, requireCoordinator, setupCoordinator } from "./coordinator.js";
 import {
   cleanRun,
   findRun,
@@ -286,12 +287,17 @@ export function homeView() {
     return { name: p.name, path: p.path, lanes };
   });
   return {
+    coordinator: coordinatorView(runs),
     teamsCount: listTeams().length,
     agentsRunning: running.length,
     memoryBytes: agentMemoryBytes(running),
     projects,
     runs: runs.map(runSummary).reverse(), // newest first
   };
+}
+
+function coordinatorView(runs = listRuns()) {
+  return { settings: getCoordinator() ?? null, running: runs.some((run) => run.state === "running" && helperRef(run) === "coordinator") };
 }
 
 function projectHelpers(name: string) {
@@ -305,16 +311,20 @@ export function projectView(name: string) {
   const lanes: Record<Lane, ReturnType<typeof runSummary>[]> = { working: [], needsYou: [], inReview: [], done: [] };
   const runs = listRuns();
   for (const r of runs.filter((run) => run.project === name).reverse()) lanes[laneOf(r)].push(runSummary(r));
-  const running = new Set(runs.filter((run) => run.state === "running").map((run) => `${run.team}/${run.member}`));
+  const running = new Set(runs.filter((run) => run.state === "running").map(helperRef));
   const helpers = projectHelpers(name).map((helper) => ({ ...helper, running: running.has(helper.ref) }));
   const refs = new Set(helpers.map((helper) => helper.ref));
+  const coordinator = getCoordinator();
+  if (coordinator) helpers.unshift({ ref: "coordinator", name: S.coordinator.name, running: running.has("coordinator") });
   const feed = () => listMessages().reverse()
-    .filter((message) => refs.has(message.from) || refs.has(message.to))
+    .filter((message) => refs.has(message.from) || refs.has(message.to)
+      || message.from === "owner" && message.to === "coordinator"
+      || message.from === "coordinator" && message.to === "owner")
     .map((message) => ({
       id: message.id,
-      senderName: message.from === "owner" ? S.conversation.you : message.from,
-      senderKind: message.from === "owner" ? "owner" as const : "helper" as const,
-      recipientName: message.to,
+      senderName: message.from === "owner" ? S.conversation.you : message.from === "coordinator" ? S.coordinator.name : message.from,
+      senderKind: message.from === "owner" ? "owner" as const : message.from === "coordinator" ? "coordinator" as const : "helper" as const,
+      recipientName: message.to === "coordinator" ? S.coordinator.name : message.to === "owner" ? S.conversation.you : message.to,
       body: message.body,
       sentAt: message.sentAt,
       waiting: !message.deliveredAt,
@@ -326,7 +336,7 @@ export function projectView(name: string) {
     messagesError = true;
   }
   // Who can be started here: members of every team assigned to this project.
-  const members = listTeams()
+  const members: { ref: string; member: string; team?: string; specialty?: string; tool: string; label: string }[] = listTeams()
     .filter((t) => t.projects.includes(name))
     .flatMap((t) =>
       t.members.map((m) => {
@@ -338,7 +348,8 @@ export function projectView(name: string) {
         }
       }),
     )
-    .filter(Boolean);
+    .filter((member) => member !== undefined);
+  if (coordinator) members.unshift({ ref: "coordinator", member: "coordinator", tool: coordinator.tool, label: S.coordinator.name });
   return { project, lanes, members, helpers, messages, messagesError };
 }
 
@@ -611,6 +622,10 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     // POST /api/runs/:id/clean           {force?, deleteBranch?}
     const [a, b, c, d2, e2] = parts;
     const n = parts.length;
+    if (a === "coordinator" && n === 1) {
+      if (!isGet) setupCoordinator({ tool: s(body.tool) ?? "", model: s(body.model), timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes) });
+      return sendJson(res, 200, coordinatorView());
+    }
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
     if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), profileName: getSettings().identity.name });
     if (isGet && a === "chat" && n === 1) return sendJson(res, 200, chat.view());
@@ -626,6 +641,12 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     if (!isGet && a === "account-settings" && n === 1) {
       const scope = s(body.scope);
       if (scope !== "helper" && scope !== "team" && scope !== "project") throw new ApiError(400, "bad_request", S.common.error);
+      if (scope === "helper" && s(body.name) === "coordinator") {
+        const kind = checkTool(s(body.kind) ?? "");
+        if (requireCoordinator().tool !== kind) throw new CodecError("account_kind", S.errors.account_kind);
+        setAccountChoice(scope, "coordinator", kind, s(body.accountId) || undefined);
+        return sendJson(res, 200, accountStore().choices);
+      }
       return sendJson(res, 200, saveAccountSettings(scope, s(body.name) ?? "", checkTool(s(body.kind) ?? ""), s(body.accountId) || undefined));
     }
     if (a === "accounts" && b && n === 3) {
@@ -742,10 +763,10 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       if (!text.trim()) throw new ApiError(400, "missing_message", S.errors.missing_message);
       const helpers = projectHelpers(b);
       const to = s(body.to);
-      if (to !== "all" && !helpers.some((helper) => helper.ref === to)) {
+      if (to !== "all" && to !== "coordinator" && !helpers.some((helper) => helper.ref === to)) {
         throw new ApiError(400, "message_helper_not_on_project", S.errors.message_helper_not_on_project);
       }
-      if (!helpers.length) throw new ApiError(400, "message_no_helpers", S.errors.message_no_helpers);
+      if (to === "all" && !helpers.length) throw new ApiError(400, "message_no_helpers", S.errors.message_no_helpers);
       const recipients = to === "all" ? helpers.map((helper) => helper.ref) : [to!];
       return sendJson(res, 201, recipients.map((recipient) => postMessage({ from: "owner", to: recipient, body: text })));
     }
@@ -756,8 +777,8 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       if (!getProject(b)) throw new CodecError("project_not_found", `no project named "${b}"`, {}, 404);
       const timeLimitMinutes = checkTimeLimit(body.timeLimitMinutes);
       const task = need("task");
-      const ref = member ? parseMemberRef(member) : undefined;
-      const tool = ref ? resolveMember(ref.team, ref.member).tool : checkTool(agent!);
+      const ref = member && member !== "coordinator" ? parseMemberRef(member) : undefined;
+      const tool = member === "coordinator" ? requireCoordinator().tool : ref ? resolveMember(ref.team, ref.member).tool : checkTool(agent!);
       const setup = await checkSetup();
       const account = resolveAccount(tool, { helper: member, team: ref?.team, project: b });
       const signedIn = account.builtin ? setup.tools.some((entry) => entry.tool === tool && entry.signedIn === true) : await logins.signedIn(account.id, true);

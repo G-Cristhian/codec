@@ -494,13 +494,13 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
           {v.members.length ? (
             v.members.map((m) => (
               <div key={m.ref}>
-                <a className="link" href={memberHref(m.team, m.member)}>
-                  {m.member}
+                <a className="link" href={m.team ? memberHref(m.team, m.member) : "#/helpers"}>
+                  {m.ref === "coordinator" ? S.coordinator.name : m.member}
                 </a>
                 {" · "}
-                {m.specialty || S.members.worker}
+                {m.ref === "coordinator" ? S.coordinator.explanation : m.specialty || S.members.worker}
                 <Hint>
-                  {fmt(S.wording.helperTeam, m)}
+                  {whoText(m)}
                   {" · "}
                   {toolName(m.tool)}
                 </Hint>

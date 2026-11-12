@@ -90,13 +90,15 @@ export function addExcludes(worktree: string, patterns: string[]): string {
 }
 
 /** The text handed to every agent as standing instructions. */
-export function instructionsText(m: ResolvedMember | undefined, tool: Agent, skills: GivenSkill[]): string {
+export function instructionsText(m: ResolvedMember | undefined, tool: Agent, skills: GivenSkill[], coordinator = false): string {
   const parts: string[] = [];
   if (skills.length) {
     parts.push([S.helperInstructions.skills, S.helperInstructions[tool], ...skills.map((skill) =>
       `- ${skill.name}: ${skill.description || S.helperInstructions.noDescription}${tool === "codex" ? ` (${skill.path ?? `.agents/skills/${skill.name}/SKILL.md`})` : ""}`)].join("\n"));
   }
-  if (m) {
+  if (coordinator) {
+    parts.push(S.helperInstructions.coordinator, S.helperInstructions.messages, S.helperInstructions.reportStatus);
+  } else if (m) {
     parts.push(wording(m.kind === "clone" ? S.helperInstructions.role : S.helperInstructions.worker,
       { member: m.member, specialty: m.specialty ?? "", team: m.team, role: m.specialist ?? "" }));
     if (m.instructions) parts.push(`${S.helperInstructions.standing}\n${m.instructions}`);

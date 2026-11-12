@@ -25,8 +25,14 @@ Requires Node 20.19+ or 22.12+, git, and the `claude` and/or `codex` CLI for rea
 | `codec project list` | List projects and how many agents are running on each. |
 | `codec project remove <name>` | Unregister a project. The repository is not touched. Refused while agents are running on it. |
 | `codec run <project> --agent claude\|codex --task "<text>"` | Create a fresh worktree + branch `codec/<run>` and start the agent there in the background. |
+| `codec coordinator` | Show the coordinator's settings and whether it is working. |
+| `codec coordinator setup --tool claude\|codex [--model <m>] [--time-limit <min>]` | Set up or change the one coordinator for all your projects. |
+| `codec run <project> --member coordinator --task "<text>"` | Start the coordinator on any registered project, using its saved tool, model and time limit. Only one coordinator task can run at a time. |
+| `codec assign <role> "<task>" [--project <name>]` | Inside a coordinator task, give work to the first free helper with that role on the chosen project. Defaults to the coordinator's current project. |
 | `codec status [--project <name>] [--json]` | Every run across all projects: project, agent, state, start time, worktree. |
 | `codec message <team/helper> "<text>"` | From inside a helper task, send a message to another helper. It arrives now if they are working, or waits in their inbox for their next task. |
+| `codec message coordinator "<text>"` | From inside a PM helper's task, send direction to the coordinator. Other helpers get “Pass this along through your PM.” |
+| `codec message owner "<text>"` | Inside a coordinator task, report to the owner in every project's conversation feed. |
 | `codec report progress\|stuck\|done ["<note>"]` | From inside a helper task, report progress, ask for a person, or say the work is finished. Stuck needs a note and moves the task to Needs you. |
 | `codec logs <run> [--lines N]` | Recent output from a run. |
 | `codec stop <run>` | Stop a running agent (and anything it started). |
@@ -38,6 +44,15 @@ Requires Node 20.19+ or 22.12+, git, and the `claude` and/or `codex` CLI for rea
 
 Run states: `running`, `done` (exit 0), `failed` (non-zero exit, or the agent
 died without reporting, e.g. after a reboot), `stopped`.
+
+Set up the coordinator once, here or on the Helpers page. Its settings live in
+`<codecHome>/coordinator.json`. It takes direction from you through the conversation
+feed and from helpers whose member name contains “pm” (case-insensitive).
+Helpers still message each other directly, within or across teams. “All helpers”
+in a project's conversation means that project's team helpers; choose Coordinator
+to message it. Your conversation with the coordinator appears on every project.
+For assignments, role names match first, then role descriptions if no name matches;
+general helpers do not match. Helpers are chosen in team order, then member order.
 
 ## Dashboard
 
