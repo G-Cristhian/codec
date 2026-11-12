@@ -200,6 +200,21 @@ describe("project conversation", () => {
     expect((screen.getByRole("button", { name: S.conversation.send }) as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("renders coordinator rows like helper rows and sends directly to the coordinator", async () => {
+    data.project.helpers.push({ ref: "coordinator", name: S.coordinator.name, running: true });
+    data.project.messages = [note("coordinator", {
+      senderName: S.coordinator.name, senderKind: "coordinator", body: "Team update for the owner", recipientName: S.conversation.you,
+    })];
+    await open();
+    const row = screen.getByTestId("conversation-message");
+    expect(within(row).getByText(S.coordinator.name)).toBeTruthy();
+    expect(row.className).toContain("bg-background");
+    await userEvent.click(screen.getByRole("combobox", { name: S.conversation.to }));
+    await userEvent.click(await screen.findByRole("option", { name: S.coordinator.name }));
+    await userEvent.type(compose(), "Please check the teams{Enter}");
+    await waitFor(() => expect(sends()).toEqual([{ path: "projects/site/messages", body: { to: "coordinator", body: "Please check the teams" } }]));
+  });
+
   it("shows the no-helpers notice and prevents both Send and Enter from posting", async () => {
     data.project.helpers = [];
     data.project.members = [];
@@ -956,6 +971,71 @@ describe("shared data presentation", () => {
 });
 
 describe("owner's Home, Helpers, Profile and Chat port", () => {
+  it("shows a coordinator setup card and saves the chosen tool, model and time limit", async () => {
+    handler = (path, body) => {
+      if (path === "coordinator") {
+        data.home.coordinator = { settings: { tool: String(body.tool), model: String(body.model), timeLimitMinutes: Number(body.timeLimitMinutes), createdAt: "2026-11-11T12:00:00Z" }, running: false };
+        return response(data.home.coordinator);
+      }
+    };
+    await mount("#/helpers");
+    const card = screen.getByTestId("coordinator-card");
+    expect(within(card).getByText(S.coordinator.explanation)).toBeTruthy();
+    await userEvent.click(within(card).getByRole("combobox", { name: S.common.tool }));
+    await userEvent.click(await screen.findByRole("option", { name: S.setup.codex }));
+    await userEvent.type(screen.getByTestId("coordinator-model"), "test-model");
+    await userEvent.type(screen.getByTestId("coordinator-limit"), "15");
+    await userEvent.click(within(card).getByRole("button", { name: S.common.save }));
+    await waitFor(() => expect(calls).toContainEqual({ path: "coordinator", body: { tool: "codex", model: "test-model", timeLimitMinutes: 15 } }));
+    await screen.findByRole("button", { name: S.coordinator.change });
+    expect(card.textContent).toContain("Codex · test-model · Free");
+  });
+
+  it("keeps coordinator settings drafts and focus through polls and shows live running state", async () => {
+    data.home.coordinator = { settings: { tool: "claude", model: "opus", createdAt: "2026-11-11T12:00:00Z" }, running: false };
+    await mount("#/helpers");
+    const card = screen.getByTestId("coordinator-card");
+    expect(card.textContent).toContain("Claude · opus · Free");
+    await userEvent.click(within(card).getByRole("button", { name: S.coordinator.change }));
+    const input = screen.getByTestId("coordinator-model") as HTMLInputElement;
+    await userEvent.clear(input);
+    await userEvent.type(input, "draft-model");
+    data.home.coordinator.running = true;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)); });
+    expect(screen.getByTestId("coordinator-model")).toBe(input);
+    expect(input.value).toBe("draft-model");
+    expect(document.activeElement).toBe(input);
+    expect(card.textContent).toContain("Claude · opus · Working");
+  });
+
+  it("starts the coordinator from the project's Give task picker without a team", async () => {
+    data.project.members = [{ ref: "coordinator", member: "coordinator", tool: "codex", label: S.coordinator.name }];
+    await mount("#/project/site");
+    expect(screen.getByTestId("task-who").textContent).toBe(S.coordinator.name);
+    fireEvent.change(screen.getByTestId("task-text"), { target: { value: "Coordinate all teams" } });
+    fireEvent.submit(screen.getByTestId("task-form"));
+    await waitFor(() => expect(calls).toContainEqual({ path: "projects/site/runs", body: { member: "coordinator", task: "Coordinate all teams" } }));
+  });
+
+  it("keeps one coordinator in the helpers list when free and preserves its task draft on completion", async () => {
+    data.home.coordinator = { settings: { tool: "claude", createdAt: "2026-11-11T12:00:00Z" }, running: true };
+    data.home.runs.unshift({ ...data.run!, runId: "coordinator-run", team: undefined, member: "coordinator", state: "running", lane: "working" });
+    await mount("#/helpers");
+    const row = document.querySelector('[data-testid="helper-row"][data-key="coordinator"]')!;
+    expect(within(row as HTMLElement).getByText(S.coordinator.name)).toBeTruthy();
+    const input = screen.getByTestId("helper-task-text") as HTMLInputElement;
+    await userEvent.type(input, "Next coordination task");
+    data.home.runs[0].state = "done";
+    data.home.runs[0].lane = "done";
+    data.home.coordinator.running = false;
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)); });
+    expect(screen.getByTestId("helper-task-text")).toBe(input);
+    expect(input.value).toBe("Next coordination task");
+    expect(document.activeElement).toBe(input);
+    expect(document.querySelectorAll('[data-testid="helper-row"][data-key="coordinator"]')).toHaveLength(1);
+    expect(row.textContent).toContain(S.members.idle);
+  });
+
   it("greets by first name and time of day, and builds a Monday-to-Sunday week", () => {
     expect(greeting(new Date(2026, 9, 29, 8), "Jordan Lee")).toBe(
       "Good morning, Jordan",

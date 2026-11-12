@@ -45,6 +45,7 @@ import {
 } from "./org.js";
 import { injectSkills, instructionsText, projectSkills, type GivenSkill } from "./inject.js";
 import { receiveMessages } from "./messages.js";
+import { helperRef, requireCoordinator } from "./coordinator.js";
 import { modelFromClaudeStream, renderClaudeStream, skillCallsFromClaudeStream } from "./claude-stream.js";
 import { modelFromCodexOutput } from "./codex-output.js";
 import { COMMIT_ATTRIBUTION_SCRIPT } from "./commit-attribution.js";
@@ -273,7 +274,7 @@ export interface StartInput {
   /** claude | codex. Required for an unassigned quick run; optional (must match) with a member. */
   agent?: string;
   task: string;
-  /** "team/member" — run as that team member, with its skills and instructions. */
+  /** "team/member", or the install-wide "coordinator". */
   member?: string;
   timeLimitMinutes?: number;
 }
@@ -289,7 +290,17 @@ function startAccountRun(input: StartInput): RunStatus {
   if (!project) throw new CodecError("project_not_found", `no project named "${input.project}" (see: codec project list)`, {}, 404);
 
   let who: ResolvedMember | undefined;
-  if (input.member) {
+  const coordinator = input.member === "coordinator" ? requireCoordinator() : undefined;
+  if (coordinator) {
+    // startRun holds the install-wide accounts lock through launch and record creation.
+    if (listRuns({ state: "running" }).some((run) => helperRef(run) === "coordinator")) {
+      throw new CodecError("coordinator_busy", S.errors.coordinator_busy, {}, 409);
+    }
+    if (input.agent && input.agent !== coordinator.tool) {
+      const params = { member: S.coordinator.name, tool: S.setup[coordinator.tool], requested: input.agent };
+      throw new CodecError("tool_mismatch", wording(S.errors.tool_mismatch, params), params);
+    }
+  } else if (input.member) {
     const ref = parseMemberRef(input.member);
     who = resolveMember(ref.team, ref.member);
     if (!who.projects.includes(project.name)) {
@@ -301,7 +312,7 @@ function startAccountRun(input: StartInput): RunStatus {
   } else if (!input.agent) {
     throw new CodecError("missing_tool", "choose a team member (--member <team>/<member>) or a tool for an unassigned worker (--agent claude|codex)");
   }
-  const agentName = who ? who.tool : input.agent!;
+  const agentName = coordinator?.tool ?? who?.tool ?? input.agent!;
   if (!(AGENTS as readonly string[]).includes(agentName)) {
     throw new CodecError("invalid_tool", `unknown agent "${agentName}" (use: ${AGENTS.join(", ")})`, { name: agentName });
   }
@@ -311,7 +322,7 @@ function startAccountRun(input: StartInput): RunStatus {
   prepareAccount(account);
   if (!existsSync(project.path)) throw new CodecError("project_missing", `project path no longer exists: ${project.path}`, { path: project.path });
 
-  const timeLimitMinutes = requestedLimit ?? who?.timeLimitMinutes ?? DEFAULT_TIME_LIMIT_MINUTES;
+  const timeLimitMinutes = (coordinator ? coordinator.timeLimitMinutes : requestedLimit ?? who?.timeLimitMinutes) ?? DEFAULT_TIME_LIMIT_MINUTES;
   const startedAt = new Date().toISOString();
   const deadline = new Date(Date.parse(startedAt) + timeLimitMinutes * 60_000).toISOString();
   const runId = "run-" + randomBytes(4).toString("hex");
@@ -350,13 +361,14 @@ function startAccountRun(input: StartInput): RunStatus {
     });
     throw e;
   }
-  const instructions = instructionsText(who, agent, skills);
+  const instructions = instructionsText(who, agent, skills, !!coordinator);
   if (instructions) {
     writeFileSync(join(dir, "instructions.md"), instructions);
     // A TOML basic string for `codex -c developer_instructions=...`; JSON string escapes are valid TOML.
     writeFileSync(join(dir, "instructions.toml"), JSON.stringify(instructions));
   }
-  const command = agentCommand(agent, { model: who?.model, instructions: !!instructions, accountArgs: accountCliArgs(account) });
+  const model = coordinator?.model ?? who?.model;
+  const command = agentCommand(agent, { model, instructions: !!instructions, accountArgs: accountCliArgs(account) });
   writeFileSync(join(dir, "task.txt"), input.task);
   writeFileSync(join(dir, "agent.sh"), command + "\n");
   writeFileSync(join(dir, "run.sh"), WRAPPER);
@@ -379,16 +391,16 @@ function startAccountRun(input: StartInput): RunStatus {
     timeLimitMinutes,
     deadline,
     team: who?.team,
-    member: who?.member,
+    member: coordinator ? "coordinator" : who?.member,
     specialist: who?.specialist,
     specialty: who?.specialty,
-    model: who?.model,
+    model,
     skills,
     outputFormat: agent === "claude" ? "claude-stream" : "text",
   };
   writeJsonAtomic(recordFile(runId), redactValue(record));
   try {
-    if (who) receiveMessages(`${who.team}/${who.member}`, runId);
+    if (input.member) receiveMessages(input.member, runId);
   } catch (error) {
     // Delivery failed before launch; don't leave a task looking like it is starting.
     withLock(`run-${runId}`, () => {
@@ -488,10 +500,10 @@ function deriveState(rec: RunRecord, exitCode: number | undefined): RunState {
 }
 
 /** Only a full task id from the wrapper can identify the calling helper. */
-export function currentHelperRun(): RunRecord & { team: string; member: string } {
+export function currentHelperRun(): RunRecord & { member: string } {
   const runId = process.env.CODEC_RUN_ID;
   const run = runId && /^run-[a-f0-9]{8}$/.test(runId) ? readRecord(runId) : undefined;
-  if (!run || !run.team || !run.member || deriveState(run, readExitCode(run.runId)) !== "running") {
+  if (!run || !run.member || !helperRef(run) || deriveState(run, readExitCode(run.runId)) !== "running") {
     throw new CodecError("helper_task_required", S.errors.helper_task_required);
   }
   return { ...run, team: run.team, member: run.member };

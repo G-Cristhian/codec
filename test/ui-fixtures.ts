@@ -53,6 +53,7 @@ export function fixture(): PageData & { project: NonNullable<PageData["project"]
       choices: {},
     },
     home: {
+      coordinator: { settings: null, running: false },
       projects: [
         {
           name: "site",
