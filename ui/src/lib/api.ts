@@ -357,6 +357,12 @@ export const sourceText = (s: Skill, project?: string) =>
           project: s.project || project || S.tasks.project,
         })
       : S.members.own;
+export const laneTone = (lane: Lane | "idle") => {
+  if (lane === "needsYou") return "needs";
+  if (lane === "inReview") return "review";
+  if (lane === "idle") return "muted";
+  return lane;
+};
 export const laneHint = (lane: Lane) =>
   ({
     working: S.wording.workingHint,
@@ -364,3 +370,10 @@ export const laneHint = (lane: Lane) =>
     inReview: S.wording.reviewHint,
     done: S.wording.doneHint,
   })[lane];
+
+export function projectTagText(p: { area?: ProjectArea; className?: string }) {
+  if (p.area === "class") return p.className ?? "";
+  if (p.area === "work") return S.tags.work;
+  if (p.area === "personal") return S.tags.personal;
+  return "";
+}

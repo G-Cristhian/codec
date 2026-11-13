@@ -8,6 +8,25 @@ function Progress({ percent }: { percent: number }) {
     </div>
   );
 }
+function projectProgress(p: Home["projects"][number]) {
+  const total = LANES.reduce((n, [k]) => n + p.lanes[k], 0);
+  const percent = total ? Math.round((p.lanes.done / total) * 100) : 0;
+  const notes = total
+    ? [
+        fmt(S.projects.progress, { percent }),
+        p.lanes.needsYou
+          ? fmt(S.projects.needCount, { count: p.lanes.needsYou })
+          : "",
+        p.lanes.inReview
+          ? fmt(S.projects.reviewCount, { count: p.lanes.inReview })
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : S.projects.noTasks;
+  return { percent, notes };
+}
+
 export function ProjectList({
   projects,
   active,
@@ -20,21 +39,7 @@ export function ProjectList({
       <h2>{S.projects.all}</h2>
       {projects.length ? (
         projects.map((p) => {
-          const total = LANES.reduce((n, [k]) => n + p.lanes[k], 0);
-          const percent = total ? Math.round((p.lanes.done / total) * 100) : 0;
-          const notes = total
-            ? [
-                fmt(S.projects.progress, { percent }),
-                p.lanes.needsYou
-                  ? fmt(S.projects.needCount, { count: p.lanes.needsYou })
-                  : "",
-                p.lanes.inReview
-                  ? fmt(S.projects.reviewCount, { count: p.lanes.inReview })
-                  : "",
-              ]
-                .filter(Boolean)
-                .join(" · ")
-            : S.projects.noTasks;
+          const { percent, notes } = projectProgress(p);
           return (
             <a
               className="card-link"

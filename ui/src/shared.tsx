@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
   type FormEvent,
+  type MouseEvent,
   type ComponentProps,
 } from "react";
 import {
@@ -258,6 +259,23 @@ export function Disclosure({
   beforeContent?: ReactNode;
 }) {
   const [open, setOpen] = useState(initial);
+  const trigger = (
+    <Collapsible.Trigger asChild>
+      <Button
+        type="button"
+        variant="outline"
+        data-testid={id}
+        data-key={itemKey}
+      >
+        {title}
+        <ChevronDown
+          aria-hidden="true"
+          className={open ? "rotate-180" : ""}
+        />
+      </Button>
+    </Collapsible.Trigger>
+  );
+
   return (
     <Collapsible.Root
       open={open}
@@ -273,37 +291,11 @@ export function Disclosure({
               <div className="description">{header.description}</div>
             )}
           </div>
-          <Collapsible.Trigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              data-testid={id}
-              data-key={itemKey}
-            >
-              {title}
-              <ChevronDown
-                aria-hidden="true"
-                className={open ? "rotate-180" : ""}
-              />
-            </Button>
-          </Collapsible.Trigger>
+          {trigger}
         </div>
       ) : (
         <>
-          <Collapsible.Trigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              data-testid={id}
-              data-key={itemKey}
-            >
-              {title}
-              <ChevronDown
-                aria-hidden="true"
-                className={open ? "rotate-180" : ""}
-              />
-            </Button>
-          </Collapsible.Trigger>
+          {trigger}
         </>
       )}
 
@@ -363,6 +355,10 @@ export function Field({
     </div>
   );
 }
+function invalidLimit(value: string) {
+  return value !== "" && (+value <= 0 || +value > 1440);
+}
+
 export function Limit({
   id,
   value,
@@ -387,15 +383,10 @@ export function Limit({
         hint={value === undefined ? hint : S.wording.keepLimit}
         className="limit"
         onBlur={(e) =>
-          setInvalid(
-            e.target.value !== "" &&
-              (+e.target.value <= 0 || +e.target.value > 1440),
-          )
+          setInvalid(invalidLimit(e.target.value))
         }
         onChange={(e) => {
-          const bad =
-            e.target.value !== "" &&
-            (+e.target.value <= 0 || +e.target.value > 1440);
+          const bad = invalidLimit(e.target.value);
           e.target.setCustomValidity(bad ? S.common.timeInvalid : "");
           if (!bad) setInvalid(false);
         }}
@@ -520,6 +511,28 @@ export function Picker({
     !!setup &&
     options.length > 0 &&
     options.every((o) => o.tool && !toolOK(setup, o.tool));
+  function renderOption(o: Option) {
+    const unavailable = !!(setup && o.tool && !toolOK(setup, o.tool));
+    return (
+      <SelectItem
+        key={o.value}
+        value={o.value}
+        data-key={o.dataKey ?? o.value}
+        disabled={unavailable}
+        textValue={o.label}
+      >
+        <span>
+          {o.label}
+          {unavailable && (
+            <span className="block text-[13px] text-muted-foreground">
+              {S.common.unavailable}: {toolProblem(setup!, o.tool!)}
+            </span>
+          )}
+        </span>
+      </SelectItem>
+    );
+  }
+
   return (
     <div className="field">
       {allBad && (
@@ -554,24 +567,7 @@ export function Picker({
               {group && <SelectLabel>{group}</SelectLabel>}
               {options
                 .filter((o) => o.group === group)
-                .map((o) => (
-                  <SelectItem
-                    key={o.value}
-                    value={o.value}
-                    data-key={o.dataKey ?? o.value}
-                    disabled={!!(setup && o.tool && !toolOK(setup, o.tool))}
-                    textValue={o.label}
-                  >
-                    <span>
-                      {o.label}
-                      {setup && o.tool && !toolOK(setup, o.tool) && (
-                        <span className="block text-[13px] text-muted-foreground">
-                          {S.common.unavailable}: {toolProblem(setup, o.tool)}
-                        </span>
-                      )}
-                    </span>
-                  </SelectItem>
-                ))}
+                .map(renderOption)}
             </SelectGroup>
           ))}
         </SelectContent>
@@ -661,19 +657,23 @@ export function Form({
 }) {
   const { act } = useActions();
   const done = useContext(DialogDone);
+  function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = e.currentTarget;
+    // A form returns false to stay open (e.g. it asked a follow-up question).
+    let keep = false;
+    void act(actionKey, async () => {
+      keep = (await onSubmit(f)) === false;
+    }, success).then((ok) => ok && !keep && done?.());
+  }
+
   return (
     <form
       className="form"
       data-testid={id}
       data-key={itemKey}
       onInput={onInput}
-      onSubmit={(e: FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        const f = e.currentTarget;
-        // A form returns false to stay open (e.g. it asked a follow-up question).
-        let keep = false;
-        void act(actionKey, async () => { keep = (await onSubmit(f)) === false; }, success).then((ok) => ok && !keep && done?.());
-      }}
+      onSubmit={submit}
     >
       {children}
       <Message actionKey={actionKey} />
@@ -684,6 +684,23 @@ export function Message({ actionKey }: { actionKey: string }) {
   const { messages, tell, confirm, act } = useActions();
   const m = messages[actionKey],
     e = m?.error;
+  function applySuggestedName(event: MouseEvent<HTMLButtonElement>) {
+    if (!e?.suggestion) return;
+    const form = event.currentTarget.closest("form");
+    const input = form?.querySelector<HTMLInputElement>(
+      '[data-testid$="-name"]',
+    );
+    if (input) {
+      input.value = e.suggestion;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+      tell(actionKey, "");
+    } else if (form) {
+      form.dataset.skillName = e.suggestion;
+      form.requestSubmit();
+    }
+  }
+
   return (
     <div
       role="status"
@@ -709,21 +726,7 @@ export function Message({ actionKey }: { actionKey: string }) {
                 variant="outline"
                 size="sm"
                 data-testid="use-suggested-name"
-                onClick={(event) => {
-                  const form = event.currentTarget.closest("form");
-                  const input = form?.querySelector<HTMLInputElement>(
-                    '[data-testid$="-name"]',
-                  );
-                  if (input) {
-                    input.value = e.suggestion!;
-                    input.dispatchEvent(new Event("input", { bubbles: true }));
-                    input.focus();
-                    tell(actionKey, "");
-                  } else if (form) {
-                    form.dataset.skillName = e.suggestion;
-                    form.requestSubmit();
-                  }
-                }}
+                onClick={applySuggestedName}
               >
                 {S.wording.useName}
               </Button>
@@ -824,6 +827,33 @@ export function Remove({
   after?: () => void;
 }) {
   const { act, confirm, pending, tell } = useActions();
+  function previewRemoval() {
+    void act(
+      actionKey,
+      async () => {
+        const p = await api<{
+          removalText?: string;
+          effects: Effect[];
+          blocked: boolean;
+          blockedReason?: string;
+        }>("remove-preview?kind=" + enc(kind) + "&name=" + enc(name));
+        confirm({
+          title: p.removalText || fmt(S.confirm.title, { name }),
+          effects: p.effects,
+          blocked: p.blocked
+            ? p.blockedReason || S.confirm.blocked
+            : undefined,
+          action: async () => {
+            await api(route, {});
+            tell(actionKey, S.common.removed, true);
+            after?.();
+          },
+        });
+      },
+      "",
+    );
+  }
+
   return (
     <Button
       type="button"
@@ -832,32 +862,7 @@ export function Remove({
       data-testid={kind + "-remove"}
       data-key={name}
       disabled={pending[actionKey]}
-      onClick={() =>
-        void act(
-          actionKey,
-          async () => {
-            const p = await api<{
-              removalText?: string;
-              effects: Effect[];
-              blocked: boolean;
-              blockedReason?: string;
-            }>("remove-preview?kind=" + enc(kind) + "&name=" + enc(name));
-            confirm({
-              title: p.removalText || fmt(S.confirm.title, { name }),
-              effects: p.effects,
-              blocked: p.blocked
-                ? p.blockedReason || S.confirm.blocked
-                : undefined,
-              action: async () => {
-                await api(route, {});
-                tell(actionKey, S.common.removed, true);
-                after?.();
-              },
-            });
-          },
-          "",
-        )
-      }
+      onClick={previewRemoval}
     >
       {children}
     </Button>
@@ -875,6 +880,19 @@ export function ConfirmDialog({
   const [deleteBranch, setDeleteBranch] = useState(
     dialog?.deleteBranch || false,
   );
+  function submitConfirmation() {
+    if (!dialog) return;
+    void act(
+      "dialog",
+      async () => {
+        tell("dialog", "");
+        await dialog.action(deleteBranch);
+        close();
+      },
+      "",
+    );
+  }
+
   return (
     <AlertDialog.Root
       open={!!dialog}
@@ -958,17 +976,7 @@ export function ConfirmDialog({
                 variant="destructive"
                 disabled={pending.dialog}
                 data-testid="confirm-submit"
-                onClick={() =>
-                  void act(
-                    "dialog",
-                    async () => {
-                      tell("dialog", "");
-                      await dialog.action(deleteBranch);
-                      close();
-                    },
-                    "",
-                  )
-                }
+                onClick={submitConfirmation}
               >
                 {pending.dialog && (
                   <LoaderCircle className="spin" aria-hidden="true" />
@@ -982,6 +990,15 @@ export function ConfirmDialog({
     </AlertDialog.Root>
   );
 }
+function runTone(run: Run) {
+  if (run.state === "running") return "working";
+  if (
+    run.reviewStatus === "unsaved" || run.reviewStatus === "unavailable" ||
+    run.lostAt || ["failed", "stopped", "timed_out"].includes(run.state)
+  ) return "needs";
+  return "done";
+}
+
 export function StatusBadge({
   run,
   text,
@@ -993,16 +1010,7 @@ export function StatusBadge({
   tone?: string;
   muted?: boolean;
 }) {
-  if (run)
-    tone =
-      run.state === "running"
-        ? "working"
-        : run.reviewStatus === "unsaved" ||
-            run.reviewStatus === "unavailable" ||
-            run.lostAt ||
-            ["failed", "stopped", "timed_out"].includes(run.state)
-          ? "needs"
-          : "done";
+  if (run) tone = runTone(run);
   return (
     <span className={"status " + (muted ? "quiet" : tone)}>
       <span
@@ -1213,6 +1221,18 @@ export function FolderPicker({
       setOpen(false);
     } else if (!picked.cancelled) void browse(start);
   }
+  function selectFolder() {
+    if (!data) return;
+    if (input.current) {
+      input.current.value = data.path;
+      input.current.dispatchEvent(
+        new Event("input", { bubbles: true }),
+      );
+      input.current.focus();
+    }
+    setOpen(false);
+  }
+
   return (
     <div data-testid="folder-picker">
       <div className="field">
@@ -1308,16 +1328,7 @@ export function FolderPicker({
                 type="button"
                 data-testid="folder-use"
                 disabled={loading}
-                onClick={() => {
-                  if (input.current) {
-                    input.current.value = data.path;
-                    input.current.dispatchEvent(
-                      new Event("input", { bubbles: true }),
-                    );
-                    input.current.focus();
-                  }
-                  setOpen(false);
-                }}
+                onClick={selectFolder}
               >
                 {S.folder.use}
               </Button>

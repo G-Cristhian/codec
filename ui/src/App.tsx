@@ -112,6 +112,47 @@ async function loadPage(
     });
   return data;
 }
+function renderPage(
+  p: string[],
+  data: PageData,
+  options: {
+    profileBack: string;
+    helperTeam: string;
+    setHelperTeam: (team: string) => void;
+    openProjectAdd: boolean;
+    newProject: () => void;
+  },
+) {
+  if (p[0] === "profile" || p[0] === "setup")
+    return <ProfilePage data={data} tab={p[0] === "setup" ? "setup" : p[1]} back={options.profileBack} />;
+  switch (p[0]) {
+    case "chat":
+      if (data.chat) return <ChatPage data={data} />;
+      break;
+    case "helpers":
+      return <HelpersPage data={data} team={options.helperTeam} setTeam={options.setHelperTeam} />;
+    case "projects":
+      return <ProjectsPage data={data} openAdd={options.openProjectAdd} />;
+    case "accounts":
+      return <AccountsPage data={data} />;
+    case "project":
+      if (data.project) return <ProjectPage name={p[1]} data={data} />;
+      break;
+    case "run":
+      if (data.run) return <TaskPage data={data} />;
+      break;
+    case "teams":
+      return <TeamsPage data={data} />;
+    case "specialists":
+      return <RolesPage data={data} />;
+    case "skills":
+      return <SkillsPage data={data} />;
+    case "member":
+      if (data.member) return <MemberPage team={p[1]} name={p[2]} data={data} />;
+  }
+  return <HomePage data={data} newProject={options.newProject} />;
+}
+
 export function App() {
   useTheme();
   const [route, setRoute] = useState(location.hash || "#/");
@@ -230,6 +271,10 @@ export function App() {
       controller?.abort();
     };
   }, [route]);
+  function newProject() {
+    setOpenProjectAdd(true);
+    location.hash = "#/projects";
+  }
   const data = page?.route === route ? page.data : undefined;
   const p = parts(route);
   const profile = p[0] === "profile" || p[0] === "setup";
@@ -341,45 +386,13 @@ export function App() {
               <Skeleton />
             ) : (
               <div key={route} className="page-content">
-                {profile ? (
-                  <ProfilePage
-                    data={data}
-                    tab={p[0] === "setup" ? "setup" : p[1]}
-                    back={profileBack.current}
-                  />
-                ) : p[0] === "chat" && data.chat ? (
-                  <ChatPage data={data} />
-                ) : p[0] === "helpers" ? (
-                  <HelpersPage
-                    data={data}
-                    team={helperTeam}
-                    setTeam={setHelperTeam}
-                  />
-                ) : p[0] === "projects" ? (
-                  <ProjectsPage data={data} openAdd={openProjectAdd} />
-                ) : p[0] === "accounts" ? (
-                  <AccountsPage data={data} />
-                ) : p[0] === "project" && data.project ? (
-                  <ProjectPage name={p[1]} data={data} />
-                ) : p[0] === "run" && data.run ? (
-                  <TaskPage data={data} />
-                ) : p[0] === "teams" ? (
-                  <TeamsPage data={data} />
-                ) : p[0] === "specialists" ? (
-                  <RolesPage data={data} />
-                ) : p[0] === "skills" ? (
-                  <SkillsPage data={data} />
-                ) : p[0] === "member" && data.member ? (
-                  <MemberPage team={p[1]} name={p[2]} data={data} />
-                ) : (
-                  <HomePage
-                    data={data}
-                    newProject={() => {
-                      setOpenProjectAdd(true);
-                      location.hash = "#/projects";
-                    }}
-                  />
-                )}
+                {renderPage(p, data, {
+                  profileBack: profileBack.current,
+                  helperTeam,
+                  setHelperTeam,
+                  openProjectAdd,
+                  newProject,
+                })}
               </div>
             )}
           </main>

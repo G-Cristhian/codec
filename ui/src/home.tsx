@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import {
   ArrowRight,
   Briefcase,
@@ -20,6 +20,8 @@ import {
   enc,
   fmt,
   LANES,
+  laneTone,
+  projectTagText,
   snippet,
   stateText,
   toolName,
@@ -81,14 +83,14 @@ const isoDay = (d: Date) =>
 const TASK_AREAS: TaskArea[] = ["school", "work", "personal"];
 const EVENT_KINDS: EventKind[] = ["deadline", "meeting", "interview"];
 
-function projectTagText(p: { area?: ProjectArea; className?: string }) {
-  if (p.area === "class") return p.className ?? "";
-  if (p.area === "work") return S.tags.work;
-  if (p.area === "personal") return S.tags.personal;
-  return "";
+function projectIcon(area?: ProjectArea) {
+  if (area === "class") return GraduationCap;
+  if (area === "work") return Briefcase;
+  if (area === "personal") return User;
+  return Folder;
 }
 function ProjectIcon({ area }: { area?: ProjectArea }) {
-  const Icon = area === "class" ? GraduationCap : area === "work" ? Briefcase : area === "personal" ? User : Folder;
+  const Icon = projectIcon(area);
   return (
     <span className={"home-icon " + (area ?? "none")} aria-hidden="true">
       <Icon />
@@ -136,6 +138,24 @@ function StartTask({ data }: { data: PageData }) {
     ? who
     : options.find((o) => toolOK(data.setup, o.tool!))?.value ?? "";
   const key = "home-start";
+  function startTask(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!text.trim() || !whoValue) return;
+    void act(
+      key,
+      async () => {
+        const r = await api<{ runId: string }>("projects/" + enc(project) + "/runs", {
+          task: text,
+          area,
+          ...(whoValue.startsWith("m:") ? { member: whoValue.slice(2) } : { agent: whoValue.slice(2) }),
+        });
+        setText("");
+        go("#/run/" + enc(r.runId));
+      },
+      "",
+    );
+  }
+
   return (
     <Card className="panel home-start" data-testid="home-start">
       <div className="home-start-head">
@@ -150,23 +170,7 @@ function StartTask({ data }: { data: PageData }) {
       {projects.length ? (
         <form
           className="home-start-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!text.trim() || !whoValue) return;
-            void act(
-              key,
-              async () => {
-                const r = await api<{ runId: string }>("projects/" + enc(project) + "/runs", {
-                  task: text,
-                  area,
-                  ...(whoValue.startsWith("m:") ? { member: whoValue.slice(2) } : { agent: whoValue.slice(2) }),
-                });
-                setText("");
-                go("#/run/" + enc(r.runId));
-              },
-              "",
-            );
-          }}
+          onSubmit={startTask}
         >
           <div className="home-start-input">
             <textarea
@@ -211,10 +215,10 @@ function StartTask({ data }: { data: PageData }) {
             <Picker
               id="home-start-project"
               label={S.home.project}
-              options={projects.map((p) => ({
-                value: p.name,
-                label: projectTagText(p) ? p.name + " · " + projectTagText(p) : p.name,
-              }))}
+              options={projects.map((p) => {
+                const tag = projectTagText(p);
+                return { value: p.name, label: tag ? p.name + " · " + tag : p.name };
+              })}
               value={project}
               onChange={setProject}
             />
@@ -239,7 +243,6 @@ function StartTask({ data }: { data: PageData }) {
 }
 
 const LANE_TEXT = Object.fromEntries(LANES) as Record<Lane, string>;
-const LANE_TONE: Record<Lane, string> = { working: "working", needsYou: "needs", inReview: "review", done: "done" };
 
 function ProjectTagPicker({
   project,
@@ -279,6 +282,20 @@ function ProjectTagPicker({
   );
 }
 
+/** Latest task per helper on this project, in the input's newest-first order. */
+function projectHelpers(runs: Run[], project: string) {
+  const seen = new Set<string>();
+  const helpers: Run[] = [];
+  for (const run of runs) {
+    if (run.project !== project) continue;
+    const who = whoText(run);
+    if (seen.has(who)) continue;
+    seen.add(who);
+    helpers.push(run);
+  }
+  return helpers;
+}
+
 function ActiveProjects({ data }: { data: PageData }) {
   const classes = data.home.classes ?? [];
   const runs = data.home.runs;
@@ -309,16 +326,7 @@ function ActiveProjects({ data }: { data: PageData }) {
       {projects.length ? (
         <ul className="home-list">
           {projects.map((p) => {
-            // Latest task per helper on this project, newest first.
-            const seen = new Set<string>();
-            const helpers: Run[] = [];
-            for (const r of runs) {
-              if (r.project !== p.name) continue;
-              const who = whoText(r);
-              if (seen.has(who)) continue;
-              seen.add(who);
-              helpers.push(r);
-            }
+            const helpers = projectHelpers(runs, p.name);
             return (
               <li key={p.name} className="home-project" data-testid="home-project" data-key={p.name}>
                 <ProjectIcon area={p.area} />
@@ -332,7 +340,7 @@ function ActiveProjects({ data }: { data: PageData }) {
                   <div className="home-chips">
                     {helpers.length ? (
                       helpers.slice(0, 4).map((r) => (
-                        <span key={r.runId} className={"status " + LANE_TONE[r.lane ?? "done"]} data-testid="home-project-helper">
+                        <span key={r.runId} className={"status " + laneTone(r.lane ?? "done")} data-testid="home-project-helper">
                           {fmt(S.home.pendingHelper, { name: whoText(r), state: LANE_TEXT[r.lane ?? "done"] })}
                         </span>
                       ))
@@ -359,18 +367,20 @@ function AddEvent({ day, done }: { day: string; done: () => void }) {
   const { act, pending } = useActions();
   const [kind, setKind] = useState<EventKind>("deadline");
   const key = "home-event";
+  function saveEvent(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const f = e.currentTarget;
+    const val = (n: string) => (f.elements.namedItem(n) as HTMLInputElement).value;
+    void act(key, () => api("calendar", { title: val("event-title"), date: val("event-date"), time: val("event-time"), kind }), "").then(
+      (ok) => ok && done(),
+    );
+  }
+
   return (
     <form
       className="home-event-form"
       data-testid="home-event-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const f = e.currentTarget;
-        const val = (n: string) => (f.elements.namedItem(n) as HTMLInputElement).value;
-        void act(key, () => api("calendar", { title: val("event-title"), date: val("event-date"), time: val("event-time"), kind }), "").then(
-          (ok) => ok && done(),
-        );
-      }}
+      onSubmit={saveEvent}
     >
       <label className="field">
         <span>{S.home.eventTitle}</span>
@@ -452,7 +462,8 @@ function ThisWeek({ data, now }: { data: PageData; now: Date }) {
   const shownDays = mode === "list" ? days : days.filter((d) => isoDay(d) === selected);
   const shownEvents = shownDays.flatMap((d) => eventsOn(isoDay(d)));
   const shownTasks = shownDays.flatMap(tasksOn);
-  const weekKinds = new Set(days.flatMap((d) => eventsOn(isoDay(d)).map((e) => e.kind)));
+  const weekEvents = days.flatMap((d) => eventsOn(isoDay(d)));
+  const weekKinds = new Set(weekEvents.map((event) => event.kind));
   return (
     <Card className="panel week-panel" data-testid="home-week">
       <div className="page-head">
@@ -503,7 +514,7 @@ function ThisWeek({ data, now }: { data: PageData; now: Date }) {
         <div className="home-chips">
           {EVENT_KINDS.filter((k) => weekKinds.has(k)).map((k) => (
             <Tag key={k} tone={k}>
-              {S.tags[k] + " (" + days.flatMap((d) => eventsOn(isoDay(d))).filter((e) => e.kind === k).length + ")"}
+              {S.tags[k] + " (" + weekEvents.filter((e) => e.kind === k).length + ")"}
             </Tag>
           ))}
         </div>

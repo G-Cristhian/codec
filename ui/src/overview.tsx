@@ -8,6 +8,7 @@ import {
   errorText,
   fmt,
   LANES,
+  laneTone,
   memberHref,
   snippet,
   stateText,
@@ -81,13 +82,10 @@ export function ago(iso?: string) {
     0,
     Math.floor((Date.now() - new Date(iso).getTime()) / 60000),
   );
-  return minutes < 1
-    ? S.time.now
-    : minutes < 60
-      ? fmt(S.time.minutes, { count: minutes })
-      : minutes < 1440
-        ? fmt(S.time.hours, { count: Math.floor(minutes / 60) })
-        : fmt(S.time.days, { count: Math.floor(minutes / 1440) });
+  if (minutes < 1) return S.time.now;
+  if (minutes < 60) return fmt(S.time.minutes, { count: minutes });
+  if (minutes < 1440) return fmt(S.time.hours, { count: Math.floor(minutes / 60) });
+  return fmt(S.time.days, { count: Math.floor(minutes / 1440) });
 }
 export interface HelperRow {
   key: string;
@@ -153,14 +151,6 @@ export function helperStatus(
     ? [lane, LANES.find(([k]) => k === lane)![1]]
     : ["idle", S.members.idle];
 }
-const tone = (lane: Lane | "idle") =>
-  lane === "needsYou"
-    ? "needs"
-    : lane === "inReview"
-      ? "review"
-      : lane === "idle"
-        ? "muted"
-        : lane;
 export function homeNotes(rows: HelperRow[], runs: Run[], setup: Setup) {
   const notes: {
     tone?: Lane;
@@ -234,19 +224,22 @@ function HelperCompose({ row, data }: { row: HelperRow; data: PageData }) {
   if (row.quick) return <Hint>{S.helpers.quickHint}</Hint>;
   if (row.broken) return null;
   if (!row.projects.length) return <Hint>{S.helpers.noProjects}</Hint>;
+  const ready = toolOK(data.setup, row.tool);
   const key = "helper-" + row.key;
+  async function startTask(f: HTMLFormElement) {
+    await api("projects/" + enc(project) + "/runs", {
+      member: row.key,
+      task: formValue(f, "helper-task-text"),
+    });
+    f.reset();
+  }
+
   return (
     <Form
       id="helper-task-form"
       actionKey={key}
       success={S.helpers.started}
-      onSubmit={async (f) => {
-        await api("projects/" + enc(project) + "/runs", {
-          member: row.key,
-          task: formValue(f, "helper-task-text"),
-        });
-        f.reset();
-      }}
+      onSubmit={startTask}
     >
       <Picker
         id="helper-task-project"
@@ -261,7 +254,7 @@ function HelperCompose({ row, data }: { row: HelperRow; data: PageData }) {
         required
         placeholder={fmt(S.helpers.compose, { name: row.name })}
       />
-      {!toolOK(data.setup, row.tool) && (
+      {!ready && (
         <Notice>
           {toolProblem(data.setup, row.tool)}{" "}
           <a className="link" href="#/profile/setup">
@@ -272,7 +265,7 @@ function HelperCompose({ row, data }: { row: HelperRow; data: PageData }) {
       <Submit
         id="helper-task-start"
         actionKey={key}
-        disabled={!toolOK(data.setup, row.tool)}
+        disabled={!ready}
       >
         {S.tasks.start}
       </Submit>
@@ -303,6 +296,13 @@ function HelperDetail({ row, data }: { row: HelperRow; data: PageData }) {
       ?.split("\n")
       .filter((line) => line.trim())
       .slice(-12) || [];
+  const activityTitle = {
+    working: S.helpers.workingOn,
+    inReview: S.tasks.inReview,
+    needsYou: S.tasks.needsYou,
+    idle: S.tasks.needsYou,
+  }[k];
+
   return (
     <>
       <div>
@@ -326,13 +326,7 @@ function HelperDetail({ row, data }: { row: HelperRow; data: PageData }) {
         </Notice>
       ) : k !== "idle" && r ? (
         <Notice tone={k === "needsYou" ? "needs" : undefined}>
-          <strong>
-            {k === "working"
-              ? S.helpers.workingOn
-              : k === "inReview"
-                ? S.tasks.inReview
-                : S.tasks.needsYou}
-          </strong>
+          <strong>{activityTitle}</strong>
           <p>
             {k === "working"
               ? ""
@@ -394,14 +388,16 @@ function HelperDetail({ row, data }: { row: HelperRow; data: PageData }) {
 function CoordinatorForm({ data, saved }: { data: PageData; saved: () => void }) {
   const settings = data.home.coordinator?.settings;
   const [tool, setTool] = useState(settings?.tool || "claude");
+  async function saveCoordinator(form: HTMLFormElement) {
+    await api("coordinator", {
+      tool, model: formValue(form, "coordinator-model"),
+      timeLimitMinutes: limitValue(form, "coordinator-limit"),
+    });
+    saved();
+  }
+
   return (
-    <Form id="coordinator-form" actionKey="coordinator" onSubmit={async (form) => {
-      await api("coordinator", {
-        tool, model: formValue(form, "coordinator-model"),
-        timeLimitMinutes: limitValue(form, "coordinator-limit"),
-      });
-      saved();
-    }}>
+    <Form id="coordinator-form" actionKey="coordinator" onSubmit={saveCoordinator}>
       <Picker id="coordinator-tool" label={S.common.tool} value={tool} onChange={setTool}
         options={["claude", "codex"].map((value) => ({ value, label: toolName(value) }))} />
       <Field id="coordinator-model" label={S.common.model} defaultValue={settings?.model} />
@@ -508,7 +504,7 @@ export function HelpersPage({
               ] as const
             ).map(([k, text]) => (
               <Card className="panel" key={k}>
-                <StatusBadge text={text} tone={tone(k)} />
+                <StatusBadge text={text} tone={laneTone(k)} />
                 <strong className="stat-number">{counts[k]}</strong>
               </Card>
             ))}
@@ -549,7 +545,7 @@ export function HelpersPage({
                       </Hint>
                     </td>
                     <td>
-                      <StatusBadge text={text} tone={tone(k)} />
+                      <StatusBadge text={text} tone={laneTone(k)} />
                     </td>
                     <td>
                       {active ? snippet(r.run!.task, 90) : S.helpers.noTask}
@@ -652,26 +648,23 @@ export function ProfilePage({
           <ArrowLeft aria-hidden="true" />
           {S.profile.back}
         </a>
-        {[
+        {([
           ["info", S.profile.info, User],
           ["setup", S.nav.setup, Settings],
           ["appearance", S.profile.appearance, Palette],
-        ].map(([id, label, Icon]) => {
-          const Glyph = Icon as typeof User;
-          return (
-            <Button asChild key={String(id)} variant="ghost">
-              <a
-                href={"#/profile/" + id}
-                data-testid="profile-tab"
-                data-key={String(id)}
-                aria-current={key === id ? "page" : undefined}
-              >
-                <Glyph aria-hidden="true" />
-                {String(label)}
-              </a>
-            </Button>
-          );
-        })}
+        ] as const).map(([id, label, Icon]) => (
+          <Button asChild key={id} variant="ghost">
+            <a
+              href={"#/profile/" + id}
+              data-testid="profile-tab"
+              data-key={id}
+              aria-current={key === id ? "page" : undefined}
+            >
+              <Icon aria-hidden="true" />
+              {label}
+            </a>
+          </Button>
+        ))}
       </nav>
       <section className="page-content" data-testid={"profile-" + key}>
         {key === "setup" ? (

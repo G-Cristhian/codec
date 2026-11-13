@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState, type ReactNode, type MouseEvent } from "react";
 import { Collapsible } from "radix-ui";
 import { AgentForm, HarnessCard } from "./agents";
 import { ProjectList } from "./project-list";
@@ -18,6 +18,7 @@ import {
   when,
   memberHref,
   laneHint,
+  laneTone,
   limitText,
   sourceText,
   LANES,
@@ -25,6 +26,8 @@ import {
   errorText,
   type PageData,
   type Role,
+  type Run,
+  type Skill,
   type Team,
   type Account,
 } from "./lib/api";
@@ -70,6 +73,13 @@ function MessageLimitSettings({ scope, name, limit }: { scope: "project" | "team
   const { act, pending } = useActions();
   const key = "message-limit-" + scope + "-" + name;
   const route = (scope === "project" ? "projects/" : "teams/") + enc(name) + "/message-limit";
+  async function resetDefault() {
+    const draft = value;
+    if (await act(key, () => api(route, {}), S.common.saved)) {
+      setValue((current) => current === draft ? "" : current);
+    }
+  }
+
   return (
     <Form id={scope + "-message-limit-form"} actionKey={key}
       onSubmit={() => api(route, value === "" ? {} : { messageLimit: Number(value) })}>
@@ -78,12 +88,7 @@ function MessageLimitSettings({ scope, name, limit }: { scope: "project" | "team
         onChange={(event) => setValue(event.target.value)} />
       <div className="flex gap-2">
         <Submit id={scope + "-message-limit-save"} actionKey={key}>{S.common.save}</Submit>
-        <Button type="button" variant="outline" disabled={!!pending[key]} onClick={async () => {
-          const draft = value;
-          if (await act(key, () => api(route, {}), S.common.saved)) {
-            setValue((current) => current === draft ? "" : current);
-          }
-        }}>{S.messageLimit.resetDefault}</Button>
+        <Button type="button" variant="outline" disabled={!!pending[key]} onClick={resetDefault}>{S.messageLimit.resetDefault}</Button>
       </div>
     </Form>
   );
@@ -173,36 +178,55 @@ function ProjectAdd() {
   const { act, pending, tell } = useActions();
   const done = useDialogDone();
   const key = "project-add";
+  async function addProject(f: HTMLFormElement) {
+    const body = {
+      name: formValue(f, "project-name").trim() || undefined,
+      path: formValue(f, "project-path").trim(),
+    };
+    try {
+      await api("projects", body);
+      setTracking(undefined);
+      f.reset();
+      tell(key, S.common.added, true);
+    } catch (e) {
+      const error = e as RequestError;
+      if (
+        !["needs_tracking", "needs_checkpoint"].includes(error.code || "")
+      )
+        throw e;
+      setTracking({
+        body,
+        question: errorText(e),
+        checkpoint: error.code === "needs_checkpoint",
+      });
+      return false;
+    }
+  }
+
+  function confirmTracking(e: MouseEvent<HTMLButtonElement>) {
+    if (!tracking) return;
+    const f = e.currentTarget.closest("form")!;
+    void act(
+      key,
+      async () => {
+        await api("projects", {
+          ...tracking.body,
+          setUpTracking: true,
+        });
+        setTracking(undefined);
+        f.reset();
+      },
+      S.common.added,
+    ).then((ok) => ok && done?.());
+  }
+
   return (
     <Form
       id="project-add-form"
       actionKey={key}
       success=""
       onInput={() => setTracking(undefined)}
-      onSubmit={async (f) => {
-        const body = {
-          name: formValue(f, "project-name").trim() || undefined,
-          path: formValue(f, "project-path").trim(),
-        };
-        try {
-          await api("projects", body);
-          setTracking(undefined);
-          f.reset();
-          tell(key, S.common.added, true);
-        } catch (e) {
-          const error = e as RequestError;
-          if (
-            !["needs_tracking", "needs_checkpoint"].includes(error.code || "")
-          )
-            throw e;
-          setTracking({
-            body,
-            question: errorText(e),
-            checkpoint: error.code === "needs_checkpoint",
-          });
-          return false;
-        }
-      }}
+      onSubmit={addProject}
     >
       <Field
         id="project-name"
@@ -222,21 +246,7 @@ function ProjectAdd() {
               type="button"
               data-testid="tracking-yes"
               disabled={pending[key]}
-              onClick={(e) => {
-                const f = e.currentTarget.closest("form")!;
-                void act(
-                  key,
-                  async () => {
-                    await api("projects", {
-                      ...tracking.body,
-                      setUpTracking: true,
-                    });
-                    setTracking(undefined);
-                    f.reset();
-                  },
-                  S.common.added,
-                ).then((ok) => ok && done?.());
-              }}
+              onClick={confirmTracking}
             >
               {tracking.checkpoint
                 ? S.wording.checkpointYes
@@ -330,29 +340,31 @@ function TaskForm({ data, name }: { data: PageData; name: string }) {
   const [who, setWho] = useState(
     options.find((o) => toolOK(data.setup, o.tool!))?.value || "",
   );
+  async function startTask(f: HTMLFormElement) {
+    if (!who)
+      throw Object.assign(new RequestError(S.errors.missing_tool), {
+        code: "missing_tool",
+      });
+    const r = await api<{ runId: string }>(
+      "projects/" + enc(name) + "/runs",
+      {
+        task: formValue(f, "task-text"),
+        timeLimitMinutes: limitValue(f, "task-limit"),
+        ...(who.startsWith("m:")
+          ? { member: who.slice(2) }
+          : { agent: who.slice(2) }),
+      },
+    );
+    f.reset();
+    go("#/run/" + enc(r.runId));
+  }
+
   return (
     <Form
       id="task-form"
       actionKey={key}
       success=""
-      onSubmit={async (f) => {
-        if (!who)
-          throw Object.assign(new RequestError(S.errors.missing_tool), {
-            code: "missing_tool",
-          });
-        const r = await api<{ runId: string }>(
-          "projects/" + enc(name) + "/runs",
-          {
-            task: formValue(f, "task-text"),
-            timeLimitMinutes: limitValue(f, "task-limit"),
-            ...(who.startsWith("m:")
-              ? { member: who.slice(2) }
-              : { agent: who.slice(2) }),
-          },
-        );
-        f.reset();
-        go("#/run/" + enc(r.runId));
-      }}
+      onSubmit={startTask}
     >
       <Picker
         id="task-who"
@@ -383,6 +395,18 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
   const [compose, setCompose] = useState(
     !LANES.some(([lane]) => v.lanes[lane].length),
   );
+  function composeTask() {
+    changeTab("board");
+    setCompose(true);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLTextAreaElement>(
+          '[data-testid="task-text"]',
+        )
+        ?.focus(),
+    );
+  }
+
   return (
     <div className="project-split">
       <ProjectList projects={data.home.projects} active={name} />
@@ -394,17 +418,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
         >
           <Button
             data-testid="task-new"
-            onClick={() => {
-              changeTab("board");
-              setCompose(true);
-              requestAnimationFrame(() =>
-                document
-                  .querySelector<HTMLTextAreaElement>(
-                    '[data-testid="task-text"]',
-                  )
-                  ?.focus(),
-              );
-            }}
+            onClick={composeTask}
           >
             {S.projects.newTask}
           </Button>
@@ -466,13 +480,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
                       <h3>
                         <StatusBadge
                           text={text}
-                          tone={
-                            lane === "needsYou"
-                              ? "needs"
-                              : lane === "inReview"
-                                ? "review"
-                                : lane
-                          }
+                          tone={laneTone(lane)}
                         />
                       </h3>
                       <span className="badge">{v.lanes[lane].length}</span>
@@ -549,6 +557,12 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
     </div>
   );
 }
+function unusedSkillsText(run: Run) {
+  if (run.agent === "codex") return S.tasks.codexSkills;
+  if (run.state === "running") return S.tasks.noUsed;
+  return S.wording.noSkillUse;
+}
+
 export function TaskPage({ data }: { data: PageData }) {
   const r = data.run!;
   const { confirm } = useActions();
@@ -713,13 +727,7 @@ export function TaskPage({ data }: { data: PageData }) {
               ))}
             </Table>
           ) : (
-            <Hint>
-              {r.agent === "codex"
-                ? S.tasks.codexSkills
-                : r.state === "running"
-                  ? S.tasks.noUsed
-                  : S.wording.noSkillUse}
-            </Hint>
+            <Hint>{unusedSkillsText(r)}</Hint>
           )}
         </Card>
       </div>
@@ -740,27 +748,29 @@ export function TaskPage({ data }: { data: PageData }) {
 }
 function RoleForm({ role, data }: { role?: Role; data: PageData }) {
   const key = role ? "specialist-edit-" + role.name : "specialist-add";
+  async function saveRole(f: HTMLFormElement) {
+    await api(
+      role ? "specialists/" + enc(role.name) + "/edit" : "specialists",
+      {
+        name: role ? undefined : formValue(f, "specialist-name").trim(),
+        specialty: formValue(f, "specialist-specialty").trim(),
+        tool: formValue(f, "specialist-tool"),
+        model: formValue(f, "specialist-model").trim(),
+        instructions: formValue(f, "specialist-instructions"),
+        skills: selected(f, "specialist-skill"),
+        timeLimitMinutes: limitValue(f, "specialist-limit"),
+      },
+    );
+    if (!role) f.reset();
+  }
+
   return (
     <Form
       id={role ? "specialist-edit-form" : "specialist-add-form"}
       itemKey={role?.name}
       actionKey={key}
       success={role ? S.common.saved : S.common.added}
-      onSubmit={async (f) => {
-        await api(
-          role ? "specialists/" + enc(role.name) + "/edit" : "specialists",
-          {
-            name: role ? undefined : formValue(f, "specialist-name").trim(),
-            specialty: formValue(f, "specialist-specialty").trim(),
-            tool: formValue(f, "specialist-tool"),
-            model: formValue(f, "specialist-model").trim(),
-            instructions: formValue(f, "specialist-instructions"),
-            skills: selected(f, "specialist-skill"),
-            timeLimitMinutes: limitValue(f, "specialist-limit"),
-          },
-        );
-        if (!role) f.reset();
-      }}
+      onSubmit={saveRole}
     >
       {!role && (
         <Field
@@ -914,6 +924,14 @@ function RoleCard({ s, data }: { s: Role; data: PageData }) {
 
 export function TeamForm({ team, data }: { team?: Team; data: PageData }) {
   const key = team ? "team-edit-" + team.name : "team-add";
+  async function saveTeam(f: HTMLFormElement) {
+    await api(team ? "teams/" + enc(team.name) + "/projects" : "teams", {
+      name: team ? undefined : formValue(f, "team-name").trim(),
+      projects: selected(f, "team-project"),
+    });
+    if (!team) f.reset();
+  }
+
   return (
     <>
       <Form
@@ -921,13 +939,7 @@ export function TeamForm({ team, data }: { team?: Team; data: PageData }) {
         itemKey={team?.name}
         actionKey={key}
         success={team ? S.common.saved : S.common.added}
-        onSubmit={async (f) => {
-          await api(team ? "teams/" + enc(team.name) + "/projects" : "teams", {
-            name: team ? undefined : formValue(f, "team-name").trim(),
-            projects: selected(f, "team-project"),
-          });
-          if (!team) f.reset();
-        }}
+        onSubmit={saveTeam}
       >
         {!team && (
           <Field
@@ -972,6 +984,7 @@ export function MemberPage({
   name: string;
 }) {
   const m = data.member!;
+  const finished = m.runs.filter((r) => r.state !== "running");
   return (
     <>
       <Crumbs>
@@ -1070,9 +1083,9 @@ export function MemberPage({
       </section>
       <section>
         <h2>{S.members.past}</h2>
-        {m.runs.some((r) => r.state !== "running") ? (
+        {finished.length ? (
           <TaskTable
-            runs={m.runs.filter((r) => r.state !== "running")}
+            runs={finished}
             member
           />
         ) : (
@@ -1093,6 +1106,31 @@ function readB64(file: File): Promise<string> {
 }
 function SkillAdd() {
   const [folder, setFolder] = useState("");
+  async function addFromPath(f: HTMLFormElement) {
+    await api("skills", {
+      path: formValue(f, "skill-path").trim(),
+      name: f.dataset.skillName,
+    });
+    delete f.dataset.skillName;
+    f.reset();
+  }
+
+  async function uploadSkill(f: HTMLFormElement) {
+    const input = f.querySelector<HTMLInputElement>("[type=file]")!;
+    if (!input.files?.length)
+      throw new RequestError(S.skills.uploadRequired);
+    const files = await Promise.all(
+      [...input.files].map(async (file) => ({
+        path: file.webkitRelativePath || file.name,
+        content: await readB64(file),
+      })),
+    );
+    await api("skills", { files, name: f.dataset.skillName });
+    delete f.dataset.skillName;
+    f.reset();
+    setFolder("");
+  }
+
   return (
     <Tabs defaultValue="path">
       <TabsList>
@@ -1104,14 +1142,7 @@ function SkillAdd() {
           id="skill-add-form"
           actionKey="skill-add"
           success={S.common.added}
-          onSubmit={async (f) => {
-            await api("skills", {
-              path: formValue(f, "skill-path").trim(),
-              name: f.dataset.skillName,
-            });
-            delete f.dataset.skillName;
-            f.reset();
-          }}
+          onSubmit={addFromPath}
         >
           <FolderPicker prefix="skill" label={S.skills.path} />
           <Hint>{S.skills.hint}</Hint>
@@ -1125,21 +1156,7 @@ function SkillAdd() {
           id="skill-upload-form"
           actionKey="skill-upload"
           success={S.common.added}
-          onSubmit={async (f) => {
-            const input = f.querySelector<HTMLInputElement>("[type=file]")!;
-            if (!input.files?.length)
-              throw new RequestError(S.skills.uploadRequired);
-            const files = await Promise.all(
-              [...input.files].map(async (file) => ({
-                path: file.webkitRelativePath || file.name,
-                content: await readB64(file),
-              })),
-            );
-            await api("skills", { files, name: f.dataset.skillName });
-            delete f.dataset.skillName;
-            f.reset();
-            setFolder("");
-          }}
+          onSubmit={uploadSkill}
         >
           <Hint>{S.skills.uploadHint}</Hint>
           <Field
@@ -1164,6 +1181,27 @@ function SkillAdd() {
     </Tabs>
   );
 }
+function skillHolders(skill: Skill) {
+  const specialists = (skill.specialists || []).map((name) => fmt(S.members.copyOf, { name }));
+  const members = (skill.members || []).map((ref) => {
+    const [team, member] = ref.split("/");
+    return fmt(S.wording.helperTeam, { team, member });
+  });
+  return [...specialists, ...members].join(", ") || S.wording.noHolders;
+}
+
+function skillMarker(source: string) {
+  const own = source === "own";
+  const text = own ? S.skills.own : S.skills.inherited;
+  return (
+    <Tip text={text}>
+      <span className={own ? "success" : "role-dot"} tabIndex={0} aria-label={text}>
+        {own ? "●" : "○"}
+      </span>
+    </Tip>
+  );
+}
+
 export function SkillsPage({ data }: { data: PageData }) {
   const v = data.skills!;
   return (
@@ -1194,15 +1232,7 @@ export function SkillsPage({ data }: { data: PageData }) {
                 <td className="font-semibold">{s.name}</td>
                 <td>{s.description}</td>
                 <td>
-                  {[
-                    ...(s.specialists || []).map((name) =>
-                      fmt(S.members.copyOf, { name }),
-                    ),
-                    ...(s.members || []).map((ref) => {
-                      const [team, member] = ref.split("/");
-                      return fmt(S.wording.helperTeam, { team, member });
-                    }),
-                  ].join(", ") || S.wording.noHolders}
+                  {skillHolders(s)}
                 </td>
                 <td>
                   <Remove
@@ -1247,29 +1277,7 @@ export function SkillsPage({ data }: { data: PageData }) {
                 <td>{toolName(r.tool)}</td>
                 {v.grid.skills.map((name) => (
                   <td key={name}>
-                    {r.skills[name] && (
-                      <Tip
-                        text={
-                          r.skills[name] === "own"
-                            ? S.skills.own
-                            : S.skills.inherited
-                        }
-                      >
-                        <span
-                          className={
-                            r.skills[name] === "own" ? "success" : "role-dot"
-                          }
-                          tabIndex={0}
-                          aria-label={
-                            r.skills[name] === "own"
-                              ? S.skills.own
-                              : S.skills.inherited
-                          }
-                        >
-                          {r.skills[name] === "own" ? "●" : "○"}
-                        </span>
-                      </Tip>
-                    )}
+                    {r.skills[name] && skillMarker(r.skills[name])}
                   </td>
                 ))}
               </tr>
@@ -1601,6 +1609,13 @@ export function SetupPage({ data }: { data: PageData }) {
     : working.length === 1
       ? fmt(S.setup.oneReady, { tool: toolName(working[0].tool) })
       : S.setup.ready;
+  function finishSetup() {
+    void act("setup", async () => {
+      await api("settings", { setupFinished: true });
+      go("#/");
+    }, "");
+  }
+
   return (
     <section data-testid="setup-wizard" className="setup-page">
       <PageIntro title={S.setup.title} />
@@ -1628,16 +1643,7 @@ export function SetupPage({ data }: { data: PageData }) {
           variant="ghost"
           data-testid="setup-skip"
           disabled={pending.setup}
-          onClick={() =>
-            void act(
-              "setup",
-              async () => {
-                await api("settings", { setupFinished: true });
-                go("#/");
-              },
-              "",
-            )
-          }
+          onClick={finishSetup}
         >
           {S.setup.skip}
         </Button>
@@ -1652,16 +1658,7 @@ export function SetupPage({ data }: { data: PageData }) {
         <Button
           data-testid="setup-continue"
           disabled={!setup.ready || pending.setup}
-          onClick={() =>
-            void act(
-              "setup",
-              async () => {
-                await api("settings", { setupFinished: true });
-                go("#/");
-              },
-              "",
-            )
-          }
+          onClick={finishSetup}
         >
           {S.setup.continue}
         </Button>
@@ -1726,55 +1723,62 @@ export function ToolCards({
   okText?: string;
 }) {
   const { tell } = useActions();
+  async function copyFix(t: PageData["setup"]["tools"][number]) {
+    try {
+      await navigator.clipboard.writeText(
+        t.fix || S.setup.fixMissing,
+      );
+      tell("setup-" + t.tool, S.common.copied, true);
+    } catch {
+      tell("setup-" + t.tool, S.common.copyFailed);
+    }
+  }
+
+  function renderTool(t: PageData["setup"]["tools"][number]) {
+    const ready = toolOK(data.setup, t.tool);
+    return (
+      <section
+        key={t.tool}
+        className="setup-tool"
+        data-testid="setup-tool"
+        data-key={t.tool}
+      >
+        <div className="button-row">
+          <strong>{toolName(t.tool)}</strong>
+          <StatusBadge
+            text={
+              ready
+                ? okText
+                : toolProblem(data.setup, t.tool)
+            }
+            tone={ready ? "done" : "needs"}
+          />
+          {t.version && <span className="mono hint">{t.version}</span>}
+        </div>
+        {!ready && (
+          <>
+            <pre className="fix" data-testid="setup-fix">
+              {t.fix || S.setup.fixMissing}
+            </pre>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="setup-copy"
+              data-key={t.tool}
+              onClick={() => void copyFix(t)}
+            >
+              {S.common.copy}
+            </Button>
+            <Message actionKey={"setup-" + t.tool} />
+          </>
+        )}
+      </section>
+    );
+  }
+
   return (
     <>
-      {data.setup.tools.map((t) => (
-        <section
-          key={t.tool}
-          className="setup-tool"
-          data-testid="setup-tool"
-          data-key={t.tool}
-        >
-          <div className="button-row">
-            <strong>{toolName(t.tool)}</strong>
-            <StatusBadge
-              text={
-                toolOK(data.setup, t.tool)
-                  ? okText
-                  : toolProblem(data.setup, t.tool)
-              }
-              tone={toolOK(data.setup, t.tool) ? "done" : "needs"}
-            />
-            {t.version && <span className="mono hint">{t.version}</span>}
-          </div>
-          {!toolOK(data.setup, t.tool) && (
-            <>
-              <pre className="fix" data-testid="setup-fix">
-                {t.fix || S.setup.fixMissing}
-              </pre>
-              <Button
-                variant="outline"
-                size="sm"
-                data-testid="setup-copy"
-                data-key={t.tool}
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(
-                      t.fix || S.setup.fixMissing,
-                    );
-                    tell("setup-" + t.tool, S.common.copied, true);
-                  } catch {
-                    tell("setup-" + t.tool, S.common.copyFailed);
-                  }
-                }}
-              >
-                {S.common.copy}
-              </Button>
-              <Message actionKey={"setup-" + t.tool} />
-            </>
-          )}
-        </section>
-      ))}
+      {data.setup.tools.map(renderTool)}
     </>
   );
 }

@@ -17,7 +17,7 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { S, api, enc, fmt, toolName, type PageData } from "./lib/api";
+import { S, api, enc, fmt, toolName, projectTagText, type PageData } from "./lib/api";
 import { Button, Input, Message, Picker, useActions } from "./shared";
 import { go } from "./pages";
 
@@ -196,7 +196,7 @@ function ChatHeader({ data }: { data: PageData }) {
   const classes = data.home.classes ?? [];
   const saved = v.messages.length > 0 && !!v.id;
   const tagValue = v.area === "class" ? "class:" + v.className : v.area ?? "";
-  const tagText = v.area === "class" ? v.className : v.area === "work" ? S.tags.work : v.area === "personal" ? S.tags.personal : "";
+  const tagText = projectTagText(v);
   useEffect(() => {
     if (!menu) return;
     const close = (e: MouseEvent) => {
@@ -205,6 +205,25 @@ function ChatHeader({ data }: { data: PageData }) {
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [menu]);
+  function renameChat() {
+    setMenu(false);
+    setTitle(v.title ?? "");
+    setRenaming(true);
+  }
+
+  function removeChat() {
+    setMenu(false);
+    confirm({
+      title: fmt(S.chat.removeConfirm, { title: v.title ?? "" }),
+      effects: [],
+      label: S.chat.remove,
+      action: async () => {
+        await api("chat/" + enc(v.id!) + "/remove", {});
+        go("#/chat");
+      },
+    });
+  }
+
   return (
     <header className="chat-header">
       {renaming && v.id ? (
@@ -284,11 +303,7 @@ function ChatHeader({ data }: { data: PageData }) {
               <button
                 role="menuitem"
                 data-testid="chat-rename"
-                onClick={() => {
-                  setMenu(false);
-                  setTitle(v.title ?? "");
-                  setRenaming(true);
-                }}
+                onClick={renameChat}
               >
                 <Pencil aria-hidden="true" />
                 {S.chat.rename}
@@ -297,18 +312,7 @@ function ChatHeader({ data }: { data: PageData }) {
                 role="menuitem"
                 className="danger"
                 data-testid="chat-remove"
-                onClick={() => {
-                  setMenu(false);
-                  confirm({
-                    title: fmt(S.chat.removeConfirm, { title: v.title ?? "" }),
-                    effects: [],
-                    label: S.chat.remove,
-                    action: async () => {
-                      await api("chat/" + enc(v.id!) + "/remove", {});
-                      go("#/chat");
-                    },
-                  });
-                }}
+                onClick={removeChat}
               >
                 <Trash2 aria-hidden="true" />
                 {S.chat.remove}
@@ -368,6 +372,15 @@ export function ChatPage({ data }: { data: PageData }) {
       return next;
     });
   };
+  async function copyMessage(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      tell("chat", S.common.copied, true);
+    } catch {
+      tell("chat", S.common.copyFailed);
+    }
+  }
+
   return (
     <div className="chat-page">
       <ChatList data={data} />
@@ -425,14 +438,7 @@ export function ChatPage({ data }: { data: PageData }) {
                       variant="ghost"
                       className="chat-copy"
                       data-testid="chat-copy"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(m.text);
-                          tell("chat", S.common.copied, true);
-                        } catch {
-                          tell("chat", S.common.copyFailed);
-                        }
-                      }}
+                      onClick={() => void copyMessage(m.text)}
                     >
                       <Copy aria-hidden="true" />
                       {S.chat.copy}

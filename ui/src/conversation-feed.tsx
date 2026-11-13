@@ -55,6 +55,44 @@ export function useConversationTab(messages?: ConversationMessage[]) {
   return { tab, changeTab, unread };
 }
 
+function renderMessages(
+  messages: ConversationMessage[] | undefined,
+  messagesError: boolean | undefined,
+  refresh: () => void,
+) {
+  if (messagesError || !messages) return (
+    <div className="p-4 text-sm text-destructive" role="alert">
+      <p>{S.conversation.loadError}</p>
+      <Button variant="link" className="h-auto p-0 text-destructive" onClick={refresh}>
+        {S.conversation.retry}
+      </Button>
+    </div>
+  );
+  if (!messages.length) return <p className="p-8 text-center text-sm text-muted-foreground">{S.conversation.empty}</p>;
+  return messages.map((message) => {
+    const sentAt = when(message.sentAt);
+    return (
+      <div
+        key={message.id}
+        data-testid="conversation-message"
+        className={"border-b border-border px-4 py-3 hover:bg-muted/30 " + (message.senderKind === "owner" ? "bg-muted/40" : "bg-background")}
+      >
+        <div className="flex items-baseline gap-2">
+          <span title={message.senderName} className="min-w-0 truncate text-sm font-medium text-foreground">{message.senderName}</span>
+          <span aria-hidden="true">·</span>
+          <time dateTime={message.sentAt} title={sentAt} className="min-w-0 truncate text-xs text-muted-foreground">{sentAt}</time>
+          {message.waiting && (
+            <Badge variant="outline" className="border-status-needs text-xs text-status-needs">
+              {S.conversation.waiting}
+            </Badge>
+          )}
+        </div>
+        <p className="mt-0.5 whitespace-pre-wrap text-sm text-foreground [overflow-wrap:anywhere]">{message.body}</p>
+      </div>
+    );
+  });
+}
+
 const noHelpers: ProjectConversation["helpers"] = [];
 export function ConversationFeed({
   name,
@@ -118,32 +156,7 @@ export function ConversationFeed({
         role="log"
         aria-label={S.conversation.title}
       >
-        {messagesError || !messages ? (
-          <div className="p-4 text-sm text-destructive" role="alert">
-            <p>{S.conversation.loadError}</p>
-            <Button variant="link" className="h-auto p-0 text-destructive" onClick={refresh}>
-              {S.conversation.retry}
-            </Button>
-          </div>
-        ) : messages.length ? messages.map((message) => (
-          <div
-            key={message.id}
-            data-testid="conversation-message"
-            className={"border-b border-border px-4 py-3 hover:bg-muted/30 " + (message.senderKind === "owner" ? "bg-muted/40" : "bg-background")}
-          >
-            <div className="flex items-baseline gap-2">
-              <span title={message.senderName} className="min-w-0 truncate text-sm font-medium text-foreground">{message.senderName}</span>
-              <span aria-hidden="true">·</span>
-              <time dateTime={message.sentAt} title={when(message.sentAt)} className="min-w-0 truncate text-xs text-muted-foreground">{when(message.sentAt)}</time>
-              {message.waiting && (
-                <Badge variant="outline" className="border-status-needs text-xs text-status-needs">
-                  {S.conversation.waiting}
-                </Badge>
-              )}
-            </div>
-            <p className="mt-0.5 whitespace-pre-wrap text-sm text-foreground [overflow-wrap:anywhere]">{message.body}</p>
-          </div>
-        )) : <p className="p-8 text-center text-sm text-muted-foreground">{S.conversation.empty}</p>}
+        {renderMessages(messages, messagesError, refresh)}
         <div ref={bottom} />
       </div>
       {cappedPairs.map((pair) => {
