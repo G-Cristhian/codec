@@ -53,6 +53,7 @@ import { ACTIVITY_SCRIPT } from "./activity.js";
 import { accountCliArgs, accountEnvironment, clearAccountChoices, prepareAccount, resolveAccount } from "./accounts.js";
 import { redactSecrets, redactValue } from "./secrets.js";
 import {
+  codecHome,
   eventsFile,
   readJson,
   runsDir,
@@ -63,6 +64,8 @@ import {
 } from "./store.js";
 
 import { AGENTS, type Agent } from "./tools.js";
+import type { TaskArea } from "./planner.js";
+import { claudeMcpConfig, claudePermissions, codexOverrides, codexSandbox, type Access } from "./harness.js";
 export { AGENTS, type Agent };
 export type RunState = "running" | "done" | "failed" | "stopped" | "timed_out";
 
@@ -74,6 +77,8 @@ export interface HelperStatus {
 
 export interface RunRecord {
   helperStatus?: HelperStatus;
+  /** Home tag chosen when the task was started. */
+  area?: TaskArea;
   account?: { id: string; name: string };
   limitHit?: boolean;
   runId: string;
@@ -136,26 +141,43 @@ await import(${JSON.stringify(new URL("./cli.ts", import.meta.url).href)});
  * inside their own worktree, reading the task from $CODEC_TASK_FILE.
  * CODEC_AGENT_COMMAND overrides it (used by tests and demos with a fake agent).
  */
-export function agentCommand(agent: Agent, opts: { model?: string; instructions?: boolean; accountArgs?: string[] } = {}): string {
+export interface CommandHarness {
+  access: Access;
+  /** Claude: ignore the owner's personal settings and MCP servers. */
+  isolated?: boolean;
+  /** Claude: $CODEC_RUN_DIR/mcp.json holds this agent's MCP servers. */
+  mcp?: boolean;
+  /** Codex: `-c <key>=<value>` overrides whose values sit in $CODEC_RUN_DIR/codex-<n>.toml. */
+  codexKeys?: string[];
+}
+export function agentCommand(agent: Agent, opts: { model?: string; instructions?: boolean; accountArgs?: string[]; harness?: CommandHarness } = {}): string {
   const override = process.env.CODEC_AGENT_COMMAND;
   if (override) return override;
   const prompt = `"$(cat "$CODEC_TASK_FILE")"`;
   // Model names are validated (org.ts) to a shell-safe character set.
   const model = opts.model ? `'${opts.model.replace(/'/g, "")}'` : "";
+  const h = opts.harness;
   if (agent === "claude") {
     return [
-      "claude --dangerously-skip-permissions -p",
+      // Restricted agents can't be asked anything, so tools outside their rules are simply refused.
+      !h || h.access === "full" ? "claude --dangerously-skip-permissions -p" : "claude --permission-mode dontAsk -p",
       prompt,
       "--output-format stream-json --verbose", // structured, so Skill tool calls can be detected
       `--settings "$CODEC_RUN_DIR/claude-settings.json"`,
+      h?.isolated && "--setting-sources project,local",
+      (h?.mcp || h?.isolated) && `--mcp-config "$CODEC_RUN_DIR/mcp.json" --strict-mcp-config`,
       model && `--model ${model}`,
       opts.instructions && `--append-system-prompt "$(cat "$CODEC_RUN_DIR/instructions.md")"`,
     ]
       .filter(Boolean)
       .join(" ");
   }
+  const sandbox = h ? codexSandbox(h.access) : "full";
   return [
-    "codex" + (opts.accountArgs?.length ? " " + opts.accountArgs.map((arg) => "'" + arg.replace(/'/g, "'\\''") + "'").join(" ") : "") + " exec --yolo",
+    "codex" + (opts.accountArgs?.length ? " " + opts.accountArgs.map((arg) => "'" + arg.replace(/'/g, "'\\''") + "'").join(" ") : "") +
+      (sandbox === "full" ? " exec --yolo" : ` exec --sandbox ${sandbox} -c approval_policy='"never"'`),
+    // Keys are built from validated names; values are read from files, never spliced in.
+    ...(h?.codexKeys ?? []).map((key, i) => `-c "${key}=$(cat "$CODEC_RUN_DIR/codex-${i}.toml")"`),
     model && `-m ${model}`,
     opts.instructions && `-c "developer_instructions=$(cat "$CODEC_RUN_DIR/instructions.toml")"`,
     prompt,
@@ -277,6 +299,7 @@ export interface StartInput {
   /** "team/member", or the install-wide "coordinator". */
   member?: string;
   timeLimitMinutes?: number;
+  area?: TaskArea;
 }
 
 export function startRun(input: StartInput): RunStatus {
@@ -344,10 +367,32 @@ function startAccountRun(input: StartInput): RunStatus {
   });
 
   mkdirSync(dir, { recursive: true });
+  // A team agent brings its own harness; quick helpers and the coordinator keep full access.
+  const harness = who?.harness;
+  let commandHarness: CommandHarness | undefined;
+  if (harness) {
+    commandHarness = { access: harness.access };
+    if (agent === "claude") {
+      commandHarness.isolated = harness.isolated;
+      if (harness.mcp.length || harness.isolated) {
+        // MCP env values can be tokens: keep the file private to the owner.
+        writeFileSync(join(dir, "mcp.json"), JSON.stringify(claudeMcpConfig(harness), null, 2), { mode: 0o600 });
+        commandHarness.mcp = true;
+      }
+    } else {
+      const pairs = codexOverrides(harness);
+      // A sandboxed Codex agent still needs to write Codec's inbox to message and report.
+      if (codexSandbox(harness.access) === "workspace-write") pairs.push(["sandbox_workspace_write.writable_roots", JSON.stringify([codecHome()])]);
+      pairs.forEach(([, value], i) => writeFileSync(join(dir, `codex-${i}.toml`), value, { mode: 0o600 }));
+      commandHarness.codexKeys = pairs.map(([key]) => key);
+    }
+  }
   if (agent === "claude") {
+    const permissions = harness ? claudePermissions(harness) : undefined;
     writeJsonAtomic(join(dir, "claude-settings.json"), {
       includeCoAuthoredBy: false,
       attribution: { commit: "", pr: "" },
+      ...(permissions ? { permissions } : {}),
     });
   }
   let skills: GivenSkill[];
@@ -368,7 +413,7 @@ function startAccountRun(input: StartInput): RunStatus {
     writeFileSync(join(dir, "instructions.toml"), JSON.stringify(instructions));
   }
   const model = coordinator?.model ?? who?.model;
-  const command = agentCommand(agent, { model, instructions: !!instructions, accountArgs: accountCliArgs(account) });
+  const command = agentCommand(agent, { model, instructions: !!instructions, accountArgs: accountCliArgs(account), harness: commandHarness });
   writeFileSync(join(dir, "task.txt"), input.task);
   writeFileSync(join(dir, "agent.sh"), command + "\n");
   writeFileSync(join(dir, "run.sh"), WRAPPER);
@@ -390,6 +435,7 @@ function startAccountRun(input: StartInput): RunStatus {
     startedAt,
     timeLimitMinutes,
     deadline,
+    ...(input.area ? { area: input.area } : {}),
     team: who?.team,
     member: coordinator ? "coordinator" : who?.member,
     specialist: who?.specialist,

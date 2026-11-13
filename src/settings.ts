@@ -8,6 +8,7 @@ import { accountStore, setAccountChoice, type AccountScope } from "./accounts.js
 import { getProject } from "./registry.js";
 import { getTeam, parseMemberRef, resolveMember } from "./org.js";
 import type { Agent } from "./tools.js";
+import { checkClasses } from "./planner.js";
 
 export function saveAccountSettings(scope: AccountScope, name: string, kind: Agent, id?: string) {
   if (scope === "project" && !getProject(name)) throw new CodecError("project_not_found", S.errors.project_not_found, { name }, 404);
@@ -21,7 +22,7 @@ export function saveAccountSettings(scope: AccountScope, name: string, kind: Age
 }
 
 export interface Identity { name: string; email: string }
-export interface Settings { identity: Identity; setupFinished: boolean }
+export interface Settings { identity: Identity; setupFinished: boolean; classes: string[] }
 const settingsFile = () => join(codecHome(), "settings.json");
 
 function configIdentity(path?: string): Identity {
@@ -43,19 +44,20 @@ export function getSettings(): Settings {
     readJson<{ specialists: unknown[] }>(specialistsFile(), { specialists: [] }).specialists.length > 0 ||
     readJson<{ teams: { members: unknown[] }[] }>(teamsFile(), { teams: [] }).teams.some((team) => team.members.length > 0));
   if (existingInstall) return saveSettings({ setupFinished: true });
-  return { identity: saved.identity ?? configIdentity(), setupFinished: saved.setupFinished ?? false };
+  return { identity: saved.identity ?? configIdentity(), setupFinished: saved.setupFinished ?? false, classes: saved.classes ?? [] };
 }
 export function saveIdentity(input: Identity): Settings {
   return saveSettings({ identity: input });
 }
-export function saveSettings(input: { identity?: Identity; setupFinished?: boolean }): Settings {
+export function saveSettings(input: { identity?: Identity; setupFinished?: boolean; classes?: unknown }): Settings {
   const identity = input.identity ? { name: input.identity.name.trim(), email: input.identity.email.trim() } : undefined;
   if (identity && !valid(identity)) throw new CodecError("invalid_identity", S.errors.invalid_identity);
+  const classes = input.classes === undefined ? undefined : checkClasses(input.classes);
   return withLock("settings", () => {
     const saved = readJson<Partial<Settings>>(settingsFile(), {});
-    const settings = { ...saved, ...(identity ? { identity } : {}), ...(input.setupFinished !== undefined ? { setupFinished: input.setupFinished } : {}) };
+    const settings = { ...saved, ...(identity ? { identity } : {}), ...(input.setupFinished !== undefined ? { setupFinished: input.setupFinished } : {}), ...(classes ? { classes } : {}) };
     writeJsonAtomic(settingsFile(), settings);
-    return { identity: settings.identity ?? configIdentity(), setupFinished: settings.setupFinished ?? false };
+    return { identity: settings.identity ?? configIdentity(), setupFinished: settings.setupFinished ?? false, classes: settings.classes ?? [] };
   });
 }
 export function checkpointIdentity(projectPath?: string): Identity | undefined {

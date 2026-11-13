@@ -23,11 +23,13 @@ import { accountStore, addAccount, builtinId, getAccount, removeAccount, resolve
 import { createAccountLogins, type AccountLoginOptions } from "./account-login.js";
 import { redactValue } from "./secrets.js";
 import { ApiError, friendlyError } from "./friendly.js";
-import { hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking } from "./folders.js";
+import { chooseFolderNatively, hasCheckpoint, isGitRepo, listFolders, requireFolder, setUpTracking, type PickerRunner } from "./folders.js";
 import { createChat, type ChatOptions } from "./chat.js";
 import { createSetupChecker, type SetupOptions } from "./setup.js";
 import { checkTool } from "./tools.js";
 import { checkMessageLimit } from "./message-limits.js";
+import { addEvent, checkProjectTag, checkTaskArea, listEvents, removeEvent } from "./planner.js";
+import { agentDir, checkHarness, publicHarness, readInstructions, writeHarness } from "./harness.js";
 import { checkTimeLimit, formatTimeLimit } from "./limits.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { randomBytes, timingSafeEqual, createHash } from "crypto";
@@ -35,7 +37,7 @@ import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { codecHome } from "./store.js";
 import { tmpdir } from "os";
-import { addProject, getProject, listProjects, setProjectMessageLimit, type Project } from "./registry.js";
+import { addProject, getProject, listProjects, setProjectMessageLimit, setProjectTag, type Project } from "./registry.js";
 import {
   addMember,
   addSpecialist,
@@ -187,6 +189,7 @@ function runSummary(r: RunStatus) {
     helperStatus: r.helperStatus,
     held: isHelperHeld(helperRef(r)),
     reviewStatus: r.reviewStatus,
+    area: r.area,
     stateText: r.state === "stopped" ? S.tasks.stopped : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : r.state === "failed" ? (r.lostAt ? S.wording.lost : S.tasks.failed) : r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
     lostAt: r.lostAt,
     timeLimitMinutes: r.timeLimitMinutes,
@@ -215,6 +218,10 @@ function memberView(team: string, member: string, running: RunStatus[]) {
   const r = resolveMember(team, member);
   return {
     ...r,
+    // MCP tokens stay on this computer: the page only sees their names.
+    harness: publicHarness(r.harness),
+    ownInstructions: readInstructions(team, member),
+    folder: agentDir(team, member),
     held: isHelperHeld(`${team}/${member}`),
     skills: memberSkills(r),
     working: running.filter((x) => x.team === team && x.member === member).map(runSummary),
@@ -289,9 +296,11 @@ export function homeView() {
   const projects = listProjects().map((p: Project) => {
     const lanes = emptyCounts();
     for (const r of runs) if (r.project === p.name) lanes[laneOf(r)]++;
-    return { name: p.name, path: p.path, lanes };
+    return { name: p.name, path: p.path, lanes, area: p.area, className: p.className };
   });
   return {
+    classes: getSettings().classes,
+    events: listEvents(),
     coordinator: coordinatorView(runs),
     teamsCount: listTeams().length,
     agentsRunning: running.length,
@@ -530,7 +539,7 @@ export interface Dashboard {
   close(): Promise<void>;
 }
 
-export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions; uiBundleDir?: string; chat?: ChatOptions } = {}): Promise<Dashboard> {
+export function startDashboard(opts: { port?: number; token?: string; setup?: SetupOptions; accounts?: AccountLoginOptions; uiBundleDir?: string; chat?: ChatOptions; folderPicker?: { platform?: NodeJS.Platform; run?: PickerRunner } } = {}): Promise<Dashboard> {
   const token = opts.token ?? randomBytes(24).toString("base64url");
   let port = opts.port ?? DEFAULT_PORT;
   const cookieName = () => `codec_token_${port}`;
@@ -635,8 +644,13 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     }
     if (isGet && a === "error-details" && n === 1) return sendJson(res, 200, { logPath: join(codecHome(), "codec.log"), time: new Date().toISOString() });
     if (isGet && a === "setup" && n === 1) return sendJson(res, 200, { ...await setupStatus(url.searchParams.get("fresh") === "1"), identityReady: !!checkpointIdentity(), profileName: getSettings().identity.name });
-    if (isGet && a === "chat" && n === 1) return sendJson(res, 200, chat.view());
-    if (!isGet && a === "chat" && n === 1) return sendJson(res, 202, chat.send(s(body.text) ?? ""));
+    if (isGet && a === "chat" && n === 1) return sendJson(res, 200, chat.view(url.searchParams.get("id") || undefined));
+    if (!isGet && a === "chat" && n === 1) return sendJson(res, 202, chat.send(s(body.text) ?? "", s(body.id) || undefined));
+    if (!isGet && a === "chat" && b && b !== "new" && b !== "model" && n === 3) {
+      if (c === "rename") return sendJson(res, 200, chat.rename(b, body.title));
+      if (c === "tag") return sendJson(res, 200, chat.tag(b, checkProjectTag(body.area, body.className, getSettings().classes)));
+      if (c === "remove") return sendJson(res, 200, chat.remove(b));
+    }
     if (!isGet && a === "chat" && b === "new" && n === 2) return sendJson(res, 200, chat.reset(s(body.tool)));
     if (!isGet && a === "chat" && b === "model" && n === 2) return sendJson(res, 200, chat.setModel(s(body.model)));
     if (isGet && a === "accounts" && n === 1) {
@@ -678,12 +692,22 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     if (!isGet && a === "settings" && n === 1) {
       const identity = body.identity as Record<string, unknown> | undefined;
       if (body.setupFinished !== undefined && body.setupFinished !== true) throw new CodecError("bad_request", S.common.error);
+      const onlyClasses = body.classes !== undefined && !identity && body.setupFinished === undefined;
       return sendJson(res, 200, saveSettings({
-        identity: identity ? { name: s(identity.name) ?? "", email: s(identity.email) ?? "" } : body.setupFinished === true ? undefined : { name: "", email: "" },
+        identity: identity ? { name: s(identity.name) ?? "", email: s(identity.email) ?? "" } : body.setupFinished === true || onlyClasses ? undefined : { name: "", email: "" },
         setupFinished: body.setupFinished === true ? true : undefined,
+        classes: body.classes,
       }));
     }
+    if (isGet && a === "calendar" && n === 1) return sendJson(res, 200, listEvents());
+    if (!isGet && a === "calendar" && n === 1) return sendJson(res, 201, addEvent(body));
+    if (!isGet && a === "calendar" && b && c === "remove" && n === 3) return sendJson(res, 200, removeEvent(b));
+    if (!isGet && a === "projects" && b && c === "tag" && n === 3) {
+      if (!getProject(b)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
+      return sendJson(res, 200, setProjectTag(b, checkProjectTag(body.area, body.className, getSettings().classes)));
+    }
     if (isGet && a === "folders" && n === 1) return sendJson(res, 200, listFolders(url.searchParams.get("path") ?? undefined));
+    if (!isGet && a === "folders" && b === "choose" && n === 2) return sendJson(res, 200, await chooseFolderNatively(s(body.path)?.trim(), opts.folderPicker));
     if (isGet && a === "remove-preview" && n === 1) return sendJson(res, 200, removePreview(url.searchParams.get("kind") ?? "", url.searchParams.get("name") ?? ""));
     if (isGet && a === "projects" && n === 1) return sendJson(res, 200, listProjects());
     if (isGet && a === "runs" && n === 1) return sendJson(res, 200, listRuns({ project: url.searchParams.get("project") ?? undefined }).map(runSummary));
@@ -706,14 +730,18 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     }
     if (!isGet && a === "teams" && b && n === 3 && c === "members") {
       if (!getTeam(b)) throw new CodecError("team_not_found", `no team named "${b}"`, { name: b }, 404);
+      // Check the harness first so a bad MCP server or rule doesn't leave a half-made agent.
+      const change = checkHarness(b, "\0new", body);
       const m = addMember(b, {
         name: s(body.name),
         specialist: s(body.specialist) || undefined,
         tool: s(body.tool) || undefined,
         model: s(body.model),
+        specialty: s(body.specialty),
         skills: strs(body.skills),
         timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes),
       });
+      writeHarness(b, m.name, change);
       return sendJson(res, 201, m);
     }
     if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "remove" && n === 5) {
@@ -721,7 +749,13 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     }
 
     if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "edit" && n === 5) {
-      return sendJson(res, 200, editMember(b, d2, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes), skills: strs(body.skills) }));
+      const team = getTeam(b);
+      if (!team) throw new CodecError("team_not_found", `no team named "${b}"`, { name: b }, 404);
+      if (!team.members.some((m) => m.name === d2)) throw new CodecError("member_not_found", `team ${b} has no member named "${d2}"`, {}, 404);
+      const change = checkHarness(b, d2, body);
+      const edited = editMember(b, d2, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes), skills: strs(body.skills), tool: s(body.tool) || undefined, model: s(body.model), specialty: s(body.specialty) });
+      writeHarness(b, d2, change);
+      return sendJson(res, 200, edited);
     }
 
     // Specialists
@@ -797,6 +831,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       if (!member && !agent) throw new ApiError(400, "missing_tool", "Choose a team member or a tool before starting this task.");
       if (!getProject(b)) throw new CodecError("project_not_found", `no project named "${b}"`, {}, 404);
       const timeLimitMinutes = checkTimeLimit(body.timeLimitMinutes);
+      const area = checkTaskArea(body.area);
       const task = need("task");
       const ref = member && member !== "coordinator" ? parseMemberRef(member) : undefined;
       const tool = member === "coordinator" ? requireCoordinator().tool : ref ? resolveMember(ref.team, ref.member).tool : checkTool(agent!);
@@ -809,7 +844,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
         const label = tool === "claude" ? S.setup.claude : S.setup.codex;
         throw new CodecError("tool_unavailable", `${label} is not installed or signed in`, { tool: label }, 409);
       }
-      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task, timeLimitMinutes })));
+      return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task, timeLimitMinutes, area })));
     }
     if (!isGet && a === "runs" && b && c === "stop" && parts.length === 3) {
       return sendJson(res, 200, runSummary(stopRun(findRunOr404(b).runId)));

@@ -159,3 +159,53 @@ describe("chat API", () => {
     } finally { await dashboard.close(); }
   });
 });
+
+describe("saved chats", () => {
+  it("keeps several chats, opens any of them, and reuses an empty open chat for New chat", async () => {
+    const { chat, children } = fixture();
+    chat.send("Why is Naive Bayes overfitting on my training data?");
+    children[0].reply('{"result":"Leakage","session_id":"s1"}');
+    await settled();
+    const first = chat.view();
+    expect(first.title).toBe("Why is Naive Bayes overfitting on my training data?");
+    const second = chat.reset("codex");
+    expect(second.id).not.toBe(first.id);
+    expect(chat.reset("claude").id).toBe(second.id);
+    chat.send("Geology exam review");
+    children[1].reply('{"result":"Sure","session_id":"s2"}');
+    await settled();
+    expect(chat.view().chats.map((c) => c.title)).toEqual(["Geology exam review", "Why is Naive Bayes overfitting on my training data?"]);
+    expect(chat.view(first.id)).toMatchObject({ id: first.id, messages: [{ text: expect.stringContaining("Naive") }, { text: "Leakage" }] });
+    expect(chat.view().id).toBe(first.id);
+    expect(() => chat.view("chat-missing")).toThrow(expect.objectContaining({ code: "chat_not_found" }));
+  });
+  it("renames, tags and deletes chats", async () => {
+    const { chat, children } = fixture();
+    chat.send("Hi");
+    children[0].reply('{"result":"Hello","session_id":"s1"}');
+    await settled();
+    const { id } = chat.view();
+    expect(chat.rename(id, "  CS 422 help ").title).toBe("CS 422 help");
+    expect(() => chat.rename(id, "")).toThrow(expect.objectContaining({ code: "chat_title" }));
+    expect(chat.tag(id, { area: "class", className: "CS 422" })).toMatchObject({ area: "class", className: "CS 422" });
+    chat.send("More");
+    children[1].reply('{"result":"Ok","session_id":"s1"}');
+    await settled();
+    expect(chat.view().title).toBe("CS 422 help");
+    const after = chat.remove(id);
+    expect(after.id).not.toBe(id);
+    expect(after.messages).toEqual([]);
+    expect(after.chats).toEqual([]);
+  });
+  it("brings the old single conversation over as the first saved chat", async () => {
+    const { mkdirSync } = await import("fs");
+    const { codecHome } = await import("../src/store.js");
+    mkdirSync(join(codecHome(), "chat"), { recursive: true });
+    writeFileSync(join(codecHome(), "chat", "chat.json"), JSON.stringify({ tool: "codex", session: "t9",
+      messages: [{ role: "user", text: "Old question", at: "2026-11-01T10:00:00Z" }, { role: "assistant", text: "Old answer", at: "2026-11-01T10:01:00Z" }] }));
+    const { chat, launch } = fixture();
+    expect(chat.view()).toMatchObject({ tool: "codex", title: "Old question", messages: [{ text: "Old question" }, { text: "Old answer" }] });
+    chat.send("Follow up");
+    expect(launch.mock.calls[0][1]).toContain("t9");
+  });
+});

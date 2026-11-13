@@ -28,7 +28,7 @@ describe("checkpoint identity", () => {
     writeFileSync(globalConfig, "[user]\nname = Global Owner\nemail = global@example.invalid\n");
     expect(getSettings().identity).toEqual({ name: "Global Owner", email: "global@example.invalid" });
     expect(cli(["settings", "identity", "--name", owner.name, "--email", owner.email]).code).toBe(0);
-    expect(getSettings()).toEqual({ identity: owner, setupFinished: false });
+    expect(getSettings()).toEqual({ identity: owner, setupFinished: false, classes: [] });
     expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf-8"))).toEqual({ identity: owner });
     writeFileSync(globalConfig, "[user]\nname = Other\nemail = other@example.invalid\n");
     expect(getSettings().identity).toEqual(owner);

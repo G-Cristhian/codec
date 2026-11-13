@@ -19,7 +19,6 @@ afterEach(() => {
   cleanup();
   localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
-  document.documentElement.removeAttribute("data-sidebar");
 });
 function Switch() {
   const [theme, set] = useTheme();
@@ -41,23 +40,16 @@ describe("theme contract", () => {
   it.each([
     ["light", "light"],
     ["dark", "dark"],
-    [null, null],
-    ["invalid", null],
+    ["auto", null],
+    [null, "light"],
+    ["invalid", "light"],
   ])("boots saved %s as %s", (value, expected) => {
     localStorage.clear();
     if (value) localStorage.setItem(THEME_KEY, value);
     new Function(THEME_BOOT.slice(8, -9))();
     expect(document.documentElement.getAttribute("data-theme")).toBe(expected);
   });
-  it("restores the owner's collapsed sidebar before the first paint", () => {
-    localStorage.setItem("codec-sidebar", "collapsed");
-    new Function(THEME_BOOT.slice(8, -9))();
-    expect(document.documentElement.getAttribute("data-sidebar")).toBe(
-      "collapsed",
-    );
-    expect(css).toContain("--radius: 6px;");
-  });
-  it("survives storage being blocked", () => {
+  it("survives storage being blocked and stays light", () => {
     expect(() =>
       new Function("localStorage", THEME_BOOT.slice(8, -9))({
         getItem() {
@@ -65,15 +57,18 @@ describe("theme contract", () => {
         },
       }),
     ).not.toThrow();
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    expect(css).toContain("--radius: 6px;");
   });
-  it("changes and persists light and dark, and removes the attribute/key for Auto", () => {
+  it("starts light, persists dark and Auto, and clears the key for Light", () => {
     render(createElement(Switch));
-    for (const t of ["light", "dark", "auto"] as const) {
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    for (const t of ["dark", "auto", "light"] as const) {
       fireEvent.click(screen.getByText(S.theme[t]));
       expect(document.documentElement.getAttribute("data-theme")).toBe(
         t === "auto" ? null : t,
       );
-      expect(localStorage.getItem(THEME_KEY)).toBe(t === "auto" ? null : t);
+      expect(localStorage.getItem(THEME_KEY)).toBe(t === "light" ? null : t);
     }
     expect(document.documentElement.classList.contains("dark")).toBe(false);
   });

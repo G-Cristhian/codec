@@ -1,8 +1,8 @@
 /** Static unauthenticated page; authenticated screens live in ui/. */
 import { S } from "./strings.js";
-export const SIDEBAR_KEY = "codec-sidebar";
 export const THEME_KEY = "codec-theme";
-export const THEME_BOOT = `<script>try{var t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t);if(localStorage.getItem(${JSON.stringify(SIDEBAR_KEY)})==="collapsed")document.documentElement.setAttribute("data-sidebar","collapsed")}catch(e){}</script>`;
+/** Light unless the owner picked Dark or Auto (follow the system). */
+export const THEME_BOOT = `<script>var d=document.documentElement;d.setAttribute("data-theme","light");try{var t=localStorage.getItem(${JSON.stringify(THEME_KEY)});if(t==="dark")d.setAttribute("data-theme","dark");else if(t==="auto")d.removeAttribute("data-theme")}catch(e){}</script>`;
 function textHTML(value: string) {
   return value.replace(
     /[&<>"']/g,

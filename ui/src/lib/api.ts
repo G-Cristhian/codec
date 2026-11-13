@@ -100,6 +100,7 @@ export interface Run {
   lostAt?: string;
   cleanedAt?: string;
   reviewStatus?: string;
+  area?: TaskArea;
   model?: string;
   actualModel?: string;
   account?: { name: string };
@@ -127,8 +128,30 @@ export interface Member {
   skills: Skill[];
   projects: string[];
   instructions?: string;
+  /** This agent's own instructions file (for role-based agents: on top of the role's). */
+  ownInstructions?: string;
+  harness?: Harness;
+  /** The agent's own settings folder on this computer. */
+  folder?: string;
   working: Run[];
   runs: Run[];
+}
+export type Access = "full" | "edit" | "read" | "custom";
+export interface McpServer {
+  name: string;
+  type: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+  /** Names only; saved values never come back to the page. */
+  env?: Record<string, string>;
+}
+export interface Harness {
+  access: Access;
+  allow: string[];
+  deny: string[];
+  isolated: boolean;
+  mcp: McpServer[];
 }
 export interface Role {
   name: string;
@@ -173,9 +196,21 @@ export interface Accounts {
   defaults: Record<string, string>;
   choices: Record<string, Record<string, string>>;
 }
+export type TaskArea = "school" | "work" | "personal";
+export type ProjectArea = "class" | "work" | "personal";
+export type EventKind = "deadline" | "meeting" | "interview";
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string;
+  time?: string;
+  kind: EventKind;
+}
 export interface Home {
+  classes?: string[];
+  events?: CalendarEvent[];
   coordinator?: CoordinatorView;
-  projects: { name: string; path: string; lanes: Record<Lane, number> }[];
+  projects: { name: string; path: string; lanes: Record<Lane, number>; area?: ProjectArea; className?: string }[];
   runs: Run[];
   agentsRunning: number;
   teamsCount: number;
@@ -214,7 +249,7 @@ export interface PageData {
   setup: Setup;
   accounts: Accounts;
   home: Home;
-  settings?: { identity: { name: string; email: string } };
+  settings?: { identity: { name: string; email: string }; classes?: string[] };
   project?: ProjectView;
   run?: Run;
   teams?: Team[];
@@ -223,7 +258,22 @@ export interface PageData {
   member?: Member;
   chat?: ChatView;
 }
+export interface ChatSummary {
+  id: string;
+  title: string;
+  tool: string;
+  updatedAt: string;
+  area?: ProjectArea;
+  className?: string;
+  preview: string;
+  busy: boolean;
+}
 export interface ChatView {
+  id?: string;
+  title?: string;
+  area?: ProjectArea;
+  className?: string;
+  chats?: ChatSummary[];
   tool: string;
   model?: string;
   models: Record<string, { id: string; label: string }[]>;

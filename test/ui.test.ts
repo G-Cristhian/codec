@@ -112,7 +112,7 @@ beforeEach(() => {
             ? data.accounts
             : path === "state"
               ? data.home
-              : path === "chat"
+              : path === "chat" || path.startsWith("chat?id=")
                 ? data.chat
                 : path === "settings"
                   ? data.settings
@@ -376,23 +376,20 @@ describe("React screens and routes", () => {
       }),
     );
   });
-  it("opens an empty project form automatically and keeps success inline", async () => {
+  it("hides the project form behind Add until asked, then closes it after adding", async () => {
     data.home.projects = [];
     await mount();
-    const f = screen.getByTestId("project-add-form");
+    expect(screen.queryByTestId("project-add-form")).toBeNull();
+    expect(screen.getByTestId("projects-empty").textContent).toBe(S.projects.emptyAdd);
+    fireEvent.click(screen.getByTestId("project-add-open"));
+    const f = await screen.findByTestId("project-add-form");
     fireEvent.change(within(f).getByTestId("project-path"), {
       target: { value: "/tmp/new" },
     });
     fireEvent.submit(f);
-    await waitFor(() =>
-      expect(message("project-add").textContent).toContain(S.common.added),
-    );
-    expect(
-      (within(f).getByTestId("project-path") as HTMLInputElement).value,
-    ).toBe("");
-    expect(
-      screen.getByTestId("project-add-open").getAttribute("aria-expanded"),
-    ).toBe("true");
+    await waitFor(() => expect(screen.queryByTestId("project-add-form")).toBeNull());
+    expect(calls).toContainEqual({ path: "projects", body: { path: "/tmp/new" } });
+    expect(screen.getByTestId("project-add-open").getAttribute("aria-expanded")).toBe("false");
   });
   it("answers the tracking question with the same request and explicit consent", async () => {
     data.home.projects = [];
@@ -405,6 +402,7 @@ describe("React screens and routes", () => {
           )
         : undefined;
     await mount();
+    fireEvent.click(screen.getByTestId("project-add-open"));
     const f = screen.getByTestId("project-add-form");
     fireEvent.change(within(f).getByTestId("project-name"), {
       target: { value: "new" },
@@ -437,15 +435,31 @@ describe("React screens and routes", () => {
           )
         : undefined;
     await mount();
+    fireEvent.click(screen.getByTestId("project-add-open"));
     fireEvent.submit(screen.getByTestId("project-add-form"));
     fireEvent.click(await screen.findByTestId("use-suggested-name"));
     expect((screen.getByTestId("project-name") as HTMLInputElement).value).toBe(
       "new-name",
     );
   });
+  it("opens this computer's folder chooser from Browse and fills in the chosen folder", async () => {
+    data.home.projects = [];
+    handler = (p) => (p === "folders/choose" ? response({ path: "/Users/me/CS 477" }) : undefined);
+    await mount();
+    fireEvent.click(screen.getByTestId("project-add-open"));
+    fireEvent.click(await screen.findByTestId("folder-browse"));
+    await waitFor(() => expect((screen.getByTestId("project-path") as HTMLInputElement).value).toBe("/Users/me/CS 477"));
+    expect(screen.queryByTestId("folder-panel")).toBeNull();
+    handler = (p) => (p === "folders/choose" ? response({ cancelled: true }) : undefined);
+    fireEvent.click(screen.getByTestId("folder-browse"));
+    await waitFor(() => expect(calls.filter((c) => c.path === "folders/choose")).toHaveLength(2));
+    expect(calls.at(-1)!.body).toEqual({ path: "/Users/me/CS 477" });
+    expect(screen.queryByTestId("folder-panel")).toBeNull();
+  });
   it("uses the folder picker and closes it when a folder is chosen", async () => {
     data.home.projects = [];
     await mount();
+    fireEvent.click(screen.getByTestId("project-add-open"));
     fireEvent.click(screen.getByTestId("folder-browse"));
     await screen.findByTestId("folder-current");
     expect(screen.getByTestId("folder-entry").getAttribute("data-key")).toBe(
@@ -497,6 +511,7 @@ describe("React screens and routes", () => {
   it("keeps an open folder panel and its input through a poll", async () => {
     data.home.projects = [];
     await mount();
+    fireEvent.click(screen.getByTestId("project-add-open"));
     fireEvent.change(screen.getByTestId("project-name"), {
       target: { value: "draft" },
     });
@@ -655,6 +670,65 @@ describe("React screens and routes", () => {
       }),
     );
   });
+  it("creates a team even with no projects, and drops Roles from the sidebar", async () => {
+    data.home.projects = [];
+    await mount("#/teams");
+    expect(screen.queryByTestId("nav-specialists")).toBeNull();
+    fireEvent.click(screen.getByTestId("team-add-open"));
+    expect(await screen.findByText(S.agents.noProjects)).toBeTruthy();
+    fireEvent.change(screen.getByTestId("team-name"), { target: { value: "study" } });
+    fireEvent.submit(screen.getByTestId("team-add-form"));
+    await waitFor(() => expect(calls).toContainEqual({ path: "teams", body: { name: "study", projects: [] } }));
+  });
+  it("builds an agent from a template with its own instructions, rules, settings and MCP servers", async () => {
+    await mount("#/teams");
+    fireEvent.click(document.querySelector('[data-testid="agent-add-open"][data-key="web"]')!);
+    const dialog = await screen.findByTestId("agent-add-open-dialog");
+    fireEvent.change(within(dialog).getByTestId("agent-template"), { target: { value: "reviewer" } });
+    expect((within(dialog).getByTestId("agent-instructions") as HTMLTextAreaElement).value).toBe("Review carefully");
+    expect((within(dialog).getByTestId("agent-job") as HTMLInputElement).value).toBe("Reviewer");
+    fireEvent.change(within(dialog).getByTestId("agent-name"), { target: { value: "checker" } });
+    fireEvent.click(within(dialog).getAllByTestId("agent-access").find((r) => (r as HTMLInputElement).value === "custom")!);
+    fireEvent.change(within(dialog).getByTestId("agent-allow"), { target: { value: "Read\nBash(npm test:*)" } });
+    fireEvent.click(within(dialog).getByTestId("mcp-add"));
+    fireEvent.change(within(dialog).getByTestId("mcp-name"), { target: { value: "github" } });
+    fireEvent.change(within(dialog).getByTestId("mcp-command"), { target: { value: "npx" } });
+    fireEvent.change(within(dialog).getByTestId("mcp-args"), { target: { value: "-y\n@modelcontextprotocol/server-github" } });
+    fireEvent.change(within(dialog).getByTestId("mcp-env"), { target: { value: "GITHUB_TOKEN=ghp_x" } });
+    fireEvent.submit(within(dialog).getByTestId("agent-add-form"));
+    await waitFor(() => expect(calls.some((c) => c.path === "teams/web/members")).toBe(true));
+    expect(calls.find((c) => c.path === "teams/web/members")!.body).toMatchObject({
+      name: "checker",
+      tool: "claude",
+      specialty: "Reviewer",
+      instructions: "Review carefully",
+      skills: ["review"],
+      access: "custom",
+      allow: "Read\nBash(npm test:*)",
+      isolated: true,
+      mcp: [{ name: "github", type: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], env: { GITHUB_TOKEN: "ghp_x" } }],
+    });
+    await waitFor(() => expect(screen.queryByTestId("agent-add-open-dialog")).toBeNull());
+  });
+  it("shows an agent's harness and settings folder, and edits it without sending saved secrets back", async () => {
+    Object.assign(data.member!, {
+      ownInstructions: "Be brief",
+      folder: "/Users/me/.codec/agents/web/tester",
+      harness: { access: "read", allow: [], deny: [], isolated: true, mcp: [{ name: "docs", type: "http", url: "https://docs.example/mcp", env: { API_KEY: "" } }] },
+    });
+    await mount("#/member/web/tester");
+    const card = screen.getByTestId("agent-harness");
+    expect(card.textContent).toContain(S.agents.accessRead);
+    expect(card.textContent).toContain("docs (https://docs.example/mcp)");
+    expect(screen.getByTestId("agent-folder").textContent).toBe("/Users/me/.codec/agents/web/tester");
+    fireEvent.click(screen.getByTestId("member-edit-open"));
+    const dialog = await screen.findByTestId("member-edit-open-dialog");
+    expect((within(dialog).getByTestId("mcp-env") as HTMLTextAreaElement).value).toBe("API_KEY=");
+    fireEvent.submit(within(dialog).getByTestId("agent-edit-form"));
+    await waitFor(() => expect(calls.some((c) => c.path === "teams/web/members/tester/edit")).toBe(true));
+    const body = calls.find((c) => c.path === "teams/web/members/tester/edit")!.body;
+    expect(body).toMatchObject({ access: "read", instructions: "Be brief", mcp: [{ name: "docs", type: "http", url: "https://docs.example/mcp", env: { API_KEY: "" } }] });
+  });
   it("saves team projects and edits member skills without changing the role", async () => {
     await mount("#/teams");
     fireEvent.click(screen.getByTestId("team-edit-open"));
@@ -682,7 +756,7 @@ describe("React screens and routes", () => {
             ? "project-account-settings"
             : scope === "team"
               ? "team-edit-open"
-              : "member-edit-open",
+              : "member-account-open",
         ),
       );
       const user = userEvent.setup();
@@ -1147,97 +1221,88 @@ describe("owner's Home, Helpers, Profile and Chat port", () => {
     data.teams![0].members.pop();
     expect(homeNotes(helperRows(data.teams!, []), [], data.setup)).toEqual([]);
   });
-  it("puts the week before equal-height Teams and Important and opens the project form from Home", async () => {
+  it("lays out the dashboard and opens the project form from Home", async () => {
     await mount("#/");
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toContain(
-      "Owner",
-    );
-    const grid = screen.getByTestId("home-teams").parentElement!;
-    expect(grid.firstElementChild!.textContent).toContain(S.home.week);
-    expect(screen.getByTestId("home-summary").textContent).toContain(
-      S.home.itemOne,
-    );
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toContain("Owner");
+    const grid = screen.getByTestId("home-start").parentElement!;
+    expect([...grid.children].map((c) => c.getAttribute("data-testid"))).toEqual([
+      "home-start",
+      "home-week",
+      "home-accounts",
+      "home-projects",
+      "home-approvals",
+    ]);
+    expect(screen.queryByTestId("home-summary")).toBeNull();
     fireEvent.click(screen.getByTestId("home-new-project"));
     await screen.findByTestId("project-add-form");
     expect(location.hash).toBe("#/projects");
-    expect(
-      screen.getByTestId("project-add-open").getAttribute("aria-expanded"),
-    ).toBe("true");
+    expect(screen.getByTestId("project-add-open").getAttribute("aria-expanded")).toBe("true");
   });
-  it("summarizes team helper states and progress and filters Helpers when its team is clicked", async () => {
-    const member = data.teams![0].members[0];
-    data.teams![0].members = [
-      { ...member, member: "scout" },
-      { ...member, member: "writer" },
-      { ...member, member: "orphan", error: "role_missing" },
-    ];
+  it("starts a tagged task from Home", async () => {
+    await mount("#/");
+    fireEvent.click(document.querySelector('[data-testid="home-start-area"][data-key="work"]')!);
+    fireEvent.change(screen.getByTestId("home-start-text"), { target: { value: "Summarize my shift notes" } });
+    fireEvent.click(screen.getByTestId("home-start-run"));
+    await waitFor(() => expect(location.hash).toBe("#/run/run-demo"));
+    const call = calls.find((c) => c.path === "projects/site/runs")!;
+    expect(call.body).toMatchObject({ task: "Summarize my shift notes", area: "work" });
+    expect(call.body.member ?? call.body.agent).toBeTruthy();
+  });
+  it("tags projects by class, work or personal and shows each helper's latest state", async () => {
+    data.home.classes = ["CS 422"];
+    data.home.projects[0].area = "class";
+    data.home.projects[0].className = "CS 422";
     data.home.runs = [
-      {
-        ...data.run!,
-        runId: "r3",
-        member: "writer",
-        task: "Draft methods",
-        lane: "needsYou",
-        state: "failed",
-      },
-      {
-        ...data.run!,
-        runId: "r2",
-        member: "scout",
-        task: "Summarize papers",
-        lane: "working",
-        state: "running",
-      },
+      { ...data.run!, runId: "r2", member: "scout", lane: "working", state: "running" },
       { ...data.run!, runId: "r1", member: "scout", lane: "done" },
     ];
     await mount("#/");
-    const team = screen.getByTestId("home-team");
-    expect(team.textContent).toContain("1 working");
-    expect(team.textContent).toContain("2 need you");
-    expect(team.querySelector(":scope > p")!.textContent).toBe(
-      "scout is working on “Summarize papers”. writer needs you (Didn't finish). orphan needs fixing.",
-    );
-    expect(team.querySelector<HTMLElement>(".progress i")!.style.width).toBe(
-      "33%",
-    );
-    fireEvent.click(team);
-    await screen.findByTestId("helper-detail");
-    expect(
-      document
-        .querySelector('[data-testid="helpers-team"][data-key="web"]')!
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
+    const row = document.querySelector('[data-testid="home-project"][data-key="site"]')!;
+    const select = within(row as HTMLElement).getByTestId("project-tag") as HTMLSelectElement;
+    expect(select.value).toBe("class:CS 422");
+    expect(within(row as HTMLElement).getAllByTestId("home-project-helper")).toHaveLength(1);
+    fireEvent.change(select, { target: { value: "personal" } });
+    await waitFor(() => expect(calls.some((c) => c.path === "projects/site/tag")).toBe(true));
+    expect(calls.find((c) => c.path === "projects/site/tag")!.body).toEqual({ area: "personal" });
   });
-  it("shows the selected day in Calendar and the whole week in List, retaining mode across polls", async () => {
+  it("shows dated events by tag in Calendar and List, and adds and removes dates", async () => {
     const days = weekOf(new Date());
-    data.home.runs = [
-      { ...data.run!, runId: "today", startedAt: new Date().toISOString() },
-      { ...data.run!, runId: "monday", startedAt: days[0].toISOString() },
-      {
-        ...data.run!,
-        runId: "old",
-        startedAt: new Date(2020, 0, 1).toISOString(),
-      },
+    const iso = (d: Date) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    data.home.events = [
+      { id: "e1", title: "Exam", date: iso(new Date()), kind: "deadline" },
+      { id: "e2", title: "Standup", date: iso(days[0]), time: "09:00", kind: "meeting" },
+      { id: "e3", title: "Old", date: "2020-01-01", kind: "interview" },
     ];
+    data.home.runs = [{ ...data.run!, runId: "today", startedAt: new Date().toISOString(), area: "school" }];
     await mount("#/");
     expect(screen.getAllByTestId("home-day")).toHaveLength(7);
-    const today = document.querySelector(
-      '[data-testid="home-day"][aria-pressed="true"]',
-    )!;
-    expect(today.getAttribute("data-key")).toBe(dayKey(new Date()));
-    expect(
-      screen.getAllByTestId("home-task").map((r) => r.getAttribute("data-key")),
-    ).toContain("today");
-    fireEvent.click(
-      document.querySelector('[data-testid="home-mode"][data-key="list"]')!,
-    );
-    expect(
-      screen.getAllByTestId("home-task").map((r) => r.getAttribute("data-key")),
-    ).toEqual(["today", "monday"]);
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 2200));
-    });
-    expect(screen.queryByTestId("home-day")).toBeNull();
+    expect(document.querySelector('[data-testid="home-day"][aria-pressed="true"]')!.getAttribute("data-key")).toBe(iso(new Date()));
+    const shown = () => screen.queryAllByTestId("home-event").map((r) => r.getAttribute("data-key"));
+    expect(shown()).toContain("e1");
+    expect(screen.getAllByTestId("home-task").map((r) => r.getAttribute("data-key"))).toEqual(["today"]);
+    fireEvent.click(document.querySelector('[data-testid="home-mode"][data-key="list"]')!);
+    expect(shown().sort()).toEqual(["e1", "e2"]);
+    fireEvent.click(screen.getByTestId("home-add-event"));
+    fireEvent.change(screen.getByTestId("event-title"), { target: { value: "Interview at Acme" } });
+    fireEvent.click(document.querySelector('[data-testid="event-kind"][data-key="interview"]')!);
+    fireEvent.submit(screen.getByTestId("home-event-form"));
+    await waitFor(() => expect(calls.some((c) => c.path === "calendar")).toBe(true));
+    expect(calls.find((c) => c.path === "calendar")!.body).toMatchObject({ title: "Interview at Acme", kind: "interview", date: iso(new Date()) });
+    fireEvent.click(screen.getByLabelText(S.home.removeEvent.replace("{title}", "Exam")));
+    await waitFor(() => expect(calls.some((c) => c.path === "calendar/e1/remove")).toBe(true));
+  });
+  it("lists pending approvals as Decision, PR and Review, and tags AI accounts", async () => {
+    data.home.runs = [
+      { ...data.run!, runId: "rev", lane: "needsYou", state: "failed" },
+      { ...data.run!, runId: "pr", lane: "inReview", state: "done" },
+      { ...data.run!, runId: "dec", lane: "needsYou", state: "running" },
+      { ...data.run!, runId: "fin", lane: "done", state: "done" },
+    ];
+    await mount("#/");
+    expect(screen.getAllByTestId("home-approval").map((a) => a.getAttribute("data-key"))).toEqual(["decision", "pr", "review"]);
+    const account = screen.getAllByTestId("home-account")[0];
+    expect(account.textContent).toContain(S.tags.subscription);
+    expect(account.textContent).toMatch(new RegExp(S.tags.loggedIn + "|" + S.tags.loggedOut));
   });
   it("opens New task without changing the selected project", async () => {
     await mount("#/project/site", false);
@@ -1398,18 +1463,21 @@ describe("owner's Home, Helpers, Profile and Chat port", () => {
         .getAttribute("aria-selected"),
     ).toBe("true");
   });
-  it("persists sidebar collapse through a remount", async () => {
+  it("keeps the sidebar expanded and moves the theme to Profile > Appearance", async () => {
     await mount("#/");
-    fireEvent.click(screen.getByTestId("sidebar-toggle"));
-    expect(localStorage.getItem("codec-sidebar")).toBe("collapsed");
-    cleanup();
-    await mount("#/");
-    expect(
-      screen.getByTestId("sidebar-toggle").getAttribute("aria-expanded"),
-    ).toBe("false");
-    expect(document.documentElement.getAttribute("data-sidebar")).toBe(
-      "collapsed",
+    expect(screen.queryByTestId("sidebar-toggle")).toBeNull();
+    expect(screen.queryByTestId("theme")).toBeNull();
+    expect(screen.getByTestId("app-topbar").textContent).toBe(
+      S.checkpoints.fallbackName,
     );
+    cleanup();
+    await mount("#/profile/appearance");
+    await screen.findByTestId("profile-appearance");
+    const light = screen.getByRole("radio", { name: S.theme.light });
+    expect(light.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: S.theme.dark }));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(localStorage.getItem("codec-theme")).toBe("dark");
   });
   it("shows who said what, model labels, errors and thinking, and selects models and services", async () => {
     Object.assign(data.chat!, {
@@ -1436,7 +1504,7 @@ describe("owner's Home, Helpers, Profile and Chat port", () => {
     expect(document.querySelector(".chat-meta .hint")!.textContent).toBe(
       "GPT-6-Sol",
     );
-    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(S.chat.newChat);
     fireEvent.click(screen.getByTestId("chat-model"));
     expect(
       (
@@ -1459,6 +1527,56 @@ describe("owner's Home, Helpers, Profile and Chat port", () => {
         body: { tool: "claude" },
       }),
     );
+  });
+  it("lists saved chats with search, and renames, tags and deletes the open chat", async () => {
+    data.home.classes = ["CS 422"];
+    Object.assign(data.chat!, {
+      id: "chat-a",
+      title: "Debugging Naive Bayes",
+      area: "class",
+      className: "CS 422",
+      messages: [
+        { role: "user", text: "Why is accuracy higher on training data?", at: "2026-11-12T21:23:00Z" },
+        { role: "assistant", text: "Overfitting.", at: "2026-11-12T21:24:00Z" },
+      ],
+      chats: [
+        { id: "chat-a", title: "Debugging Naive Bayes", tool: "codex", updatedAt: "2026-11-12T21:24:00Z", preview: "Overfitting.", busy: false },
+        { id: "chat-b", title: "Geology exam review", tool: "claude", updatedAt: "2026-11-11T10:00:00Z", preview: "Igneous rocks", busy: false },
+      ],
+    });
+    await mount("#/chat/chat-a");
+    expect(calls.some((c) => c.path === "chat?id=chat-a")).toBe(true);
+    expect(screen.getByTestId("chat-title").textContent).toBe("Debugging Naive Bayes");
+    expect(document.querySelector('[data-testid="chat-item"][aria-current="page"]')!.getAttribute("data-key")).toBe("chat-a");
+    expect((screen.getByTestId("chat-tag") as HTMLSelectElement).value).toBe("class:CS 422");
+    fireEvent.change(screen.getByTestId("chat-search"), { target: { value: "igneous" } });
+    expect(screen.getAllByTestId("chat-item").map((a) => a.getAttribute("data-key"))).toEqual(["chat-b"]);
+    fireEvent.change(screen.getByTestId("chat-search"), { target: { value: "nothing like this" } });
+    expect(screen.getByText(S.chat.noMatches)).toBeTruthy();
+    fireEvent.change(screen.getByTestId("chat-tag"), { target: { value: "work" } });
+    await waitFor(() => expect(calls).toContainEqual({ path: "chat/chat-a/tag", body: { area: "work" } }));
+    fireEvent.click(screen.getByTestId("chat-more"));
+    fireEvent.click(screen.getByTestId("chat-rename"));
+    fireEvent.change(screen.getByTestId("chat-title-input"), { target: { value: "NB overfitting" } });
+    fireEvent.click(screen.getByTestId("chat-title-save"));
+    await waitFor(() => expect(calls).toContainEqual({ path: "chat/chat-a/rename", body: { title: "NB overfitting" } }));
+    fireEvent.click(screen.getByTestId("chat-more"));
+    fireEvent.click(screen.getByTestId("chat-remove"));
+    fireEvent.click(await screen.findByTestId("confirm-submit"));
+    await waitFor(() => expect(calls).toContainEqual({ path: "chat/chat-a/remove", body: {} }));
+    await waitFor(() => expect(location.hash).toBe("#/chat"));
+  });
+  it("sends to the open chat by id and attaches a text file to the draft", async () => {
+    Object.assign(data.chat!, { id: "chat-a", title: "Split", messages: [{ role: "user", text: "Hi" }] });
+    await mount("#/chat/chat-a");
+    const input = screen.getByTestId("chat-text") as HTMLTextAreaElement;
+    const picked = new File(["x = 1\n"], "train.py", { type: "text/x-python" });
+    Object.defineProperty(picked, "text", { value: async () => "x = 1\n" });
+    fireEvent.change(screen.getByTestId("chat-file"), { target: { files: [picked] } });
+    await waitFor(() => expect(input.value).toBe("```train.py\nx = 1\n```\n"));
+    fireEvent.change(input, { target: { value: "Check this" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(calls).toContainEqual({ path: "chat", body: { text: "Check this", id: "chat-a" } }));
   });
   it("keeps a saved unlisted model selectable, and New chat clears through the existing endpoint", async () => {
     data.chat!.model = "older-model";
@@ -1675,7 +1793,7 @@ describe("message limit settings and holds", () => {
     expect((screen.getByRole("button", { name: S.messageLimit.continue }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("shows held helpers without tasks under Needs you on Helpers and in Home team counts", async () => {
+  it("shows held helpers without tasks under Needs you on Helpers", async () => {
     data.home.runs = [];
     data.teams![0].members[0].held = true;
     data.home.coordinator = { settings: { tool: "codex", held: true, createdAt: "2026-11-11T12:00:00Z" }, running: false };
@@ -1683,8 +1801,5 @@ describe("message limit settings and holds", () => {
     expect(rows.map(helperStatus)).toEqual([["needsYou", S.tasks.needsYou], ["needsYou", S.tasks.needsYou]]);
     await mount("#/helpers");
     for (const row of screen.getAllByTestId("helper-row")) expect(within(row).getByText(S.tasks.needsYou)).toBeTruthy();
-    cleanup();
-    await mount("#/");
-    expect(screen.getByTestId("home-team").textContent).toContain(S.messageLimit.reached);
   });
 });

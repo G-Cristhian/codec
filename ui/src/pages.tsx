@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Collapsible } from "radix-ui";
+import { AgentForm, HarnessCard } from "./agents";
 import { ProjectList } from "./project-list";
 import { ConversationFeed, useConversationTab, type ProjectConversation } from "./conversation-feed";
 import { Badge } from "./components/ui/badge";
@@ -36,6 +37,9 @@ import {
   Crumbs,
   Details,
   Disclosure,
+  AddDialog,
+  EmptyState,
+  useDialogDone,
   Field,
   FolderPicker,
   Form,
@@ -168,6 +172,7 @@ export function ProjectAdd() {
     checkpoint: boolean;
   }>();
   const { act, pending, tell } = useActions();
+  const done = useDialogDone();
   const key = "project-add";
   return (
     <Form
@@ -196,7 +201,7 @@ export function ProjectAdd() {
             question: errorText(e),
             checkpoint: error.code === "needs_checkpoint",
           });
-          return;
+          return false;
         }
       }}
     >
@@ -231,7 +236,7 @@ export function ProjectAdd() {
                     f.reset();
                   },
                   S.common.added,
-                );
+                ).then((ok) => ok && done?.());
               }}
             >
               {tracking.checkpoint
@@ -263,21 +268,21 @@ export function ProjectsPage({
     <div className="project-split index">
       <ProjectList projects={data.home.projects} />
       <section className="page-content">
-        <Disclosure
-          id="project-add-open"
-          header={{
-            title: S.projects.title,
-            description: S.wording.helperIntro,
-          }}
-          title={S.projects.addTitle}
-          initial={openAdd || !data.home.projects.length}
-        >
-          <Card className="panel">
-            {!data.home.projects.length && <p>{S.projects.empty}</p>}
+        <PageIntro title={S.projects.title}>
+          <AddDialog
+            id="project-add-open"
+            label={S.projects.addTitle}
+            title={S.projects.addTitle}
+            initial={openAdd}
+          >
             <ProjectAdd />
-          </Card>
-        </Disclosure>
-        {!!data.home.projects.length && <Hint>{S.projects.pick}</Hint>}
+          </AddDialog>
+        </PageIntro>
+        {data.home.projects.length ? (
+          <Hint>{S.projects.pick}</Hint>
+        ) : (
+          <EmptyState id="projects-empty">{S.projects.emptyAdd}</EmptyState>
+        )}
         <section>
           <h2>{S.wording.allTasks}</h2>
           <TaskTable runs={data.home.runs} />
@@ -287,7 +292,7 @@ export function ProjectsPage({
   );
 }
 
-function PageIntro({
+export function PageIntro({
   title,
   description,
   children,
@@ -386,7 +391,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
         <Crumbs>{name}</Crumbs>
         <PageIntro
           title={name}
-          description={<span className="mono">{v.project.path}</span>}
+          description={<Hint><span className="mono">{v.project.path}</span></Hint>}
         >
           <Button
             data-testid="task-new"
@@ -589,7 +594,6 @@ export function TaskPage({ data }: { data: PageData }) {
             {S.tasks.details} <StatusBadge run={r} />
           </>
         }
-        description={S.wording.helperIntro}
       >
         {r.state === "running" ? (
           <Button
@@ -811,20 +815,18 @@ export function RolesPage({ data }: { data: PageData }) {
   return (
     <>
       <Crumbs>{S.nav.specialists}</Crumbs>
-      <Disclosure
-        id="specialist-add-open"
-        header={{
-          title: S.specialists.title,
-          description: S.wording.rolesIntro,
-        }}
-        title={S.specialists.addTitle}
-        initial={!roles.length}
-      >
-        <Card className="panel empty-card">
-          {!roles.length && <p>{S.specialists.empty}</p>}
+      <PageIntro title={S.specialists.title}>
+        <AddDialog
+          id="specialist-add-open"
+          label={S.specialists.addTitle}
+          title={S.specialists.addTitle}
+        >
           <RoleForm data={data} />
-        </Card>
-      </Disclosure>
+        </AddDialog>
+      </PageIntro>
+      {!roles.length && (
+        <EmptyState id="roles-empty">{S.specialists.emptyAdd}</EmptyState>
+      )}
       {roles.map((s) => (
         <RoleCard key={s.name} s={s} data={data} />
       ))}
@@ -911,110 +913,7 @@ function RoleCard({ s, data }: { s: Role; data: PageData }) {
   );
 }
 
-function MemberForm({
-  team,
-  data,
-  member,
-}: {
-  team: string;
-  data: PageData;
-  member?: Member;
-}) {
-  const key = member
-    ? "member-edit-" + team + "-" + member.member
-    : "member-add-" + team;
-  const options: Option[] = [
-    ...(data.roles || []).map((s) => ({
-      value: "s:" + s.name,
-      label: s.name + " · " + s.specialty + " · " + toolName(s.tool),
-      tool: s.tool,
-      group: S.members.specialist,
-    })),
-    ...["claude", "codex"].map((t) => ({
-      value: "t:" + t,
-      label: fmt(S.wording.generalUsing, { tool: toolName(t) }),
-      tool: t,
-      group: S.members.worker,
-    })),
-  ];
-  const [kind, setKind] = useState(
-    options.find((o) => toolOK(data.setup, o.tool!))?.value || "",
-  );
-  return (
-    <Form
-      id={member ? "member-edit-form" : "member-add-form"}
-      itemKey={member?.member}
-      actionKey={key}
-      success={member ? S.common.saved : S.common.added}
-      onSubmit={async (f) => {
-        await api(
-          "teams/" +
-            enc(team) +
-            "/members" +
-            (member ? "/" + enc(member.member) + "/edit" : ""),
-          {
-            skills: selected(f, "member-skill"),
-            timeLimitMinutes: limitValue(f, "member-limit"),
-            ...(!member
-              ? {
-                  name: formValue(f, "member-name").trim() || undefined,
-                  ...(kind.startsWith("s:")
-                    ? { specialist: kind.slice(2) }
-                    : { tool: kind.slice(2) }),
-                  model: formValue(f, "member-model").trim() || undefined,
-                }
-              : {}),
-          },
-        );
-        if (!member) f.reset();
-      }}
-    >
-      {!member && (
-        <>
-          <Picker
-            id="member-kind"
-            label={S.members.kind}
-            options={options}
-            setup={data.setup}
-            value={kind}
-            onChange={setKind}
-            required
-          />
-          <Field
-            id="member-name"
-            label={S.common.optionalName}
-            placeholder={S.wording.helperName}
-            hint={S.wording.nameRules}
-          />
-          <Field id="member-model" label={S.common.model} />
-        </>
-      )}
-      <Limit
-        id="member-limit"
-        value={member?.timeLimitMinutes}
-        hint={
-          member?.specialist || kind.startsWith("s:")
-            ? S.wording.roleLimit
-            : S.common.timeHint
-        }
-      />
-      <Checks
-        id="member-skill"
-        names={data.skills!.skills.map((s) => s.name)}
-        values={member?.skills
-          .filter((s) => s.source === "member")
-          .map((s) => s.name)}
-        label={S.members.extraSkills}
-        skills
-      />
-      <Hint>{S.members.instructionsHint}</Hint>
-      <Submit id="member-save" actionKey={key}>
-        {member ? S.common.save : S.members.add}
-      </Submit>
-    </Form>
-  );
-}
-function TeamForm({ team, data }: { team?: Team; data: PageData }) {
+export function TeamForm({ team, data }: { team?: Team; data: PageData }) {
   const key = team ? "team-edit-" + team.name : "team-add";
   return (
     <>
@@ -1040,12 +939,16 @@ function TeamForm({ team, data }: { team?: Team; data: PageData }) {
             hint={S.wording.nameRules}
           />
         )}
-        <Checks
-          id="team-project"
-          names={data.home.projects.map((p) => p.name)}
-          values={team?.projects}
-          label={S.teams.projects}
-        />
+        {data.home.projects.length ? (
+          <Checks
+            id="team-project"
+            names={data.home.projects.map((p) => p.name)}
+            values={team?.projects}
+            label={S.teams.projects}
+          />
+        ) : (
+          <Hint>{S.agents.noProjects}</Hint>
+        )}
         <Submit id="team-save" actionKey={key}>
           {team ? S.common.save : S.teams.add}
         </Submit>
@@ -1057,159 +960,6 @@ function TeamForm({ team, data }: { team?: Team; data: PageData }) {
           <AccountSettings scope="team" name={team.name} data={data} />
         </>
       )}
-    </>
-  );
-}
-export function TeamsPage({ data }: { data: PageData }) {
-  return (
-    <>
-      <Crumbs>{S.nav.teams}</Crumbs>
-      {data.home.projects.length ? (
-        <Disclosure
-          id="team-add-open"
-          header={{ title: S.teams.title, description: S.wording.helperIntro }}
-          title={S.teams.add}
-          initial={!data.teams!.length}
-        >
-          <Card className="panel empty-card">
-            {!data.teams!.length && <p>{S.teams.empty}</p>}
-            <TeamForm data={data} />
-          </Card>
-        </Disclosure>
-      ) : (
-        <>
-          <PageIntro
-            title={S.teams.title}
-            description={S.wording.helperIntro}
-          />
-          <Notice>
-            {S.teams.noProjects}{" "}
-            <a className="link" href="#/projects">
-              {S.nav.projects}
-            </a>
-          </Notice>
-        </>
-      )}
-      {data.teams!.map((t) => (
-        <Card className="panel" key={t.name} data-key={t.name}>
-          <div className="page-head">
-            <h3>{t.name}</h3>
-            <Remove
-              kind="team"
-              name={t.name}
-              route={"teams/" + enc(t.name) + "/remove"}
-              actionKey={"team-" + t.name}
-            >
-              {S.teams.remove}
-            </Remove>
-          </div>
-          <p className="badge-row">
-            {S.teams.projects}:{" "}
-            {t.projects.length
-              ? t.projects.map((p) => (
-                  <a
-                    key={p}
-                    className="badge link"
-                    href={"#/project/" + enc(p)}
-                  >
-                    {p}
-                  </a>
-                ))
-              : S.common.noneAvailable}
-          </p>
-          <Message actionKey={"team-" + t.name} />
-          {t.members.length ? (
-            <Table
-              headers={[
-                S.members.title,
-                S.members.kind,
-                S.common.tool,
-                S.wording.extraSkills,
-                S.members.working,
-                "",
-              ]}
-            >
-              {t.members.map((m) => {
-                const n = m.member || m.name!;
-                return (
-                  <tr key={n}>
-                    <td>
-                      <a className="link" href={memberHref(t.name, n)}>
-                        {n}
-                      </a>
-                    </td>
-                    <td className={m.error ? "warning" : ""}>
-                      {m.error
-                        ? "⚠ " + S.members.broken
-                        : m.specialist
-                          ? fmt(S.members.copyOf, { name: m.specialist }) +
-                            (m.specialty ? " (" + m.specialty + ")" : "")
-                          : S.members.worker}
-                    </td>
-                    <td>{toolName(m.tool)}</td>
-                    <td>
-                      {(m.skills || [])
-                        .filter((s) => s.source === "member")
-                        .map((s) => s.name)
-                        .join(", ") || S.common.none}
-                    </td>
-                    <td>
-                      {m.working?.length ? (
-                        m.working.map((r) => (
-                          <a
-                            className="link"
-                            key={r.runId}
-                            href={"#/run/" + enc(r.runId)}
-                          >
-                            {r.project}
-                          </a>
-                        ))
-                      ) : (
-                        <span className="hint">{S.members.idle}</span>
-                      )}
-                    </td>
-                    <td>
-                      <Remove
-                        kind="member"
-                        name={t.name + "/" + n}
-                        route={
-                          "teams/" +
-                          enc(t.name) +
-                          "/members/" +
-                          enc(n) +
-                          "/remove"
-                        }
-                        actionKey={"member-" + t.name + "-" + n}
-                      >
-                        {S.members.remove}
-                      </Remove>
-                      <Message actionKey={"member-" + t.name + "-" + n} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </Table>
-          ) : (
-            <Hint>{S.teams.noMembers}</Hint>
-          )}
-          <div className="team-footer">
-            <Disclosure
-              id="member-add-open"
-              title={S.members.add}
-              itemKey={t.name}
-            >
-              <MemberForm team={t.name} data={data} />
-            </Disclosure>
-            <Disclosure
-              id="team-edit-open"
-              title={S.teams.edit}
-              itemKey={t.name}
-            >
-              <TeamForm team={t} data={data} />
-            </Disclosure>
-          </div>
-        </Card>
-      ))}
     </>
   );
 }
@@ -1230,17 +980,21 @@ export function MemberPage({
       </Crumbs>
       <PageIntro
         title={fmt(S.wording.helperTeam, { team, member: name })}
-        description={S.wording.helperIntro}
       >
-        <Remove
-          kind="member"
-          name={team + "/" + name}
-          route={"teams/" + enc(team) + "/members/" + enc(name) + "/remove"}
-          actionKey={"member-" + team + "-" + name}
-          after={() => go("#/teams")}
-        >
-          {S.members.remove}
-        </Remove>
+        <div className="button-row">
+          <Remove
+            kind="member"
+            name={team + "/" + name}
+            route={"teams/" + enc(team) + "/members/" + enc(name) + "/remove"}
+            actionKey={"member-" + team + "-" + name}
+            after={() => go("#/teams")}
+          >
+            {S.members.remove}
+          </Remove>
+          <AddDialog id="member-edit-open" label={S.agents.edit} title={S.agents.edit + " · " + name} wide plus={false}>
+            <AgentForm team={team} data={data} member={{ ...m, member: name }} />
+          </AddDialog>
+        </div>
       </PageIntro>
       <Card className="panel">
         <Details
@@ -1250,13 +1004,13 @@ export function MemberPage({
               fmt(S.wording.helperTeam, { team, member: name }),
             ],
             [
-              S.members.kind,
+              m.specialist ? S.members.kind : S.agents.job,
               m.specialist
                 ? fmt(S.wording.usesRole, {
                     name: m.specialist,
                     specialty: m.specialty,
                   })
-                : S.members.worker,
+                : m.specialty || S.members.worker,
             ],
             [S.common.tool, toolName(m.tool)],
             [S.common.timeLimitLabel, limitText(m.timeLimitMinutes ?? 60)],
@@ -1277,13 +1031,12 @@ export function MemberPage({
       <Card className="panel">
         <h2>{S.common.instructions}</h2>
         <p className="fulltask">{m.instructions || S.common.none}</p>
-        <Hint>{S.members.instructionsHint}</Hint>
+        <Hint>{S.agents.instructionsHint}</Hint>
       </Card>
+      <HarnessCard m={m} />
       <Message actionKey={"member-" + team + "-" + name} />
-      <Disclosure id="member-edit-open" title={S.members.edit}>
+      <Disclosure id="member-account-open" title={S.accounts.title}>
         <Card className="panel">
-          <MemberForm team={team} data={data} member={{ ...m, member: name }} />
-          <hr />
           <AccountSettings
             scope="helper"
             name={team + "/" + name}
@@ -1417,16 +1170,15 @@ export function SkillsPage({ data }: { data: PageData }) {
   return (
     <>
       <Crumbs>{S.nav.skills}</Crumbs>
-      <Disclosure
-        id="skill-add-open"
-        header={{ title: S.skills.title, description: S.wording.skillsIntro }}
-        title={S.skills.addTitle}
-        initial={!v.skills.length}
-      >
-        <Card className="panel">
+      <PageIntro title={S.skills.title}>
+        <AddDialog
+          id="skill-add-open"
+          label={S.skills.addTitle}
+          title={S.skills.addTitle}
+        >
           <SkillAdd />
-        </Card>
-      </Disclosure>
+        </AddDialog>
+      </PageIntro>
       <section>
         <h2>{S.skills.library}</h2>
         {v.skills.length ? (
@@ -1684,23 +1436,27 @@ export function AccountsPage({ data }: { data: PageData }) {
       <Crumbs>{S.nav.accounts}</Crumbs>
       <PageIntro
         title={S.accounts.title}
-        description={
-          <>
-            {S.accounts.intro}
-            <Hint>{S.accounts.newTasks}</Hint>
-          </>
-        }
+        description={<Hint>{S.accounts.newTasks}</Hint>}
       >
-        <Button
-          variant="outline"
-          data-testid="accounts-check"
-          disabled={pending.accounts}
-          onClick={() =>
-            void act("accounts", () => api("accounts?fresh=1"), "")
-          }
-        >
-          {S.accounts.check}
-        </Button>
+        <div className="button-row">
+          <Button
+            variant="outline"
+            data-testid="accounts-check"
+            disabled={pending.accounts}
+            onClick={() =>
+              void act("accounts", () => api("accounts?fresh=1"), "")
+            }
+          >
+            {S.accounts.check}
+          </Button>
+          <AddDialog
+            id="account-add-open"
+            label={S.accounts.add}
+            title={S.accounts.add}
+          >
+            <AccountAdd />
+          </AddDialog>
+        </div>
       </PageIntro>
       <Message actionKey="accounts" />
       <div className="account-grid">
@@ -1712,15 +1468,6 @@ export function AccountsPage({ data }: { data: PageData }) {
           />
         ))}
       </div>
-      <Disclosure
-        id="account-add-open"
-        title={S.accounts.add}
-        initial={state.accounts.every((a) => a.builtin)}
-      >
-        <Card className="panel">
-          <AccountAdd />
-        </Card>
-      </Disclosure>
     </>
   );
 }
@@ -1857,7 +1604,7 @@ export function SetupPage({ data }: { data: PageData }) {
       : S.setup.ready;
   return (
     <section data-testid="setup-wizard" className="setup-page">
-      <PageIntro title={S.setup.title} description={S.setup.hint} />
+      <PageIntro title={S.setup.title} />
       <Notice tone={needed.length ? "needs" : "done"} id="setup-status">
         <span className={needed.length ? "warning" : "success"}>
           {needed.length ? "⚠ " : "✓ "}

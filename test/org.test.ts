@@ -164,9 +164,10 @@ describe("specialists, teams, members", () => {
     expect(removeSpecialist("tester").name).toBe("tester");
   });
 
-  it("teams need real projects; removing a project drops it from teams", () => {
+  it("teams may start without projects but only list real ones; removing a project drops it from teams", () => {
     setupOrg();
-    expect(() => addTeam({ name: "blue", projects: [] })).toThrow(/project/);
+    expect(addTeam({ name: "blue", projects: [] }).projects).toEqual([]);
+    expect(setTeamProjects("blue", []).projects).toEqual([]);
     expect(() => addTeam({ name: "blue", projects: ["ghost"] })).toThrow(/ghost/);
     expect(() => addTeam({ name: "red", projects: ["alpha"] })).toThrow(/already/);
     addProject(makeRepo("beta"));

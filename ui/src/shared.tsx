@@ -12,6 +12,7 @@ import {
 import {
   AlertDialog,
   Checkbox,
+  Dialog,
   Collapsible,
   ScrollArea,
   Tooltip,
@@ -23,6 +24,8 @@ import {
   ChevronDown,
   Folder,
   LoaderCircle,
+  Plus,
+  X,
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
@@ -161,6 +164,80 @@ export function Scroll({
         <ScrollArea.Thumb className="scroll-thumb" />
       </ScrollArea.Scrollbar>
     </ScrollArea.Root>
+  );
+}
+/** Closes the surrounding AddDialog once a form inside it saves. */
+const DialogDone = createContext<(() => void) | null>(null);
+/**
+ * A primary "+ Add …" button that opens its form in a dialog,
+ * so pages stay clean until the owner wants to add something.
+ */
+export function AddDialog({
+  id,
+  label,
+  title,
+  description,
+  initial = false,
+  variant,
+  itemKey,
+  wide = false,
+  closeOnSave = true,
+  plus = !variant,
+  children,
+}: {
+  id: string;
+  label: string;
+  title: string;
+  description?: ReactNode;
+  initial?: boolean;
+  variant?: "outline";
+  itemKey?: string;
+  wide?: boolean;
+  /** False for a dialog holding several separate settings forms. */
+  closeOnSave?: boolean;
+  /** Show the "+" icon (adding something new). */
+  plus?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(initial);
+  const { pending } = useActions();
+  const busy = Object.values(pending).some(Boolean);
+  return (
+    <Dialog.Root open={open} onOpenChange={(v) => (v || !busy) && setOpen(v)}>
+      <Dialog.Trigger asChild>
+        <Button data-testid={id} data-key={itemKey} variant={variant}>
+          {plus && <Plus aria-hidden="true" />}
+          {label}
+        </Button>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className={"confirm-dialog add-dialog" + (wide ? " wide" : "")} data-testid={id + "-dialog"} aria-describedby={undefined}>
+          <div className="add-dialog-head">
+            <Dialog.Title asChild>
+              <h2>{title}</h2>
+            </Dialog.Title>
+            <Dialog.Close asChild>
+              <Button variant="ghost" size="icon-sm" aria-label={S.common.close} title={S.common.close}>
+                <X aria-hidden="true" />
+              </Button>
+            </Dialog.Close>
+          </div>
+          {description && <div className="hint">{description}</div>}
+          <DialogDone.Provider value={closeOnSave ? () => setOpen(false) : null}>{children}</DialogDone.Provider>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+/** Close the surrounding AddDialog, for actions outside a Form submit. */
+export const useDialogDone = () => useContext(DialogDone);
+/** An empty page's message, shown where the list will be. */
+export function EmptyState({ children, id }: { children: ReactNode; id?: string }) {
+  return (
+    <div className="empty-state" data-testid={id}>
+      {children}
+    </div>
   );
 }
 export function Disclosure({
@@ -602,6 +679,7 @@ export function Form({
   onInput?: () => void;
 }) {
   const { act } = useActions();
+  const done = useContext(DialogDone);
   return (
     <form
       className="form"
@@ -611,7 +689,9 @@ export function Form({
       onSubmit={(e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         const f = e.currentTarget;
-        void act(actionKey, () => onSubmit(f), success);
+        // A form returns false to stay open (e.g. it asked a follow-up question).
+        let keep = false;
+        void act(actionKey, async () => { keep = (await onSubmit(f)) === false; }, success).then((ok) => ok && !keep && done?.());
       }}
     >
       {children}
@@ -1127,6 +1207,31 @@ export function FolderPicker({
       if (request.current === n) setLoading(false);
     }
   }
+  /** Put a chosen path in the field as if typed, so the form sees the change. */
+  function fill(path: string) {
+    const el = input.current;
+    if (!el) return;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, path);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  /** This computer's own folder picker (Finder), or the in-page browser when there isn't one. */
+  async function choose() {
+    const start = input.current?.value.trim();
+    setLoading(true);
+    setError("");
+    let picked: { path?: string; cancelled?: boolean } = {};
+    try {
+      picked = await api("folders/choose", start ? { path: start } : {});
+    } catch {
+      /* Fall back to browsing in the page. */
+    } finally {
+      setLoading(false);
+    }
+    if (picked.path) {
+      fill(picked.path);
+      setOpen(false);
+    } else if (!picked.cancelled) void browse(start);
+  }
   return (
     <div data-testid="folder-picker">
       <div className="field">
@@ -1145,7 +1250,7 @@ export function FolderPicker({
             variant="outline"
             data-testid="folder-browse"
             disabled={loading}
-            onClick={() => void browse(input.current?.value.trim())}
+            onClick={() => void choose()}
           >
             {S.folder.browse}
           </Button>

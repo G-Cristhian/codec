@@ -4,11 +4,11 @@ export type Theme = "auto" | "light" | "dark";
 export function readTheme(): Theme {
   try {
     const t = localStorage.getItem(THEME_KEY);
-    if (t === "light" || t === "dark") return t;
+    if (t === "auto" || t === "dark") return t;
   } catch {
-    /* Auto follows CSS. */
+    /* Light is the default. */
   }
-  return "auto";
+  return "light";
 }
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(readTheme);
@@ -21,19 +21,25 @@ export function useTheme() {
     const sync = (e: StorageEvent) => {
       if (e.key === THEME_KEY || e.key === null) setTheme(readTheme());
     };
+    const local = () => setTheme(readTheme());
     window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
+    window.addEventListener(THEME_KEY, local);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener(THEME_KEY, local);
+    };
   }, []);
   return [
     theme,
     (value: Theme) => {
       try {
-        if (value === "auto") localStorage.removeItem(THEME_KEY);
+        if (value === "light") localStorage.removeItem(THEME_KEY);
         else localStorage.setItem(THEME_KEY, value);
       } catch {
         /* Keep this page's choice. */
       }
       setTheme(value);
+      window.dispatchEvent(new Event(THEME_KEY));
     },
   ] as const;
 }

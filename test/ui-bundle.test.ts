@@ -246,6 +246,9 @@ describe("React foundation bundle", () => {
             setAttribute: (_: string, value: string) => {
               theme = value;
             },
+            removeAttribute: () => {
+              theme = undefined;
+            },
           },
         },
         {
@@ -259,9 +262,10 @@ describe("React foundation bundle", () => {
     };
     expect(run("light")).toBe("light");
     expect(run("dark")).toBe("dark");
-    expect(run(null)).toBeUndefined();
-    expect(run("invalid")).toBeUndefined();
-    expect(run(null, true)).toBeUndefined();
+    expect(run("auto")).toBeUndefined();
+    expect(run(null)).toBe("light");
+    expect(run("invalid")).toBe("light");
+    expect(run(null, true)).toBe("light");
     const css = readdirSync(join(bundleDir, "assets"))
       .filter((f) => f.endsWith(".css"))
       .map((f) => readFileSync(join(bundleDir, "assets", f), "utf8"))

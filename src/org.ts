@@ -25,6 +25,7 @@ import { logEvent } from "./events.js";
 import { deleteSkillFolder, getSkill } from "./skills.js";
 import { readJson, specialistsFile, teamsFile, withLock, writeJsonAtomic } from "./store.js";
 import { checkTool, type Agent } from "./tools.js";
+import { readHarness, readInstructions, removeAgentDir, type Harness } from "./harness.js";
 
 export interface Specialist {
   name: string;
@@ -44,6 +45,7 @@ export interface Member {
   tool?: Agent; // workers only (clones follow their specialist)
   timeLimitMinutes?: number;
   model?: string; // workers only
+  specialty?: string; // workers only: what this agent does
   skills: string[]; // the member's own skills (for clones: extras on top of the specialist's)
   addedAt: string;
 }
@@ -71,6 +73,8 @@ export interface ResolvedMember {
   instructions: string;
   skills: { name: string; source: Exclude<SkillSource, "project"> }[];
   projects: string[];
+  /** The agent's own harness from its folder (access, rules, isolation, MCP servers). */
+  harness: Harness;
 }
 
 const loadSpecialists = (): Specialist[] =>
@@ -214,7 +218,7 @@ function checkProjects(projects: string[] | undefined): string[] {
     if (!getProject(p)) throw new CodecError("project_not_found", `no project named "${p}" (see: codec project list)`, {}, 404);
     if (!out.includes(p)) out.push(p);
   }
-  if (!out.length) throw new CodecError("missing_project", "a team needs at least one project");
+  // A team may start with no projects: it's a group of agents first, and gets projects later.
   return out;
 }
 
@@ -270,6 +274,7 @@ export function deleteTeam(name: string): Team {
     saveTeams(all);
     return t;
   });
+  removeAgentDir(name);
   logEvent("team.remove", { team: name });
   return removed;
 }
@@ -295,6 +300,7 @@ export interface MemberInput {
   tool?: string; // plain worker
   timeLimitMinutes?: number;
   model?: string;
+  specialty?: string; // plain worker: what it does
   skills?: string[];
 }
 
@@ -335,6 +341,7 @@ export function addMember(teamName: string, input: MemberInput): Member {
         kind: "worker",
         tool,
         model: cleanModel(input.model),
+        ...(input.specialty?.trim() ? { specialty: input.specialty.trim().slice(0, 200) } : {}),
         skills,
         addedAt: new Date().toISOString(),
       };
@@ -349,10 +356,15 @@ export function addMember(teamName: string, input: MemberInput): Member {
   return member;
 }
 
-/** Update a member's extra skills or time limit. Omitted values are kept. */
-export function editMember(teamName: string, memberName: string, patch: { timeLimitMinutes?: number; skills?: string[] }): Member {
+/**
+ * Update a member. Omitted values are kept. Tool, model and "what it does" can only
+ * change on a plain agent; an agent built on a role follows the role for those.
+ */
+export function editMember(teamName: string, memberName: string, patch: { timeLimitMinutes?: number; skills?: string[]; tool?: string; model?: string; specialty?: string }): Member {
   const limit = checkTimeLimit(patch.timeLimitMinutes);
   const skills = patch.skills === undefined ? undefined : checkSkills(patch.skills);
+  const tool = patch.tool === undefined ? undefined : checkTool(patch.tool);
+  const model = patch.model === undefined ? undefined : cleanModel(patch.model);
   const member = withLock("org", () => {
     const all = loadTeams();
     const team = all.find((t) => t.name === teamName);
@@ -361,6 +373,11 @@ export function editMember(teamName: string, memberName: string, patch: { timeLi
     if (!m) throw new CodecError("member_not_found", `team ${teamName} has no member named "${memberName}"`, {}, 404);
     if (limit !== undefined) m.timeLimitMinutes = limit;
     if (skills !== undefined) m.skills = skills;
+    if (m.kind === "worker") {
+      if (tool !== undefined) m.tool = tool;
+      if (patch.model !== undefined) { if (model) m.model = model; else delete m.model; }
+      if (patch.specialty !== undefined) { const v = patch.specialty.trim().slice(0, 200); if (v) m.specialty = v; else delete m.specialty; }
+    }
     saveTeams(all);
     return m;
   });
@@ -380,6 +397,7 @@ export function deleteMember(teamName: string, memberName: string): Member {
     saveTeams(all);
     return m;
   });
+  removeAgentDir(teamName, memberName);
   logEvent("member.remove", { team: teamName, member: memberName });
   return removed;
 }
@@ -414,9 +432,11 @@ export function resolveMember(teamName: string, memberName: string): ResolvedMem
       tool: spec.tool,
       model: spec.model,
       timeLimitMinutes: m.timeLimitMinutes ?? spec.timeLimitMinutes,
-      instructions: spec.instructions,
+      // The role's instructions, then this agent's own instructions file.
+      instructions: [spec.instructions, readInstructions(team.name, m.name)].filter(Boolean).join("\n\n"),
       skills,
       projects: team.projects,
+      harness: readHarness(team.name, m.name),
     };
   }
   m.skills.forEach((s) => push(s, "member"));
@@ -426,10 +446,12 @@ export function resolveMember(teamName: string, memberName: string): ResolvedMem
     kind: "worker",
     tool: m.tool!,
     model: m.model,
+    specialty: m.specialty,
     timeLimitMinutes: m.timeLimitMinutes,
-    instructions: "",
+    instructions: readInstructions(team.name, m.name),
     skills,
     projects: team.projects,
+    harness: readHarness(team.name, m.name),
   };
 }
 

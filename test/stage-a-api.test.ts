@@ -284,7 +284,7 @@ describe("setup API", () => {
     expect((await get("/api/settings")).json.setupFinished).toBe(true);
     const identity = { name: "Setup Owner", email: "setup@example.invalid" };
     await post("/api/settings", { identity });
-    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: true });
+    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: true, classes: [] });
   });
   it("treats an existing project as finished setup and remembers that after removal", async () => {
     await project();
@@ -386,11 +386,11 @@ describe("checkpoint identity settings API", () => {
   it("reads and saves the owner identity and uses it for starting checkpoints", async () => {
     vi.stubEnv("GIT_CONFIG_GLOBAL", join(tempDir(), "no-global-config"));
     vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
-    expect((await get("/api/settings")).json).toEqual({ identity: { name: "", email: "" }, setupFinished: false });
+    expect((await get("/api/settings")).json).toEqual({ identity: { name: "", email: "" }, setupFinished: false, classes: [] });
     expect((await get("/api/setup")).json.identityReady).toBe(false);
     const identity = { name: "Codec Owner", email: "owner@example.invalid" };
     expect(await post("/api/settings", { identity })).toMatchObject({ status: 200, json: { identity } });
-    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: false });
+    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: false, classes: [] });
     expect((await get("/api/setup")).json.identityReady).toBe(true);
     expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf-8"))).toEqual({ identity });
     const dir = tempDir();
@@ -398,7 +398,7 @@ describe("checkpoint identity settings API", () => {
     expect(git(dir, ["log", "-1", "--format=%an <%ae>|%cn <%ce>"]).out)
       .toBe("Codec Owner <owner@example.invalid>|Codec Owner <owner@example.invalid>");
     expect((await post("/api/settings", { identity: { name: "", email: "bad" } })).json.code).toBe("invalid_identity");
-    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: true });
+    expect((await get("/api/settings")).json).toEqual({ identity, setupFinished: true, classes: [] });
   });
   it("returns identity_missing with a Setup fix and starts successfully after it is saved", async () => {
     vi.stubEnv("GIT_CONFIG_GLOBAL", join(tempDir(), "no-global-config"));
@@ -501,7 +501,6 @@ describe("Wave 2 domain error API paths", () => {
     ["POST", "/api/teams/missing/remove", {}, "team_not_found"],
     ["POST", "/api/teams/missing/projects", { projects: ["alpha"] }, "team_not_found"],
     ["POST", "/api/teams/Alpha/projects", { projects: ["missing"] }, "project_not_found"],
-    ["POST", "/api/teams/Alpha/projects", {}, "missing_project"],
     ["POST", "/api/teams/Alpha/members/missing/remove", {}, "member_not_found"],
     ["POST", "/api/teams/Alpha/members/missing/edit", {}, "member_not_found"],
     ["POST", "/api/teams/missing/members/worker/edit", {}, "team_not_found"],
@@ -639,5 +638,54 @@ describe("Wave 2 operational error paths", () => {
     } });
     expect((await post("/api/projects/alpha/runs", { agent: "claude", task: "test" })).json).toMatchObject({ code: "tool_unavailable", params: { tool: "Claude" } });
     expect(listRuns()).toEqual([]);
+  });
+});
+
+describe("student dashboard API", () => {
+  it("saves classes without touching the identity, and rejects bad class names", async () => {
+    const identity = { name: "Class Owner", email: "class@example.invalid" };
+    await post("/api/settings", { identity });
+    const saved = await post("/api/settings", { classes: [" CS 422 ", "cs 422", "GEOL 102"] });
+    expect(saved).toMatchObject({ status: 200, json: { identity, classes: ["CS 422", "GEOL 102"] } });
+    expect((await get("/api/state")).json.classes).toEqual(["CS 422", "GEOL 102"]);
+    expect(await post("/api/settings", { classes: ["<script>"] })).toMatchObject({ status: 400, json: { code: "invalid_class" } });
+    expect(await post("/api/settings", { classes: "CS 422" })).toMatchObject({ status: 400, json: { code: "invalid_class" } });
+  });
+  it("tags projects with a known class, work or personal, and clears the tag", async () => {
+    await project();
+    await post("/api/settings", { classes: ["CS 422"] });
+    expect(await post("/api/projects/alpha/tag", { area: "class", className: "cs 422" })).toMatchObject({ status: 200, json: { area: "class", className: "CS 422" } });
+    expect((await get("/api/state")).json.projects[0]).toMatchObject({ area: "class", className: "CS 422" });
+    expect(await post("/api/projects/alpha/tag", { area: "class", className: "BIO 101" })).toMatchObject({ status: 400, json: { code: "invalid_class" } });
+    expect(await post("/api/projects/alpha/tag", { area: "school" })).toMatchObject({ status: 400, json: { code: "invalid_area" } });
+    expect((await post("/api/projects/alpha/tag", { area: "work" })).json).toMatchObject({ area: "work" });
+    expect((await post("/api/projects/alpha/tag", { area: "work" })).json.className).toBeUndefined();
+    expect((await post("/api/projects/alpha/tag", {})).json.area).toBeUndefined();
+    expect((await post("/api/projects/missing/tag", { area: "work" })).status).toBe(404);
+  });
+  it("adds, lists and removes calendar dates, validating each field", async () => {
+    const added = await post("/api/calendar", { title: " Final exam ", date: "2026-12-10", time: "09:30", kind: "deadline" });
+    expect(added).toMatchObject({ status: 201, json: { title: "Final exam", date: "2026-12-10", time: "09:30", kind: "deadline" } });
+    await post("/api/calendar", { title: "Interview", date: "2026-12-01", kind: "interview" });
+    expect((await get("/api/calendar")).json.map((e: { title: string }) => e.title)).toEqual(["Interview", "Final exam"]);
+    expect((await get("/api/state")).json.events).toHaveLength(2);
+    for (const bad of [
+      { title: "", date: "2026-12-10", kind: "deadline" },
+      { title: "x", date: "2026-02-30", kind: "deadline" },
+      { title: "x", date: "2026-12-10", time: "25:00", kind: "deadline" },
+      { title: "x", date: "2026-12-10", kind: "party" },
+    ]) expect(await post("/api/calendar", bad)).toMatchObject({ status: 400, json: { code: "invalid_event" } });
+    expect((await post(`/api/calendar/${added.json.id}/remove`)).status).toBe(200);
+    expect(await post(`/api/calendar/${added.json.id}/remove`)).toMatchObject({ status: 404, json: { code: "event_not_found" } });
+    expect((await get("/api/calendar")).json).toHaveLength(1);
+  });
+  it("keeps the School / Work / Personal tag on a started task", async () => {
+    await project();
+    process.env.CODEC_AGENT_COMMAND = "echo complete";
+    const started = await post("/api/projects/alpha/runs", { agent: "claude", task: "complete", area: "school" });
+    expect(started).toMatchObject({ status: 201, json: { area: "school" } });
+    await waitFor(started.json.runId);
+    expect((await get("/api/state")).json.runs[0].area).toBe("school");
+    expect(await post("/api/projects/alpha/runs", { agent: "claude", task: "x", area: "class" })).toMatchObject({ status: 400, json: { code: "invalid_area" } });
   });
 });

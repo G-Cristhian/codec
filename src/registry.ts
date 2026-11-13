@@ -11,10 +11,14 @@ import { basename, resolve } from "path";
 import { logEvent } from "./events.js";
 import { checkMessageLimit } from "./message-limits.js";
 import { projectsFile, readJson, withLock, writeJsonAtomic } from "./store.js";
+import type { ProjectArea } from "./planner.js";
 
 export interface Project {
   name: string;
   messageLimit?: number;
+  /** Home tag: one of the owner's classes, work or personal. */
+  area?: ProjectArea;
+  className?: string;
   path: string; // absolute path to the repo's top level
   addedAt: string;
 }
@@ -86,6 +90,20 @@ export function setProjectMessageLimit(name: string, value: number | undefined):
   });
   logEvent("project.edit", { project: name, messageLimit: messageLimit ?? null });
   return updated;
+}
+
+export function setProjectTag(name: string, tag: { area?: ProjectArea; className?: string }): Project {
+  return withLock("projects", () => {
+    const all = load();
+    const project = all.find((p) => p.name === name);
+    if (!project) throw new CodecError("project_not_found", `no project named "${name}"`, { name }, 404);
+    delete project.area;
+    delete project.className;
+    if (tag.area) project.area = tag.area;
+    if (tag.className) project.className = tag.className;
+    save(all);
+    return project;
+  });
 }
 
 /** Removes the project from Codec only — the repository itself is untouched. */

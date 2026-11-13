@@ -2,7 +2,7 @@
 import { accessSync, constants, readdirSync, statSync } from "fs";
 import { homedir } from "os";
 import { dirname, isAbsolute, join, resolve } from "path";
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { CodecError } from "./errors.js";
 import { withLock } from "./store.js";
 import { ApiError } from "./friendly.js";
@@ -69,4 +69,59 @@ export function setUpTracking(path: string): void {
     run(["add", "-A"]);
     run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-q", "-m", S.checkpoints.startingMessage], identityEnvironment(identity));
   });
+}
+
+// ---------- Native folder picker ----------
+
+export type FolderChoice = { path: string } | { cancelled: true } | { unavailable: true };
+/** Runs one picker command and reports its exit code and output. */
+export type PickerRunner = (command: string, args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+
+const runPicker: PickerRunner = (command, args) =>
+  new Promise((done) => {
+    // No shell: the prompt and start folder are passed as plain arguments.
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], shell: false });
+    let stdout = "", stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (c: string) => { stdout += c; });
+    child.stderr.setEncoding("utf8").on("data", (c: string) => { stderr += c; });
+    const timer = setTimeout(() => child.kill(), 10 * 60_000);
+    child.on("error", () => { clearTimeout(timer); done({ code: null, stdout, stderr }); });
+    child.on("close", (code) => { clearTimeout(timer); done({ code, stdout, stderr }); });
+  });
+
+/** The AppleScript reads the prompt and optional start folder from argv, never from interpolated text. */
+const CHOOSE_FOLDER_SCRIPT = [
+  "on run argv",
+  "set prompt to item 1 of argv",
+  "if (count of argv) > 1 then",
+  "return POSIX path of (choose folder with prompt prompt default location (POSIX file (item 2 of argv)))",
+  "end if",
+  "return POSIX path of (choose folder with prompt prompt)",
+  "end run",
+];
+
+/**
+ * Opens this computer's own folder picker (Finder on macOS, zenity on Linux)
+ * and returns the chosen folder. The dashboard only listens on 127.0.0.1, so the
+ * picker appears on the owner's own screen.
+ */
+export async function chooseFolderNatively(start?: string, opts: { platform?: NodeJS.Platform; run?: PickerRunner } = {}): Promise<FolderChoice> {
+  const platform = opts.platform ?? process.platform;
+  const run = opts.run ?? runPicker;
+  let from: string | undefined;
+  if (start && isAbsolute(start)) {
+    try { if (statSync(start).isDirectory()) from = resolve(start); } catch { /* Start from the default place. */ }
+  }
+  let result;
+  if (platform === "darwin") {
+    result = await run("/usr/bin/osascript", [...CHOOSE_FOLDER_SCRIPT.flatMap((line) => ["-e", line]), S.folder.prompt, ...(from ? [from] : [])]);
+    if (result.code !== 0) return /-128/.test(result.stderr) ? { cancelled: true } : { unavailable: true };
+  } else if (platform === "linux") {
+    result = await run("zenity", ["--file-selection", "--directory", "--title", S.folder.prompt, ...(from ? ["--filename", from + "/"] : [])]);
+    if (result.code === null) return { unavailable: true };
+    if (result.code !== 0) return { cancelled: true };
+  } else return { unavailable: true };
+  const picked = result.stdout.trim().replace(/(.)\/$/, "$1");
+  if (!picked || !isAbsolute(picked)) return { cancelled: true };
+  return { path: picked };
 }
