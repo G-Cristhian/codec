@@ -146,7 +146,7 @@ export interface McpServer {
   /** Names only; saved values never come back to the page. */
   env?: Record<string, string>;
 }
-export interface Harness {
+interface Harness {
   access: Access;
   allow: string[];
   deny: string[];
@@ -258,7 +258,7 @@ export interface PageData {
   member?: Member;
   chat?: ChatView;
 }
-export interface ChatSummary {
+interface ChatSummary {
   id: string;
   title: string;
   tool: string;

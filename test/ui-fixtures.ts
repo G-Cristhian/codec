@@ -1,6 +1,6 @@
 import type { PageData, Run } from "../ui/src/lib/api";
 import type { ProjectConversation } from "../ui/src/conversation-feed";
-export const runFixture: Run = {
+const runFixture: Run = {
   runId: "run-demo",
   project: "site",
   task: "Check the website",

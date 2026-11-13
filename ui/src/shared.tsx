@@ -142,7 +142,7 @@ export function Tip({ text, children }: { text: string; children: ReactNode }) {
     </Tooltip.Root>
   );
 }
-export function Scroll({
+function Scroll({
   children,
   className = "",
 }: {
@@ -312,25 +312,6 @@ export function Disclosure({
         {children}
       </Collapsible.Content>
     </Collapsible.Root>
-  );
-}
-export function PageHeader({
-  title,
-  description,
-  children,
-}: {
-  title: ReactNode;
-  description?: ReactNode;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="page-head">
-      <div>
-        <h1>{title}</h1>
-        {description && <div className="description">{description}</div>}
-      </div>
-      {children}
-    </div>
   );
 }
 export function Crumbs({ children }: { children?: ReactNode }) {

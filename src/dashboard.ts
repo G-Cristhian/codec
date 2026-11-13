@@ -78,8 +78,8 @@ import {
 import { renderLocked } from "./ui.js";
 import { isUiAssetPath, readUiAsset, renderNextPage } from "./ui-bundle.js";
 
-export const DEFAULT_PORT = 4777;
-export const HOST = "127.0.0.1";
+const DEFAULT_PORT = 4777;
+const HOST = "127.0.0.1";
 // All dashboard screens now use the production React bundle.
 const REACT_AT_ROOT = true;
 const LOG_LINES = 200;
@@ -89,7 +89,6 @@ const MAX_UPLOAD = 8 * 1024 * 1024; // skill folder upload (base64)
 // ---------- lanes ----------
 
 export type Lane = "working" | "needsYou" | "inReview" | "done";
-export const LANES: Lane[] = ["working", "needsYou", "inReview", "done"];
 
 /**
  * Which board lane a run belongs on.
@@ -245,7 +244,7 @@ export function teamsView() {
   }));
 }
 
-export function memberPage(team: string, member: string) {
+function memberPage(team: string, member: string) {
   const v = memberView(team, member, listRuns({ state: "running" }));
   const runs = listRuns()
     .filter((r) => r.team === team && r.member === member)
@@ -254,12 +253,12 @@ export function memberPage(team: string, member: string) {
   return { ...v, runs };
 }
 
-export function specialistsView() {
+function specialistsView() {
   return listSpecialists().map((s) => ({ ...s, clones: clonesOf(s.name) }));
 }
 
 /** The library, who has each skill, and an agents × skills grid. */
-export function skillsView() {
+function skillsView() {
   const skills = listSkills().map((s) => ({ name: s.name, description: s.description, files: s.files, ...skillHolders(s.name) }));
   const rows: { kind: "specialist" | "member"; id: string; label: string; tool: string; skills: Record<string, string> }[] = [];
   for (const sp of listSpecialists()) {
@@ -393,7 +392,7 @@ export function runView(ref: string) {
 }
 
 /** Describe the same dependencies and blockers enforced by engine removals. */
-export function removePreview(kind: string, name: string) {
+function removePreview(kind: string, name: string) {
   const effects: { what: string; kind: "lost" | "kept" }[] = [];
   let blockedReason: string | undefined;
   const runs = listRuns();

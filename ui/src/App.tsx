@@ -49,7 +49,6 @@ import {
   Users,
   Folder,
   UsersRound,
-  Contact,
   BookOpen,
   KeyRound,
   User,
@@ -61,7 +60,7 @@ function parts(hash: string) {
     return [];
   }
 }
-export async function loadPage(
+async function loadPage(
   hash: string,
   signal: AbortSignal,
 ): Promise<PageData> {

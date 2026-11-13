@@ -45,7 +45,7 @@ const ACCESS: { value: Access; label: string; hint: string }[] = [
   { value: "read", label: S.agents.accessRead, hint: S.agents.accessReadHint },
   { value: "custom", label: S.agents.accessCustom, hint: S.agents.accessCustomHint },
 ];
-export const accessText = (a?: Access) => ACCESS.find((x) => x.value === (a ?? "full"))!.label;
+const accessText = (a?: Access) => ACCESS.find((x) => x.value === (a ?? "full"))!.label;
 
 interface McpRow {
   name: string;

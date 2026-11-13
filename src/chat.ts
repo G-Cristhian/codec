@@ -22,14 +22,14 @@ import { checkTool, type Agent } from "./tools.js";
 import { randomBytes } from "crypto";
 import { cleanLabel, type ProjectArea } from "./planner.js";
 
-export interface ChatMessage { role: "user" | "assistant" | "error"; text: string; at: string; model?: string }
+interface ChatMessage { role: "user" | "assistant" | "error"; text: string; at: string; model?: string }
 export interface ChatSaved {
   id: string; title: string; titled?: boolean; tool: Agent; model?: string; session?: string; messages: ChatMessage[];
   area?: ProjectArea; className?: string; createdAt: string; updatedAt: string;
 }
 interface ChatStore { current?: string; chats: ChatSaved[] }
 export interface ModelChoice { id: string; label: string }
-export interface ChatSummary { id: string; title: string; tool: Agent; updatedAt: string; area?: ProjectArea; className?: string; preview: string; busy: boolean }
+interface ChatSummary { id: string; title: string; tool: Agent; updatedAt: string; area?: ProjectArea; className?: string; preview: string; busy: boolean }
 export interface ChatView {
   id: string; title: string; tool: Agent; model?: string; area?: ProjectArea; className?: string;
   models: Record<Agent, ModelChoice[]>; messages: ChatMessage[]; busy: boolean; chats: ChatSummary[];

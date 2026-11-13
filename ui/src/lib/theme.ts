@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-export const THEME_KEY = "codec-theme";
+const THEME_KEY = "codec-theme";
 export type Theme = "auto" | "light" | "dark";
-export function readTheme(): Theme {
+function readTheme(): Theme {
   try {
     const t = localStorage.getItem(THEME_KEY);
     if (t === "auto" || t === "dark") return t;

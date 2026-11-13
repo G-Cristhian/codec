@@ -14,13 +14,12 @@ import { join } from "path";
 import { CodecError } from "./errors.js";
 import { S } from "./strings.js";
 import { codecHome, readJson, writeJsonAtomic } from "./store.js";
-import type { Agent } from "./tools.js";
 
 /** full: anything (today's behaviour) · edit: files + commands, no web · read: read + web only · custom: owner's rules. */
-export const ACCESS_LEVELS = ["full", "edit", "read", "custom"] as const;
+const ACCESS_LEVELS = ["full", "edit", "read", "custom"] as const;
 export type Access = (typeof ACCESS_LEVELS)[number];
 
-export interface McpServer {
+interface McpServer {
   name: string;
   type: "stdio" | "http";
   command?: string;
@@ -207,8 +206,4 @@ export function codexOverrides(h: Harness): [string, string][] {
 /** The Codex sandbox for an access level (Codex has no per-tool rules). */
 export function codexSandbox(access: Access): "full" | "workspace-write" | "read-only" {
   return access === "full" || access === "custom" ? "full" : access === "edit" ? "workspace-write" : "read-only";
-}
-
-export function toolSupports(tool: Agent) {
-  return { rules: tool === "claude", isolation: tool === "claude" };
 }

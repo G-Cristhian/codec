@@ -63,7 +63,7 @@ const TONE: Record<string, string> = {
   pr: "review",
   review: "working",
 };
-export function Tag({ tone, children }: { tone: string; children: string }) {
+function Tag({ tone, children }: { tone: string; children: string }) {
   return (
     <span className={"status tag " + (TONE[tone] ?? "quiet")} data-testid="tag" data-key={tone}>
       {children}
@@ -71,7 +71,7 @@ export function Tag({ tone, children }: { tone: string; children: string }) {
   );
 }
 /** Padded local day (YYYY-MM-DD), the format calendar events are saved in. */
-export const isoDay = (d: Date) =>
+const isoDay = (d: Date) =>
   d.getFullYear() +
   "-" +
   String(d.getMonth() + 1).padStart(2, "0") +
@@ -585,7 +585,7 @@ function AiAccounts({ data }: { data: PageData }) {
 }
 
 type ApprovalKind = "decision" | "pr" | "review";
-export function approvals(runs: Run[]): { run: Run; kind: ApprovalKind }[] {
+function approvals(runs: Run[]): { run: Run; kind: ApprovalKind }[] {
   const out: { run: Run; kind: ApprovalKind }[] = [];
   for (const run of runs) {
     if (run.lane === "inReview") out.push({ run, kind: "pr" });

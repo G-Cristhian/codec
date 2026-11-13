@@ -66,7 +66,7 @@ import {
 import { AGENTS, type Agent } from "./tools.js";
 import type { TaskArea } from "./planner.js";
 import { claudeMcpConfig, claudePermissions, codexOverrides, codexSandbox, type Access } from "./harness.js";
-export { AGENTS, type Agent };
+export { type Agent };
 export type RunState = "running" | "done" | "failed" | "stopped" | "timed_out";
 
 export interface HelperStatus {

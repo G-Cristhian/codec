@@ -6,15 +6,15 @@ import { S } from "./strings.js";
 import { codecHome, readJson, withLock, writeJsonAtomic } from "./store.js";
 
 /** Tag on a task: what part of life it's for. */
-export const TASK_AREAS = ["school", "work", "personal"] as const;
+const TASK_AREAS = ["school", "work", "personal"] as const;
 export type TaskArea = (typeof TASK_AREAS)[number];
 
 /** Tag on a project: one of the owner's classes, work or personal. */
-export const PROJECT_AREAS = ["class", "work", "personal"] as const;
+const PROJECT_AREAS = ["class", "work", "personal"] as const;
 export type ProjectArea = (typeof PROJECT_AREAS)[number];
 
-export const EVENT_KINDS = ["deadline", "meeting", "interview"] as const;
-export type EventKind = (typeof EVENT_KINDS)[number];
+const EVENT_KINDS = ["deadline", "meeting", "interview"] as const;
+type EventKind = (typeof EVENT_KINDS)[number];
 
 export interface CalendarEvent {
   id: string;

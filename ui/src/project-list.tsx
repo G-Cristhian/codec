@@ -1,7 +1,7 @@
 import { S, enc, fmt, LANES, type Home } from "./lib/api";
 import { Card, Hint } from "./shared";
 
-export function Progress({ percent }: { percent: number }) {
+function Progress({ percent }: { percent: number }) {
   return (
     <div className="progress" title={fmt(S.projects.progress, { percent })}>
       <i style={{ width: percent + "%" }} />

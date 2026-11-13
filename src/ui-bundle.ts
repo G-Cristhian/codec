@@ -3,7 +3,7 @@ import { extname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Resolves to dist/ui from both src/ (tsx) and dist/ (compiled server).
-export const UI_BUNDLE_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
+const UI_BUNDLE_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
 
 export function renderNextPage(token: string, bundleDir = UI_BUNDLE_DIR): string | undefined {
   let html: string;

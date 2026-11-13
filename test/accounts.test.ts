@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createHash } from "crypto";
 import { accountCliArgs, accountEnvironment, accountFolder, accountStore, addAccount, builtinAccount, claudeKeychainService, getAccount,

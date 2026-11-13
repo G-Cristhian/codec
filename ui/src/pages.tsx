@@ -25,7 +25,6 @@ import {
   errorText,
   type PageData,
   type Role,
-  type Member,
   type Team,
   type Account,
 } from "./lib/api";
@@ -90,7 +89,7 @@ function MessageLimitSettings({ scope, name, limit }: { scope: "project" | "team
   );
 }
 
-export function AccountSettings({
+function AccountSettings({
   scope,
   name,
   kind,
@@ -165,7 +164,7 @@ function AccountPicker({
     </div>
   );
 }
-export function ProjectAdd() {
+function ProjectAdd() {
   const [tracking, setTracking] = useState<{
     body: { name?: string; path: string };
     question: string;

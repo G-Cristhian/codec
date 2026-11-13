@@ -33,7 +33,7 @@ export const projectsFile = (): string => join(codecHome(), "projects.json");
 export const eventsFile = (): string => join(codecHome(), "events.jsonl");
 export const runsDir = (): string => join(codecHome(), "runs");
 export const worktreesDir = (): string => join(codecHome(), "worktrees");
-export const locksDir = (): string => join(codecHome(), "locks");
+const locksDir = (): string => join(codecHome(), "locks");
 export const skillsDir = (): string => join(codecHome(), "skills");
 export const specialistsFile = (): string => join(codecHome(), "specialists.json");
 export const teamsFile = (): string => join(codecHome(), "teams.json");

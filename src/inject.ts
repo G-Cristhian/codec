@@ -35,7 +35,7 @@ export interface GivenSkill {
 }
 
 /** Where each tool reads project skills from (first entry is where Codec writes). */
-export const SKILL_DIRS: Record<Agent, string[]> = {
+const SKILL_DIRS: Record<Agent, string[]> = {
   claude: [".claude/skills"],
   codex: [".agents/skills", ".codex/skills"],
 };
