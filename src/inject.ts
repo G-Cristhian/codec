@@ -115,15 +115,15 @@ export function instructionsText(m: ResolvedMember | undefined, tool: Agent, ski
  */
 export function injectSkills(worktree: string, tool: Agent, skills: ResolvedMember["skills"]): GivenSkill[] {
   const given = projectSkills(worktree, tool);
-  const projectNames = new Set(given.map((s) => s.name));
+  const projectByName = new Map(given.map((skill) => [skill.name, skill]));
   const base = SKILL_DIRS[tool][0];
   const excludes: string[] = [];
   for (const s of skills) {
     const lib = getSkill(s.name);
     if (!lib) throw new CodecError("missing_skill", `skill "${s.name}" is no longer in the library — fix the member's skills and try again`, { name: s.name });
-    if (projectNames.has(s.name)) {
-      const p = given.find((g) => g.name === s.name)!;
-      p.note = `also assigned via ${s.source}; the project's own copy is used`;
+    const project = projectByName.get(s.name);
+    if (project) {
+      project.note = `also assigned via ${s.source}; the project's own copy is used`;
       continue;
     }
     cpSync(lib.path, join(worktree, base, s.name), { recursive: true });

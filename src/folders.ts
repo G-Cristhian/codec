@@ -64,7 +64,7 @@ export function setUpTracking(path: string): void {
   };
   withLock("tracking-setup", () => {
     if (!isGitRepo(abs)) run(["init", "-q"]);
-    if (git(abs, ["rev-parse", "--verify", "--quiet", "HEAD"]).status === 0) return;
+    if (hasCheckpoint(abs)) return;
     const identity = checkpointIdentity(abs) ?? { name: S.checkpoints.fallbackName, email: S.checkpoints.fallbackEmail };
     run(["add", "-A"]);
     run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-q", "-m", S.checkpoints.startingMessage], identityEnvironment(identity));

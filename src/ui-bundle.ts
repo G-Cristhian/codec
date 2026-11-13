@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { textHTML } from "./ui.js";
 
 // Resolves to dist/ui from both src/ (tsx) and dist/ (compiled server).
 const UI_BUNDLE_DIR = fileURLToPath(new URL("../dist/ui", import.meta.url));
@@ -12,7 +13,7 @@ export function renderNextPage(token: string, bundleDir = UI_BUNDLE_DIR): string
     if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return undefined;
     throw error;
   }
-  const escaped = token.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+  const escaped = textHTML(token);
   return html.replaceAll("__CODEC_TOKEN__", () => escaped);
 }
 

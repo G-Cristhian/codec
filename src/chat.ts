@@ -149,16 +149,16 @@ export function createChat(options: ChatOptions = {}) {
     try { codex = codexModels(accountEnvironment(resolveAccount("codex")).CODEX_HOME || join(homedir(), ".codex")); } catch { /* No usable Codex account yet. */ }
     return { claude: CLAUDE_MODELS, codex };
   }
+  function summary(chat: ChatSaved): ChatSummary {
+    const last = chat.messages[chat.messages.length - 1];
+    return { id: chat.id, title: chat.title, tool: chat.tool, updatedAt: chat.updatedAt, area: chat.area, className: chat.className,
+      preview: last ? last.text.replace(/\s+/g, " ").slice(0, 120) : "", busy: !!child && childChat === chat.id };
+  }
   function viewOf(store: ChatStore): ChatView {
     const chat = currentOf(store);
-    const chats = store.chats.filter((c) => c.messages.length || c.id === chat.id)
+    const chats = store.chats.filter((c) => c.messages.length)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .filter((c) => c.messages.length)
-      .map((c) => {
-        const last = c.messages[c.messages.length - 1];
-        return { id: c.id, title: c.title, tool: c.tool, updatedAt: c.updatedAt, area: c.area, className: c.className,
-          preview: last ? last.text.replace(/\s+/g, " ").slice(0, 120) : "", busy: !!child && childChat === c.id };
-      });
+      .map(summary);
     return { id: chat.id, title: chat.title, tool: chat.tool, model: chat.model, area: chat.area, className: chat.className,
       models: models(), messages: chat.messages, busy: !!child && childChat === chat.id, chats };
   }

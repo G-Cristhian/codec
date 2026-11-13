@@ -60,7 +60,7 @@ import {
 } from "./org.js";
 import { getSkill, importSkill, importSkillFiles, listSkills } from "./skills.js";
 import { projectSkills, type GivenSkill } from "./inject.js";
-import { cappedMessagePairs, isHelperHeld, listMessages, postMessage, resetMessageLimit } from "./messages.js";
+import { cappedMessagePairs, isHelperHeld, listMessages, postMessage, resetMessageLimit, type MessageRecord } from "./messages.js";
 import { getCoordinator, helperRef, requireCoordinator, setupCoordinator } from "./coordinator.js";
 import {
   cleanRun,
@@ -177,6 +177,17 @@ export function agentMemoryBytes(running: RunStatus[]): number | null {
 
 // ---------- API views ----------
 
+function runStateText(r: RunStatus): string {
+  if (r.state === "stopped") return S.tasks.stopped;
+  if (r.state === "timed_out") return wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) });
+  if (r.state === "failed") return r.lostAt ? S.wording.lost : S.tasks.failed;
+  if (r.reviewStatus === "unsaved") return S.tasks.unsaved;
+  if (r.reviewStatus === "unavailable") return S.tasks.workspaceUnchecked;
+  if (r.reviewStatus === "no_changes") return S.tasks.noChanges;
+  if (r.lostAt) return S.wording.lost;
+  return { running: S.tasks.working, done: S.wording.finished }[r.state];
+}
+
 function runSummary(r: RunStatus) {
   return {
     account: r.account ?? { id: builtinId(r.agent), name: S.accounts.computer },
@@ -189,7 +200,7 @@ function runSummary(r: RunStatus) {
     held: isHelperHeld(helperRef(r)),
     reviewStatus: r.reviewStatus,
     area: r.area,
-    stateText: r.state === "stopped" ? S.tasks.stopped : r.state === "timed_out" ? wording(S.tasks.timedOut, { limit: formatTimeLimit(r.timeLimitMinutes) }) : r.state === "failed" ? (r.lostAt ? S.wording.lost : S.tasks.failed) : r.reviewStatus === "unsaved" ? S.tasks.unsaved : r.reviewStatus === "unavailable" ? S.tasks.workspaceUnchecked : r.reviewStatus === "no_changes" ? S.tasks.noChanges : r.lostAt ? S.wording.lost : ({ running: S.tasks.working, done: S.wording.finished, failed: S.tasks.failed, stopped: S.tasks.stopped })[r.state],
+    stateText: runStateText(r),
     lostAt: r.lostAt,
     timeLimitMinutes: r.timeLimitMinutes,
     deadline: r.deadline,
@@ -319,6 +330,34 @@ function projectHelpers(name: string) {
     .flatMap((team) => team.members.map((member) => ({ ref: `${team.name}/${member.name}`, name: `${team.name}/${member.name}` })));
 }
 
+function projectMessageView(message: MessageRecord) {
+  let senderName = message.from;
+  let senderKind: "system" | "owner" | "coordinator" | "helper" = "helper";
+  switch (message.from) {
+    case "codec": senderName = S.messageLimit.sender; senderKind = "system"; break;
+    case "owner": senderName = S.conversation.you; senderKind = "owner"; break;
+    case "coordinator": senderName = S.coordinator.name; senderKind = "coordinator"; break;
+  }
+  return {
+    id: message.id,
+    senderName,
+    senderKind,
+    recipientName: message.to === "coordinator" ? S.coordinator.name : message.to === "owner" ? S.conversation.you : message.to,
+    body: message.body,
+    sentAt: message.sentAt,
+    waiting: !message.deliveredAt,
+  };
+}
+
+function projectMemberOption(team: string, member: string) {
+  try {
+    const r = resolveMember(team, member);
+    return { ref: `${team}/${member}`, member, team, specialty: r.specialty, tool: r.tool, label: wording(S.wording.helperOption, { member, team, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
+  } catch {
+    return undefined;
+  }
+}
+
 export function projectView(name: string) {
   const project = listProjects().find((p) => p.name === name);
   if (!project) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
@@ -334,15 +373,7 @@ export function projectView(name: string) {
     .filter((message) => refs.has(message.from) || refs.has(message.to)
       || (message.from === "owner" || message.from === "codec") && message.to === "coordinator"
       || message.from === "coordinator" && message.to === "owner")
-    .map((message) => ({
-      id: message.id,
-      senderName: message.from === "codec" ? S.messageLimit.sender : message.from === "owner" ? S.conversation.you : message.from === "coordinator" ? S.coordinator.name : message.from,
-      senderKind: message.from === "codec" ? "system" as const : message.from === "owner" ? "owner" as const : message.from === "coordinator" ? "coordinator" as const : "helper" as const,
-      recipientName: message.to === "coordinator" ? S.coordinator.name : message.to === "owner" ? S.conversation.you : message.to,
-      body: message.body,
-      sentAt: message.sentAt,
-      waiting: !message.deliveredAt,
-    }));
+    .map(projectMessageView);
   let messages: ReturnType<typeof feed> = [];
   let messagesError = false;
   try { messages = feed(); } catch (error) {
@@ -352,16 +383,7 @@ export function projectView(name: string) {
   // Who can be started here: members of every team assigned to this project.
   const members: { ref: string; member: string; team?: string; specialty?: string; tool: string; label: string }[] = listTeams()
     .filter((t) => t.projects.includes(name))
-    .flatMap((t) =>
-      t.members.map((m) => {
-        try {
-          const r = resolveMember(t.name, m.name);
-          return { ref: `${t.name}/${m.name}`, member: m.name, team: t.name, specialty: r.specialty, tool: r.tool, label: wording(S.wording.helperOption, { member: m.name, team: t.name, specialty: r.specialty ?? S.members.worker, tool: r.tool === "claude" ? S.setup.claude : S.setup.codex }) };
-        } catch {
-          return undefined;
-        }
-      }),
-    )
+    .flatMap((t) => t.members.map((m) => projectMemberOption(t.name, m.name)))
     .filter((member) => member !== undefined);
   if (coordinator) members.unshift({ ref: "coordinator", member: "coordinator", tool: coordinator.tool, label: S.coordinator.name });
   const cappedPairs = cappedMessagePairs().filter((pair) => refs.has(pair.a) || refs.has(pair.b));
@@ -389,6 +411,15 @@ export function runView(ref: string) {
     skillsUsed: skillsUsed(r.runId),
     log: runOutput(r.runId, LOG_LINES),
   };
+}
+
+function removalText(kind: string, name: string): string | undefined {
+  switch (kind) {
+    case "project": return wording(S.wording.removeProject, { name });
+    case "team": return wording(S.wording.removeTeam, { name });
+    case "member": return wording(S.wording.removeMember, parseMemberRef(name));
+    case "specialist": return wording(S.wording.removeRole, { name });
+  }
 }
 
 /** Describe the same dependencies and blockers enforced by engine removals. */
@@ -435,7 +466,11 @@ function removePreview(kind: string, name: string) {
     effect("lost", wording(S.wording.helpersLose, { count: members.size }));
     effect("kept", S.wording.taskCopies);
     effect("kept", S.wording.originalKept);
-    effect("lost", wording(S.wording.removeSkill, { name, list: [...holders.specialists.map((name) => wording(S.members.copyOf, { name })), ...Array.from(members, (ref) => wording(S.wording.helperTeam, parseMemberRef(ref)))].join(", ") || S.wording.noHolders }));
+    const holderNames = [
+      ...holders.specialists.map((name) => wording(S.members.copyOf, { name })),
+      ...Array.from(members, (ref) => wording(S.wording.helperTeam, parseMemberRef(ref))),
+    ];
+    effect("lost", wording(S.wording.removeSkill, { name, list: holderNames.join(", ") || S.wording.noHolders }));
   } else {
     throw new ApiError(400, "invalid_kind", "Choose a project, team, specialist, skill or member to remove.");
   }
@@ -446,11 +481,8 @@ function removePreview(kind: string, name: string) {
     const count = related.filter((run) => run.state !== "running").length;
     effect("kept", wording(S.wording.history, { count }));
   }
-  const removalText = kind === "project" ? wording(S.wording.removeProject, { name })
-    : kind === "team" ? wording(S.wording.removeTeam, { name })
-    : kind === "member" ? wording(S.wording.removeMember, parseMemberRef(name))
-    : kind === "specialist" ? wording(S.wording.removeRole, { name }) : undefined;
-  return { kind, name, ...(removalText ? { removalText } : {}), blocked: !!blockedReason, ...(blockedReason ? { blockedReason } : {}), effects };
+  const text = removalText(kind, name);
+  return { kind, name, ...(text ? { removalText: text } : {}), blocked: !!blockedReason, ...(blockedReason ? { blockedReason } : {}), effects };
 }
 
 // ---------- HTTP plumbing ----------
@@ -529,6 +561,77 @@ function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<Record<string
 const s = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const strs = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : typeof v === "string" ? v.split(",") : undefined;
+
+function requiredField(body: Record<string, unknown>, key: string): string {
+  const value = s(body[key]);
+  if (!value || !value.trim()) throw new ApiError(400, key === "task" ? "missing_task" : "missing_path", key === "task" ? "Describe the task before starting it." : "Choose a folder before continuing.");
+  return value;
+}
+
+function addProjectFromRequest(body: Record<string, unknown>) {
+  const folder = requireFolder(requiredField(body, "path"));
+  if (!isGitRepo(folder) && body.setUpTracking !== true) {
+    throw new ApiError(409, "needs_tracking", "This folder isn't set up for tracking changes yet. Set it up now?");
+  }
+  if (isGitRepo(folder) && !hasCheckpoint(folder) && body.setUpTracking !== true) {
+    throw new CodecError("needs_checkpoint", "repository has no commits yet", {}, 409);
+  }
+  if (body.setUpTracking === true) setUpTracking(folder);
+  return addProject(folder, s(body.name)?.trim() || undefined);
+}
+
+function addMemberFromRequest(team: string, body: Record<string, unknown>) {
+  if (!getTeam(team)) throw new CodecError("team_not_found", `no team named "${team}"`, { name: team }, 404);
+  // Check the harness first so a bad MCP server or rule doesn't leave a half-made agent.
+  const change = checkHarness(team, "\0new", body);
+  const m = addMember(team, {
+    name: s(body.name),
+    specialist: s(body.specialist) || undefined,
+    tool: s(body.tool) || undefined,
+    model: s(body.model),
+    specialty: s(body.specialty),
+    skills: strs(body.skills),
+    timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes),
+  });
+  writeHarness(team, m.name, change);
+  return m;
+}
+
+function editMemberFromRequest(teamName: string, member: string, body: Record<string, unknown>) {
+  const team = getTeam(teamName);
+  if (!team) throw new CodecError("team_not_found", `no team named "${teamName}"`, { name: teamName }, 404);
+  if (!team.members.some((m) => m.name === member)) throw new CodecError("member_not_found", `team ${teamName} has no member named "${member}"`, {}, 404);
+  const change = checkHarness(teamName, member, body);
+  const edited = editMember(teamName, member, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes), skills: strs(body.skills), tool: s(body.tool) || undefined, model: s(body.model), specialty: s(body.specialty) });
+  writeHarness(teamName, member, change);
+  return edited;
+}
+
+function importSkillFromRequest(body: Record<string, unknown>) {
+  if (Array.isArray(body.files)) {
+    const files = (body.files as unknown[]).map((f) => {
+      const o = (f ?? {}) as Record<string, unknown>;
+      if (typeof o.path !== "string" || typeof o.content !== "string") throw new ApiError(400, "invalid_upload", "Choose the skill folder again so all its files can be read.");
+      return { path: o.path, content: o.content };
+    });
+    return importSkillFiles(files, tmpdir(), { name: s(body.name), replace: body.replace === true });
+  }
+  return importSkill(requireFolder(requiredField(body, "path")), { name: s(body.name), replace: body.replace === true });
+}
+
+function postProjectMessage(project: string, body: Record<string, unknown>) {
+  if (!getProject(project)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
+  const text = s(body.body) ?? "";
+  if (!text.trim()) throw new ApiError(400, "missing_message", S.errors.missing_message);
+  const helpers = projectHelpers(project);
+  const to = s(body.to);
+  if (to !== "all" && to !== "coordinator" && !helpers.some((helper) => helper.ref === to)) {
+    throw new ApiError(400, "message_helper_not_on_project", S.errors.message_helper_not_on_project);
+  }
+  if (to === "all" && !helpers.length) throw new ApiError(400, "message_no_helpers", S.errors.message_no_helpers);
+  const recipients = to === "all" ? helpers.map((helper) => helper.ref) : [to!];
+  return recipients.map((recipient) => postMessage({ from: "owner", to: recipient, body: text }));
+}
 
 export interface Dashboard {
   server: Server;
@@ -621,11 +724,6 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     catch { throw new ApiError(400, "bad_request", "That address could not be read. Refresh the dashboard and try again."); }
     const isGet = req.method === "GET";
     const body = isGet ? {} : await readBody(req, path === "/api/skills" ? MAX_UPLOAD : MAX_BODY);
-    const need = (k: string): string => {
-      const v = s(body[k]);
-      if (!v || !v.trim()) throw new ApiError(400, k === "task" ? "missing_task" : "missing_path", k === "task" ? "Describe the task before starting it." : "Choose a folder before continuing.");
-      return v;
-    };
 
     // GET  /api/state
     // GET  /api/projects/:name
@@ -728,33 +826,14 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       return sendJson(res, 200, setTeamProjects(b, strs(body.projects) ?? []));
     }
     if (!isGet && a === "teams" && b && n === 3 && c === "members") {
-      if (!getTeam(b)) throw new CodecError("team_not_found", `no team named "${b}"`, { name: b }, 404);
-      // Check the harness first so a bad MCP server or rule doesn't leave a half-made agent.
-      const change = checkHarness(b, "\0new", body);
-      const m = addMember(b, {
-        name: s(body.name),
-        specialist: s(body.specialist) || undefined,
-        tool: s(body.tool) || undefined,
-        model: s(body.model),
-        specialty: s(body.specialty),
-        skills: strs(body.skills),
-        timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes),
-      });
-      writeHarness(b, m.name, change);
-      return sendJson(res, 201, m);
+      return sendJson(res, 201, addMemberFromRequest(b, body));
     }
     if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "remove" && n === 5) {
       return sendJson(res, 200, removeMemberChecked(b, d2));
     }
 
     if (!isGet && a === "teams" && b && c === "members" && d2 && e2 === "edit" && n === 5) {
-      const team = getTeam(b);
-      if (!team) throw new CodecError("team_not_found", `no team named "${b}"`, { name: b }, 404);
-      if (!team.members.some((m) => m.name === d2)) throw new CodecError("member_not_found", `team ${b} has no member named "${d2}"`, {}, 404);
-      const change = checkHarness(b, d2, body);
-      const edited = editMember(b, d2, { timeLimitMinutes: checkTimeLimit(body.timeLimitMinutes), skills: strs(body.skills), tool: s(body.tool) || undefined, model: s(body.model), specialty: s(body.specialty) });
-      writeHarness(b, d2, change);
-      return sendJson(res, 200, edited);
+      return sendJson(res, 200, editMemberFromRequest(b, d2, body));
     }
 
     // Specialists
@@ -772,30 +851,14 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
 
     // Skills: import from a folder path on this computer, or from uploaded files.
     if (!isGet && a === "skills" && n === 1) {
-      if (Array.isArray(body.files)) {
-        const files = (body.files as unknown[]).map((f) => {
-          const o = (f ?? {}) as Record<string, unknown>;
-          if (typeof o.path !== "string" || typeof o.content !== "string") throw new ApiError(400, "invalid_upload", "Choose the skill folder again so all its files can be read.");
-          return { path: o.path, content: o.content };
-        });
-        return sendJson(res, 201, importSkillFiles(files, tmpdir(), { name: s(body.name), replace: body.replace === true }));
-      }
-      return sendJson(res, 201, importSkill(requireFolder(need("path")), { name: s(body.name), replace: body.replace === true }));
+      return sendJson(res, 201, importSkillFromRequest(body));
     }
     if (!isGet && a === "skills" && b && c === "remove" && n === 3) return sendJson(res, 200, removeSkillEverywhere(b));
 
     if (isGet && a === "projects" && b && parts.length === 2) return sendJson(res, 200, projectView(b));
     if (isGet && a === "runs" && b && parts.length === 2) return sendJson(res, 200, runView(b));
     if (!isGet && a === "projects" && parts.length === 1) {
-      const folder = requireFolder(need("path"));
-      if (!isGitRepo(folder) && body.setUpTracking !== true) {
-        throw new ApiError(409, "needs_tracking", "This folder isn't set up for tracking changes yet. Set it up now?");
-      }
-      if (isGitRepo(folder) && !hasCheckpoint(folder) && body.setUpTracking !== true) {
-        throw new CodecError("needs_checkpoint", "repository has no commits yet", {}, 409);
-      }
-      if (body.setUpTracking === true) setUpTracking(folder);
-      return sendJson(res, 201, addProject(folder, s(body.name)?.trim() || undefined));
+      return sendJson(res, 201, addProjectFromRequest(body));
     }
     if (!isGet && a === "projects" && b && c === "remove" && parts.length === 3) {
       return sendJson(res, 200, removeProjectChecked(b));
@@ -812,17 +875,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       return sendJson(res, 200, { ok: true });
     }
     if (!isGet && a === "projects" && b && c === "messages" && n === 3) {
-      if (!getProject(b)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
-      const text = s(body.body) ?? "";
-      if (!text.trim()) throw new ApiError(400, "missing_message", S.errors.missing_message);
-      const helpers = projectHelpers(b);
-      const to = s(body.to);
-      if (to !== "all" && to !== "coordinator" && !helpers.some((helper) => helper.ref === to)) {
-        throw new ApiError(400, "message_helper_not_on_project", S.errors.message_helper_not_on_project);
-      }
-      if (to === "all" && !helpers.length) throw new ApiError(400, "message_no_helpers", S.errors.message_no_helpers);
-      const recipients = to === "all" ? helpers.map((helper) => helper.ref) : [to!];
-      return sendJson(res, 201, recipients.map((recipient) => postMessage({ from: "owner", to: recipient, body: text })));
+      return sendJson(res, 201, postProjectMessage(b, body));
     }
     if (!isGet && a === "projects" && b && c === "runs" && parts.length === 3) {
       const member = s(body.member)?.trim() || undefined;
@@ -831,7 +884,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       if (!getProject(b)) throw new CodecError("project_not_found", `no project named "${b}"`, {}, 404);
       const timeLimitMinutes = checkTimeLimit(body.timeLimitMinutes);
       const area = checkTaskArea(body.area);
-      const task = need("task");
+      const task = requiredField(body, "task");
       const ref = member && member !== "coordinator" ? parseMemberRef(member) : undefined;
       const tool = member === "coordinator" ? requireCoordinator().tool : ref ? resolveMember(ref.team, ref.member).tool : checkTool(agent!);
       const setup = await checkSetup();
