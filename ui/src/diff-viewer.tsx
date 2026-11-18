@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CheckCircle2 } from "lucide-react";
-import { S, api, enc, errorText, fmt, type DiffFile, type DiffLine, type Run, type RunChanges } from "./lib/api";
-import { CheckRow, useActions } from "./shared";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { CheckCircle2, MessageSquare } from "lucide-react";
+import { S, api, enc, errorText, fmt, type DiffFile, type DiffLine, type Run, type RunChanges, type FeedbackResult } from "./lib/api";
+import { CheckRow, Message, useActions } from "./shared";
 import { Button } from "./components/ui/button";
+import { Textarea } from "./components/ui/textarea";
 import { Badge } from "./components/ui/badge";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "./components/ui/dialog";
 
@@ -10,6 +11,35 @@ interface HunkSelection {
   kept: Set<string>;
   toggle: (id: string, checked: boolean) => void;
   saving: boolean;
+}
+
+interface LineFeedback {
+  comments: Record<string, string>;
+  editing?: string;
+  draft: string;
+  saving: boolean;
+  edit: (id: string) => void;
+  change: (text: string) => void;
+  save: () => void;
+  cancel: () => void;
+  remove: () => void;
+}
+
+function CommentBox({ feedback }: { feedback: LineFeedback }) {
+  return <div className="m-3 max-w-xl space-y-2 whitespace-normal rounded-md border bg-background p-3 font-sans text-sm"
+    onKeyDown={(event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); feedback.cancel(); }
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); feedback.save(); }
+    }}>
+    <Textarea autoFocus aria-label={S.diffViewer.comment} rows={3} maxLength={2000} value={feedback.draft}
+      disabled={feedback.saving} onChange={(event) => feedback.change(event.target.value)} />
+    <div className="flex gap-2">
+      <Button size="sm" disabled={feedback.saving || !feedback.draft.trim()} onClick={feedback.save}>{S.diffViewer.saveComment}</Button>
+      <Button size="sm" variant="outline" disabled={feedback.saving} onClick={feedback.cancel}>{S.diffViewer.cancelComment}</Button>
+      {feedback.editing && feedback.comments[feedback.editing] !== undefined &&
+        <Button size="sm" variant="outline" disabled={feedback.saving} onClick={feedback.remove}>{S.diffViewer.deleteComment}</Button>}
+    </div>
+  </div>;
 }
 
 function HunkCheck({ id, selection }: { id: string; selection?: HunkSelection }) {
@@ -25,8 +55,9 @@ const lineClasses: Record<DiffLine["kind"], string> = {
   hunk: "bg-muted text-muted-foreground italic",
 };
 
-function DiffFileList({ files, selected, select, selection }: {
+function DiffFileList({ files, selected, select, selection, commentCounts }: {
   files: DiffFile[]; selected?: string; select: (path: string) => void; selection?: HunkSelection;
+  commentCounts: Map<string, number>;
 }) {
   return (
     <div className="w-[220px] max-w-[40%] shrink-0 overflow-y-auto border-r" aria-label={S.diffViewer.files}>
@@ -39,7 +70,7 @@ function DiffFileList({ files, selected, select, selection }: {
               (selected === file.path ? "bg-accent text-accent-foreground" : "text-foreground")}>
             {slash >= 0 && <span className="block truncate text-xs text-muted-foreground">{file.path.slice(0, slash)}</span>}
             <span className="block truncate font-medium">{file.path.slice(slash + 1)}</span>
-            <span className="mt-1 flex items-center gap-1">
+            <span className="mt-1 flex flex-wrap items-center gap-1">
               {selection && <span className="text-xs text-muted-foreground">{fmt(S.diffViewer.kept, {
                 n: file.hunks.filter((hunk) => selection.kept.has(hunk.id)).length, total: file.hunks.length,
               })}</span>}
@@ -47,6 +78,7 @@ function DiffFileList({ files, selected, select, selection }: {
                 <Badge variant="outline" className="border-green-600/40 text-green-800 dark:text-green-200">{fmt(S.diffViewer.additions, { n: file.additions })}</Badge>
                 <Badge variant="outline" className="border-red-600/40 text-red-800 dark:text-red-200">{fmt(S.diffViewer.deletions, { n: file.deletions })}</Badge>
               </>}
+              {!!commentCounts.get(file.path) && <Badge variant="secondary">{commentCounts.get(file.path) === 1 ? S.diffViewer.oneComment : fmt(S.diffViewer.commentCount, { n: commentCounts.get(file.path)! })}</Badge>}
             </span>
           </button>
         );
@@ -55,7 +87,21 @@ function DiffFileList({ files, selected, select, selection }: {
   );
 }
 
-function DiffPane({ file, loading, error, selection }: { file?: DiffFile; loading: boolean; error: string; selection?: HunkSelection }) {
+function DiffPane({ file, fileIndex, loading, error, selection, feedback }: {
+  file?: DiffFile; fileIndex: number; loading: boolean; error: string; selection?: HunkSelection; feedback?: LineFeedback;
+}) {
+  const commentable = useMemo(() => file?.lines.flatMap((line, i) => line.kind === "hunk" ? [] : [i]) ?? [], [file]);
+  const [focused, setFocused] = useState(commentable[0]);
+  const rows = useRef(new Map<number, HTMLDivElement>());
+  const editing = feedback?.editing;
+  const previousEditing = useRef(editing);
+  useEffect(() => {
+    if (previousEditing.current && !editing) {
+      const [index, line] = previousEditing.current.split(":").map(Number);
+      if (index === fileIndex) rows.current.get(line)?.focus();
+    }
+    previousEditing.current = editing;
+  }, [editing, fileIndex]);
   return (
     <section data-testid="diff-pane" className="min-w-0 flex-1 overflow-x-auto overflow-y-auto"
       aria-label={file ? fmt(S.diffViewer.diff, { path: file.path }) : S.diffViewer.title}>
@@ -71,36 +117,67 @@ function DiffPane({ file, loading, error, selection }: { file?: DiffFile; loadin
             <span>{S.diffViewer.wholeFile}</span>
           </div>}
           {file.binary ? <p className="p-6 text-muted-foreground">{S.diffViewer.binary}</p> :
-            <pre className="m-0 w-max min-w-full whitespace-pre font-mono text-xs leading-6">
-              {file.lines.map((line, i) => <div key={i} data-kind={line.kind} className={"px-3 " + lineClasses[line.kind] + (line.kind === "hunk" ? " flex items-center gap-3" : "")}>
+            <div className="m-0 w-max min-w-full font-mono text-xs leading-6">
+              {file.lines.map((line, i) => {
+                const id = `${fileIndex}:${i}`;
+                const canComment = !!feedback && line.kind !== "hunk";
+                const comment = feedback?.comments[id];
+                return <Fragment key={i}><div data-kind={line.kind}
+                  ref={(node) => { if (node) rows.current.set(i, node); else rows.current.delete(i); }}
+                  role={canComment ? "button" : undefined} tabIndex={canComment ? (focused === i ? 0 : -1) : undefined}
+                  aria-label={canComment ? fmt(S.diffViewer.commentLine, { n: line.newNo ?? line.oldNo ?? S.diffViewer.unnumbered, path: file.path }) : undefined}
+                  aria-disabled={canComment ? feedback.saving : undefined}
+                  onFocus={() => { if (canComment) setFocused(i); }}
+                  onClick={() => { if (canComment && !feedback.saving) feedback.edit(id); }}
+                  onKeyDown={(event) => {
+                    if (!canComment) return;
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      const next = commentable[Math.max(0, Math.min(commentable.length - 1, commentable.indexOf(i) + (event.key === "ArrowDown" ? 1 : -1)))];
+                      rows.current.get(next)?.focus();
+                    }
+                    if (event.key === "Enter") { event.preventDefault(); if (!feedback.saving) feedback.edit(id); }
+                  }}
+                  className={"px-3 " + lineClasses[line.kind] + (canComment ? " cursor-pointer focus-visible:outline-ring focus-visible:outline-2 focus-visible:-outline-offset-2" : "")}>
+                <pre className={"m-0 whitespace-pre font-mono " + (line.kind === "hunk" ? "flex items-center gap-3" : "")}>
                 {line.kind === "hunk" && <HunkCheck id={file.hunks.find((hunk) => hunk.firstLine === i)!.id} selection={selection} />}
                 {line.kind !== "hunk" && <>
+                  {feedback && <span className="inline-block w-5 align-middle" aria-hidden="true">{comment !== undefined && <MessageSquare className="size-3" />}</span>}
                   <span className="mr-3 inline-block w-10 select-none text-right text-muted-foreground" aria-hidden="true">{line.oldNo}</span>
                   <span className="mr-3 inline-block w-10 select-none text-right text-muted-foreground" aria-hidden="true">{line.newNo}</span>
                 </>}
                 <span>{line.text}</span>
-              </div>)}
+                </pre>
+                {comment !== undefined && <span className="sr-only">{S.diffViewer.commented}</span>}
+              </div>
+              {feedback?.editing === id ? <CommentBox feedback={feedback} /> : comment !== undefined &&
+                <p className="m-3 max-w-xl whitespace-pre-wrap break-words rounded-md bg-muted px-3 py-2 font-sans text-sm text-muted-foreground">{comment}</p>}
+              </Fragment>;
+              })}
               {!file.wholeFile && file.hunks.filter((hunk) => hunk.firstLine >= file.lines.length).map((hunk) =>
                 <div key={hunk.id} data-kind="hunk" className={"flex items-center gap-3 px-3 " + lineClasses.hunk}>
                   <HunkCheck id={hunk.id} selection={selection} />
                   <span>{hunk.header}</span><span className="ml-3">{S.diffViewer.hiddenHunk}</span>
                 </div>)}
-            </pre>}
+            </div>}
           {file.truncated && <p className="border-t p-4 text-sm text-muted-foreground">{S.diffViewer.truncated}</p>}
         </>}
     </section>
   );
 }
 
-export function DiffViewer({ taskName, files, loading = false, error = "", selection, actions, saveError = "" }: {
+export function DiffViewer({ taskName, files, loading = false, error = "", selection, feedback, actions, saveError = "", notice }: {
   taskName: string; files: DiffFile[]; loading?: boolean; error?: string;
   selection?: HunkSelection; actions?: ReactNode; saveError?: string;
+  feedback?: LineFeedback; notice?: ReactNode;
 }) {
   const sorted = useMemo(() => [...files].sort((a, b) =>
     (b.additions + b.deletions) - (a.additions + a.deletions) ||
     (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)), [files]);
   const [selected, select] = useState<string>();
   const file = sorted.find((item) => item.path === selected) ?? sorted[0];
+  const commentCounts = new Map(files.map((item, i) => [item.path,
+    Object.keys(feedback?.comments ?? {}).filter((id) => id.startsWith(`${i}:`)).length]));
   return (
     <>
       <header className="flex shrink-0 items-start justify-between gap-4 border-b p-5">
@@ -117,9 +194,10 @@ export function DiffViewer({ taskName, files, loading = false, error = "", selec
         </div>
       </header>
       {saveError && <p role="status" className="border-b px-5 py-3 text-sm text-destructive">{saveError}</p>}
+      {notice}
       <div className="flex min-h-0 flex-1 flex-row">
-        <DiffFileList files={sorted} selected={file?.path} select={select} selection={selection} />
-        <DiffPane key={file?.path} file={file} loading={loading} error={error} selection={selection} />
+        <DiffFileList files={sorted} selected={file?.path} select={select} selection={selection} commentCounts={commentCounts} />
+        <DiffPane key={file?.path} file={file} fileIndex={file ? files.indexOf(file) : -1} loading={loading} error={error} selection={selection} feedback={feedback} />
       </div>
     </>
   );
@@ -127,19 +205,30 @@ export function DiffViewer({ taskName, files, loading = false, error = "", selec
 
 /** This component owns the open state and fetch; page polling only updates its props. */
 export function ReviewChanges({ run, small = false, actionKey }: { run: Run; small?: boolean; actionKey: string }) {
-  const { tell, refresh, confirm } = useActions();
+  const { tell, refresh, confirm, messages } = useActions();
   const [open, setOpen] = useState(false);
   const [changes, setChanges] = useState<RunChanges>();
   const [error, setError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [kept, setKept] = useState(new Set<string>());
   const [saving, setSaving] = useState(false);
+  const [comments, setComments] = useState<Record<string, string>>({});
+  const [editing, setEditing] = useState<string>();
+  const [draft, setDraft] = useState("");
+  const lastHead = useRef<string>(undefined);
+  const feedbackKey = actionKey + "-" + run.runId + "-feedback";
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
     void api<RunChanges>("runs/" + enc(run.runId) + "/changes", undefined, controller.signal)
       .then((value) => {
         if (!controller.signal.aborted) {
+          if (lastHead.current !== undefined && lastHead.current !== value.head) {
+            setComments({});
+            setEditing(undefined);
+            if (Object.keys(comments).length) tell(feedbackKey, S.diffViewer.commentsCleared, true);
+          }
+          lastHead.current = value.head;
           setChanges(value);
           setKept(new Set(value.files.flatMap((file) => file.hunks.map((hunk) => hunk.id))));
         }
@@ -155,11 +244,64 @@ export function ReviewChanges({ run, small = false, actionKey }: { run: Run; sma
     try {
       await api("runs/" + enc(run.runId) + "/" + action,
         action === "apply" ? { head: changes.head, hunks: [...kept] } : {});
+      setComments({});
+      setEditing(undefined);
       setOpen(false);
       tell(actionKey, action === "apply" ? S.diffViewer.applySuccess : S.diffViewer.discardSuccess, true);
       refresh();
     } catch (reason) { setSaveError(errorText(reason)); }
     finally { setSaving(false); }
+  }
+  const helper = run.member === "coordinator" && !run.team ? "coordinator" :
+    run.team && run.member ? `${run.team}/${run.member}` : undefined;
+  const feedbackAllowed = run.state === "done" && run.reviewStatus === "ready" && !run.reviewed && !!helper;
+  const count = Object.keys(comments).length;
+  async function send() {
+    if (saving || !changes || !count || !feedbackAllowed) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      const result = await api<FeedbackResult>("runs/" + enc(run.runId) + "/feedback", {
+        head: changes.head, comments: Object.entries(comments).map(([line, text]) => ({ line, text })),
+      });
+      setComments({});
+      setEditing(undefined);
+      setDraft("");
+      tell(feedbackKey, fmt(result.delivered ? S.diffViewer.feedbackSent : S.diffViewer.feedbackWaiting, { helper: helper! }), true);
+      refresh();
+    } catch (reason) { setSaveError(errorText(reason)); }
+    finally { setSaving(false); }
+  }
+  const feedback: LineFeedback | undefined = feedbackAllowed ? {
+    comments, editing, draft, saving,
+    edit: (id) => { setEditing(id); setDraft(comments[id] ?? ""); },
+    change: setDraft,
+    cancel: () => setEditing(undefined),
+    save: () => {
+      if (saving || !editing || !draft.trim()) return;
+      if (draft.trim().length > 2000 || (comments[editing] === undefined && count >= 100)) {
+        setSaveError(S.errors.invalid_feedback);
+        return;
+      }
+      setComments((previous) => ({ ...previous, [editing]: draft.trim() }));
+      setEditing(undefined);
+    },
+    remove: () => {
+      if (saving || !editing) return;
+      setComments((previous) => { const next = { ...previous }; delete next[editing]; return next; });
+      setEditing(undefined);
+    },
+  } : undefined;
+  function decide(action: "apply" | "discard") {
+    if (action === "discard" || count) confirm({
+      title: action === "discard" ? S.diffViewer.discardTitle : S.diffViewer.loseCommentsTitle,
+      effects: [
+        ...(action === "discard" ? [{ what: S.diffViewer.discardEffect, kind: "kept" as const }] : []),
+        ...(count ? [{ what: S.diffViewer.loseCommentsEffect, kind: "lost" as const }] : []),
+      ],
+      label: action === "discard" ? S.diffViewer.discard : S.diffViewer.apply, action: () => save(action),
+    });
+    else void save(action);
   }
   const editable = run.reviewStatus === "ready" && !run.reviewed;
   const selection: HunkSelection | undefined = editable && changes ? { kept, saving,
@@ -171,12 +313,10 @@ export function ReviewChanges({ run, small = false, actionKey }: { run: Run; sma
   } : undefined;
   const total = changes?.files.reduce((sum, file) => sum + file.hunks.length, 0) ?? 0;
   const actions = editable ? <>
+    {feedbackAllowed && count > 0 && <Button type="button" size="sm" disabled={saving || !changes} onClick={() => void send()}>{fmt(S.diffViewer.sendFeedback, { n: count })}</Button>}
     <span className="text-sm text-muted-foreground">{fmt(S.diffViewer.selected, { n: kept.size, total })}</span>
-    <Button type="button" size="sm" disabled={!kept.size || saving} onClick={() => void save("apply")}>{S.diffViewer.apply}</Button>
-    <Button type="button" variant="outline" size="sm" disabled={saving || !changes} onClick={() => confirm({
-      title: S.diffViewer.discardTitle, effects: [{ what: S.diffViewer.discardEffect, kind: "kept" }],
-      label: S.diffViewer.discard, action: () => save("discard"),
-    })}>{S.diffViewer.discard}</Button>
+    <Button type="button" size="sm" disabled={!kept.size || saving} onClick={() => decide("apply")}>{S.diffViewer.apply}</Button>
+    <Button type="button" variant="outline" size="sm" disabled={saving || !changes} onClick={() => decide("discard")}>{S.diffViewer.discard}</Button>
   </> : run.reviewed?.action === "applied" ?
     <span className="text-sm text-muted-foreground">{fmt(S.diffViewer.applied, { n: run.reviewed.hunks, total: run.reviewed.total })}</span> : null;
 
@@ -185,13 +325,18 @@ export function ReviewChanges({ run, small = false, actionKey }: { run: Run; sma
     <Dialog open={open} onOpenChange={(value) => {
       if (saving) return;
       if (value) { setChanges(undefined); setError(""); setSaveError(""); setKept(new Set()); }
+      setEditing(undefined);
       setOpen(value);
     }}>
       <DialogTrigger asChild>
         <Button type="button" variant="outline" size={small ? "sm" : "default"} data-testid="task-review">{S.diffViewer.button}</Button>
       </DialogTrigger>
-      <DialogContent showCloseButton={false} className="w-[90vw] max-w-5xl max-h-[90vh] p-0 overflow-hidden flex flex-col h-[80vh] gap-0 sm:max-w-5xl">
-        <DiffViewer taskName={run.task} files={changes?.files ?? EMPTY_FILES} loading={!changes && !error} error={error} selection={selection} actions={actions} saveError={saveError} />
+      <DialogContent showCloseButton={false} onEscapeKeyDown={(event) => {
+        if (editing && feedbackAllowed) { event.preventDefault(); setEditing(undefined); }
+      }} className="w-[90vw] max-w-5xl max-h-[90vh] p-0 overflow-hidden flex flex-col h-[80vh] gap-0 sm:max-w-5xl">
+        <DiffViewer taskName={run.task} files={changes?.files ?? EMPTY_FILES} loading={!changes && !error} error={error}
+          selection={selection} feedback={feedback} actions={actions} saveError={saveError}
+          notice={messages[feedbackKey]?.text && <div className="border-b px-5 py-3"><Message actionKey={feedbackKey} /></div>} />
       </DialogContent>
     </Dialog>
   );

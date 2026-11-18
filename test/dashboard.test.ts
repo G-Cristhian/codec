@@ -224,7 +224,7 @@ describe("dashboard", () => {
     expect((await call(d, "GET", `/api/runs/${empty.runId}/changes`)).json).toMatchObject({ status: "no_changes", files: [] });
   });
 
-  it.each(["apply", "discard"])("requires POST auth and refuses running tasks for %s", async (action) => {
+  it.each(["apply", "discard", "feedback"])("requires POST auth and refuses running tasks for %s", async (action) => {
     addProject(makeRepo("alpha"));
     process.env.CODEC_AGENT_COMMAND = "sleep 30";
     const run = startRun({ project: "alpha", agent: "claude", task: "Wait" });
@@ -235,8 +235,25 @@ describe("dashboard", () => {
     expect((await call(d, "POST", path, { token: null, cookie: `codec_token_${d.port}=${d.token}`, body: {} })).status).toBe(401);
     const result = await call(d, "POST", path, { body: {} });
     expect(result.status).toBe(409);
-    expect(result.json).toMatchObject({ code: "changes_unavailable", error: S.errors.changes_unavailable });
+    const code = action === "feedback" ? "feedback_unavailable" : "changes_unavailable";
+    expect(result.json).toMatchObject({ code, error: S.errors[code] });
     expect((await call(d, "GET", path)).status).toBe(404);
+  });
+
+  it("posts line feedback through the authenticated route and keeps the task in review", async () => {
+    addProject(makeRepo("alpha"));
+    addTeam({ name: "web", projects: ["alpha"] });
+    addMember("web", { name: "helper", tool: "claude" });
+    process.env.CODEC_AGENT_COMMAND = "echo saved > notes.txt";
+    const run = await waitFor(startRun({ project: "alpha", member: "web/helper", task: "Write notes" }).runId);
+    const changes = (await call(d, "GET", `/api/runs/${run.runId}/changes`)).json;
+    const result = await call(d, "POST", `/api/runs/${run.runId}/feedback`, { body: {
+      head: changes.head, comments: [{ line: "0:1", text: "Please expand this." }],
+    } });
+    expect(result.status).toBe(200);
+    expect(result.json).toEqual({ delivered: false, messageId: expect.any(String) });
+    expect(listMessages()[0]).toMatchObject({ id: result.json.messageId, to: "web/helper" });
+    expect((await call(d, "GET", `/api/runs/${run.runId}`)).json).toMatchObject({ lane: "inReview", reviewStatus: "ready" });
   });
 
   it.each(["apply", "discard"])("returns a reviewed Done summary after %s", async (action) => {

@@ -3,9 +3,12 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addProject } from "../src/registry.js";
-import { MAX_FILE_DIFF_LINES, MAX_TOTAL_DIFF_LINES, applyChanges, discardChanges, runChanges } from "../src/review.js";
+import { MAX_FILE_DIFF_LINES, MAX_TOTAL_DIFF_LINES, applyChanges, discardChanges, runChanges, sendFeedback } from "../src/review.js";
 import { cleanRun, readRunStatus, listRuns, startRun, stopRun } from "../src/runs.js";
-import { laneOf } from "../src/dashboard.js";
+import { laneOf, projectView } from "../src/dashboard.js";
+import { addMember, addTeam } from "../src/org.js";
+import { listMessages } from "../src/messages.js";
+import { setupCoordinator } from "../src/coordinator.js";
 import { readEvents } from "../src/events.js";
 import { saveIdentity } from "../src/settings.js";
 import { S } from "../src/strings.js";
@@ -205,6 +208,135 @@ git commit -qm 'Fixture rename'`);
     const { files } = await runChanges(run.runId);
     expect(files.reduce((sum, file) => sum + file.lines.length, 0)).toBe(9500);
     expect(files.slice(5)).toMatchObject([{ truncated: true, lines: [] }, { truncated: true, lines: [] }]);
+  });
+});
+
+describe("review line feedback", () => {
+  beforeEach(() => useIsolatedHome("true"));
+  afterEach(() => {
+    for (const run of listRuns({ state: "running" })) stopRun(run.runId);
+    cleanupTemps();
+  });
+
+  async function fixture(member = "web/helper", task = "Improve the page\nDetails stay out of the heading") {
+    const repo = makeRepo("site");
+    writeFileSync(join(repo, "a.txt"), "same\nbefore\nlast\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-qm", "Feedback base");
+    addProject(repo);
+    addTeam({ name: "web", projects: ["site"] });
+    addMember("web", { name: "helper", tool: "claude" });
+    if (member === "coordinator") setupCoordinator({ tool: "claude" });
+    process.env.CODEC_AGENT_COMMAND = editFiles({ "b.txt": "second file\n", "a.txt": "same\nafter\nlast\n" });
+    const run = await waitFor(startRun({ project: "site", member, task }).runId);
+    return { run, changes: await runChanges(run.runId), repo };
+  }
+
+  it("formats trusted added, removed and unchanged lines across files in diff order, queues once, and preserves the review", async () => {
+    const { run, changes, repo } = await fixture();
+    const record = join(process.env.CODEC_HOME!, "runs", run.runId, "run.json");
+    const recordBefore = readFileSync(record, "utf8");
+    const snapshot = () => ({
+      run: readRunStatus(run.runId), lane: laneOf(readRunStatus(run.runId)!),
+      project: git(repo, "rev-parse", "HEAD"), projectStatus: git(repo, "status", "--porcelain"),
+      head: git(run.worktree, "rev-parse", "HEAD"), branch: git(run.worktree, "branch", "--show-current"),
+      worktree: git(repo, "worktree", "list", "--porcelain"), status: git(run.worktree, "status", "--porcelain"),
+    });
+    const before = snapshot();
+    const result = await sendFeedback(run.runId, { head: changes.head, comments: [
+      { line: "1:1", text: "  Explain the second file.  " },
+      { line: "0:3", text: "Please handle empty input.\nKeep it small." },
+      { line: "0:2", text: "Keep this behavior." },
+      { line: "0:1", text: "Add a test here." },
+    ] });
+    expect(result).toEqual({ delivered: false, messageId: expect.any(String) });
+    const expected = 'Feedback on your changes for "Improve the page" (4 comments):\n\n' +
+      'a.txt, unchanged line 1:\n> same\nAdd a test here.\n\n' +
+      'a.txt, removed line 2:\n> before\nKeep this behavior.\n\n' +
+      'a.txt, added line 2:\n> after\nPlease handle empty input.\nKeep it small.\n\n' +
+      'b.txt, added line 1:\n> second file\nExplain the second file.';
+    expect(listMessages()).toEqual([expect.objectContaining({ id: result.messageId, from: "owner", to: "web/helper", body: expected })]);
+    expect(listMessages()[0].deliveredAt).toBeUndefined();
+    expect(projectView("site").messages).toEqual([expect.objectContaining({ id: result.messageId, body: expected, waiting: true })]);
+    expect(snapshot()).toEqual(before);
+    expect(before.lane).toBe("inReview");
+    expect(readFileSync(record, "utf8")).toBe(recordBefore);
+    // Existing inbox delivery drains the same message when this helper starts again.
+    process.env.CODEC_AGENT_COMMAND = "sleep 30";
+    const next = startRun({ project: "site", member: "web/helper", task: "Address feedback" });
+    expect(listMessages()[0]).toMatchObject({ deliveredAt: expect.any(String), runId: next.runId });
+  });
+
+  it.each(["web/helper", "coordinator"])("delivers to a working %s without changing the reviewed task", async (member) => {
+    const { run, changes } = await fixture(member);
+    process.env.CODEC_AGENT_COMMAND = "sleep 30";
+    const next = startRun({ project: "site", member, task: "Continue" });
+    const before = readRunStatus(run.runId);
+    const result = await sendFeedback(run.runId, { head: changes.head, comments: [{ line: "0:3", text: "Fix this." }] });
+    expect(result.delivered).toBe(true);
+    expect(listMessages()).toEqual([expect.objectContaining({ id: result.messageId, to: member, runId: next.runId, deliveredAt: expect.any(String) })]);
+    expect(readRunStatus(run.runId)).toEqual(before);
+  });
+
+  it("limits the task heading and source excerpt and preserves literal placeholders", async () => {
+    const { run } = await fixture("web/helper", "t".repeat(110) + "\nsecond line");
+    writeFileSync(join(run.worktree, "b.txt"), "{text}" + "x".repeat(220) + "\n");
+    git(run.worktree, "add", ".");
+    git(run.worktree, "commit", "-qm", "Long line");
+    const changes = await runChanges(run.runId);
+    await sendFeedback(run.runId, { head: changes.head, comments: [{ line: "1:1", text: "  {line}  " }] });
+    expect(listMessages()[0].body).toBe(`Feedback on your changes for "${"t".repeat(100)}" (1 comment):\n\nb.txt, added line 1:\n> {text}${"x".repeat(194)}\n{line}`);
+  });
+
+  it("rejects a stale head before sending", async () => {
+    const { run, changes } = await fixture();
+    git(run.worktree, "commit", "--allow-empty", "-qm", "Moved on");
+    await expect(sendFeedback(run.runId, { head: changes.head, comments: [{ line: "0:3", text: "Fix" }] }))
+      .rejects.toMatchObject({ code: "changes_stale", status: 409 });
+    expect(listMessages()).toEqual([]);
+  });
+
+  it.each([
+    ["empty", []], ["missing", undefined], ["unknown line", [{ line: "99:1", text: "Fix" }]],
+    ["duplicate", [{ line: "0:3", text: "One" }, { line: "0:3", text: "Two" }]],
+    ["hunk", [{ line: "0:0", text: "Fix" }]], ["blank", [{ line: "0:3", text: " \n " }]],
+    ["too long", [{ line: "0:3", text: "a".repeat(2001) }]],
+    ["too many", Array.from({ length: 101 }, (_, i) => ({ line: `0:${i}`, text: "Fix" }))],
+    ["null entry", [null]], ["non-string text", [{ line: "0:3", text: 7 }]],
+    ["non-canonical id", [{ line: "00:3", text: "Fix" }]],
+  ])("rejects invalid feedback: %s", async (_, comments) => {
+    const { run, changes } = await fixture();
+    await expect(sendFeedback(run.runId, { head: changes.head, comments })).rejects.toMatchObject({
+      code: "invalid_feedback", status: 400, message: S.errors.invalid_feedback,
+    });
+    expect(listMessages()).toEqual([]);
+  });
+
+  it("accepts 100 unique comments with 2,000 trimmed characters each", async () => {
+    const { run } = await fixture();
+    writeFileSync(join(run.worktree, "b.txt"), Array.from({ length: 100 }, (_, i) => `line ${i}\n`).join(""));
+    git(run.worktree, "add", ".");
+    git(run.worktree, "commit", "-qm", "Many lines");
+    const changes = await runChanges(run.runId);
+    await sendFeedback(run.runId, { head: changes.head,
+      comments: Array.from({ length: 100 }, (_, i) => ({ line: `1:${i + 1}`, text: " " + "a".repeat(2000) + " " })),
+    });
+    expect(listMessages()).toHaveLength(1);
+    expect(listMessages()[0].body).toContain("(100 comments)");
+  });
+
+  it.each(["quick", "running", "reviewed", "no_changes"])("refuses feedback for a %s task", async (kind) => {
+    const { run, changes } = await fixture();
+    let target = run;
+    if (kind === "reviewed") target = applyChanges(run.runId, { head: changes.head, hunks: ["0:0"] });
+    else {
+      process.env.CODEC_AGENT_COMMAND = kind === "running" ? "sleep 30" : kind === "quick" ? editFiles({ "quick.txt": "quick\n" }) : "true";
+      target = startRun({ project: "site", ...(kind === "quick" ? { agent: "claude" as const } : { member: "web/helper" }), task: "Another" });
+      if (kind !== "running") target = await waitFor(target.runId);
+    }
+    await expect(sendFeedback(target.runId, { head: changes.head, comments: [{ line: "0:3", text: "Fix" }] }))
+      .rejects.toMatchObject({ code: "feedback_unavailable", status: 409, message: S.errors.feedback_unavailable });
+    expect(listMessages()).toEqual([]);
   });
 });
 
