@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, MessageSquare } from "lucide-react";
+import { CheckCircle2, MessageSquare, LoaderCircle } from "lucide-react";
 import { S, api, enc, errorText, fmt, type DiffFile, type DiffLine, type Run, type RunChanges, type FeedbackResult } from "./lib/api";
 import { CheckRow, Message, useActions } from "./shared";
 import { Button } from "./components/ui/button";
@@ -203,10 +203,88 @@ export function DiffViewer({ taskName, files, loading = false, error = "", selec
   );
 }
 
+export function TestBadge({ run }: { run: Run }) {
+  const tests = run.reviewed?.action === "applied" ? run.reviewed.tests : undefined;
+  if (!tests) return null;
+  const helper = run.member === "coordinator" && !run.team ? S.coordinator.name : run.member;
+  const busy = tests.state === "queued" || tests.state === "running";
+  return <div className="space-y-1">
+    <Badge variant="secondary">
+      {busy && <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />}
+      {tests.sentBack ? fmt(S.tests.sentBadge, { helper }) : busy ? S.tests.testing :
+        tests.state === "passed" ? S.tests.passedBadge : tests.state === "skipped" ? S.tests.skipped : S.tests.failedBadge}
+    </Badge>
+    {tests.sentBack && run.testsFollowup?.waiting && <span className="text-xs text-muted-foreground">{S.conversation.waiting}</span>}
+    {!busy && tests.state === "failed" && !!tests.failures?.length && <ul className="text-sm">
+      {tests.failures.map((failure, i) => <li key={i}>{failure.name}{failure.file && <span className="ml-1 font-mono text-xs">{failure.file}</span>}</li>)}
+    </ul>}
+  </div>;
+}
+
+function TestResults({ run, saving, act, notice, saveError }: {
+  run: Run; saving: boolean; act: (action: "" | "/send-back" | "/done") => void; notice: ReactNode; saveError: string;
+}) {
+  const tests = run.reviewed?.action === "applied" ? run.reviewed.tests : undefined;
+  const [output, setOutput] = useState<string>();
+  const [outputError, setOutputError] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => {
+    setOutput(undefined); setOutputError("");
+    if (!expanded) return;
+    const controller = new AbortController();
+    void api<string>("runs/" + enc(run.runId) + "/tests/output", undefined, controller.signal, true)
+      .then((text) => { if (!controller.signal.aborted) setOutput(text); })
+      .catch((reason) => { if (!controller.signal.aborted) setOutputError(errorText(reason)); });
+    return () => controller.abort();
+  }, [expanded, run.runId, tests?.startedAt, tests?.state]);
+  if (!tests) return null;
+  const helper = run.member === "coordinator" && !run.team ? S.coordinator.name : run.team ? run.member : undefined;
+  const busy = tests.state === "queued" || tests.state === "running";
+  const failed = ["failed", "error", "interrupted"].includes(tests.state);
+  return <section className="min-h-0 overflow-y-auto p-5 space-y-4" aria-label={S.tests.title}>
+    <p role="status" className="flex items-center gap-2">
+      {busy && <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />}
+      {tests.state === "queued" ? S.tests.queued : tests.state === "running" ? S.tests.running :
+        tests.state === "passed" ? S.tests.passed : tests.state === "skipped" ? S.tests.skipped :
+        tests.note || fmt(S.tests.failed, { n: tests.failures?.length ?? 0 })}
+    </p>
+    {failed && <>
+      {tests.failures?.length ? <ul className="space-y-2">{tests.failures.map((failure, i) =>
+        <li key={i}><span>{failure.name}</span>{failure.file && <code className="ml-2 text-sm">{failure.file}</code>}</li>)}</ul> : <p>{S.tests.unparsed}</p>}
+      {!!tests.changedFiles?.length && <div><h3>{S.tests.changedFiles}</h3><ul>{tests.changedFiles.map((file) => <li key={file}><code>{file}</code></li>)}</ul></div>}
+      <details onToggle={(event) => setExpanded(event.currentTarget.open)}>
+        <summary className="cursor-pointer">{S.tests.output}</summary>
+        {expanded && <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-3 font-mono text-xs">{outputError || output || (output === undefined ? S.tests.loadingOutput : "")}</pre>}
+      </details>
+      <div className="flex flex-wrap gap-2">
+        {helper && tests.state !== "interrupted" && !tests.sentBack && <Button disabled={saving} onClick={() => act("/send-back")}>{fmt(S.tests.sendBack, { helper })}</Button>}
+        <Button variant="outline" disabled={saving} onClick={() => act("")}>{S.tests.rerun}</Button>
+        <Button variant="outline" disabled={saving} onClick={() => act("/done")}>{S.tests.done}</Button>
+      </div>
+    </>}
+    {saveError && <p role="alert">{saveError}</p>}
+    {notice}
+  </section>;
+}
+
 /** This component owns the open state and fetch; page polling only updates its props. */
-export function ReviewChanges({ run, small = false, actionKey }: { run: Run; small?: boolean; actionKey: string }) {
+export function ReviewChanges({ run: polledRun, small = false, actionKey, controlledOpen, onOpenChange, returnFocus }: {
+  run: Run; small?: boolean; actionKey: string; controlledOpen?: boolean; onOpenChange?: (open: boolean) => void; returnFocus?: () => void;
+}) {
+  const [localRun, setLocalRun] = useState<Run>();
+  const run = localRun ?? polledRun;
+  useEffect(() => setLocalRun(undefined), [polledRun]);
   const { tell, refresh, confirm, messages } = useActions();
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (value: boolean) => { setInternalOpen(value); onOpenChange?.(value); };
+  const [showChanges, setShowChanges] = useState(false);
+  const tests = run.reviewed?.action === "applied" ? run.reviewed.tests : undefined;
+  const previousTestState = useRef(tests?.state);
+  useEffect(() => {
+    if (tests?.state === "passed" && previousTestState.current !== "passed") tell(actionKey, S.tests.passedMessage, true);
+    previousTestState.current = tests?.state;
+  }, [tests?.state, actionKey, tell]);
   const [changes, setChanges] = useState<RunChanges>();
   const [error, setError] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -219,6 +297,7 @@ export function ReviewChanges({ run, small = false, actionKey }: { run: Run; sma
   const feedbackKey = actionKey + "-" + run.runId + "-feedback";
   useEffect(() => {
     if (!open) return;
+    setShowChanges(false); setError(""); setSaveError(""); setChanges(undefined);
     const controller = new AbortController();
     void api<RunChanges>("runs/" + enc(run.runId) + "/changes", undefined, controller.signal)
       .then((value) => {
@@ -242,12 +321,30 @@ export function ReviewChanges({ run, small = false, actionKey }: { run: Run; sma
     setSaving(true);
     setSaveError("");
     try {
-      await api("runs/" + enc(run.runId) + "/" + action,
+      const updated = await api<Run>("runs/" + enc(run.runId) + "/" + action,
         action === "apply" ? { head: changes.head, hunks: [...kept] } : {});
       setComments({});
       setEditing(undefined);
-      setOpen(false);
+      if (action === "apply") {
+        setLocalRun({ ...run, ...updated });
+        setShowChanges(false);
+      } else setOpen(false);
       tell(actionKey, action === "apply" ? S.diffViewer.applySuccess : S.diffViewer.discardSuccess, true);
+      refresh();
+    } catch (reason) { setSaveError(errorText(reason)); }
+    finally { setSaving(false); }
+  }
+  async function testAction(action: "" | "/send-back" | "/done") {
+    if (saving) return;
+    setSaving(true); setSaveError("");
+    try {
+      const result = await api<Run & FeedbackResult>("runs/" + enc(run.runId) + "/tests" + action, {});
+      if (action === "/send-back") {
+        const helper = run.member === "coordinator" && !run.team ? S.coordinator.name : run.member;
+        tell(feedbackKey, fmt(result.delivered ? S.tests.sent : S.tests.waiting, { helper }), true);
+        if (run.reviewed?.action === "applied" && tests) setLocalRun({ ...run, reviewed: { ...run.reviewed,
+          tests: { ...tests, sentBack: { at: new Date().toISOString(), messageId: result.messageId, to: helper! } } } });
+      } else setLocalRun({ ...run, ...result });
       refresh();
     } catch (reason) { setSaveError(errorText(reason)); }
     finally { setSaving(false); }
@@ -320,23 +417,33 @@ export function ReviewChanges({ run, small = false, actionKey }: { run: Run; sma
   </> : run.reviewed?.action === "applied" ?
     <span className="text-sm text-muted-foreground">{fmt(S.diffViewer.applied, { n: run.reviewed.hunks, total: run.reviewed.total })}</span> : null;
 
-  if (run.reviewStatus !== "ready" && run.reviewStatus !== "no_changes") return null;
+  if (!tests && run.reviewStatus !== "ready" && run.reviewStatus !== "no_changes") return null;
   return (
     <Dialog open={open} onOpenChange={(value) => {
       if (saving) return;
-      if (value) { setChanges(undefined); setError(""); setSaveError(""); setKept(new Set()); }
+      if (value) { setShowChanges(false); setChanges(undefined); setError(""); setSaveError(""); setKept(new Set()); }
       setEditing(undefined);
       setOpen(value);
     }}>
-      <DialogTrigger asChild>
+      {controlledOpen === undefined && <DialogTrigger asChild>
         <Button type="button" variant="outline" size={small ? "sm" : "default"} data-testid="task-review">{S.diffViewer.button}</Button>
-      </DialogTrigger>
-      <DialogContent showCloseButton={false} onEscapeKeyDown={(event) => {
+      </DialogTrigger>}
+      <DialogContent showCloseButton={false} onCloseAutoFocus={(event) => {
+        if (returnFocus) { event.preventDefault(); returnFocus(); }
+      }} onEscapeKeyDown={(event) => {
         if (editing && feedbackAllowed) { event.preventDefault(); setEditing(undefined); }
       }} className="w-[90vw] max-w-5xl max-h-[90vh] p-0 overflow-hidden flex flex-col h-[80vh] gap-0 sm:max-w-5xl">
-        <DiffViewer taskName={run.task} files={changes?.files ?? EMPTY_FILES} loading={!changes && !error} error={error}
+        {tests && <div className="flex shrink-0 justify-end border-b p-3"><Button size="sm" variant="outline" onClick={() => setShowChanges(!showChanges)}>{showChanges ? S.tests.showTests : S.tests.showChanges}</Button></div>}
+        {tests && !showChanges ? <>
+          <header className="flex shrink-0 items-start justify-between gap-4 border-b p-5">
+            <div><DialogTitle>{run.task}</DialogTitle><DialogDescription>{S.tests.title}</DialogDescription></div>
+            <DialogClose asChild><Button variant="outline" size="sm">{S.diffViewer.close}</Button></DialogClose>
+          </header>
+          <TestResults run={run} saving={saving} act={(action) => void testAction(action)} saveError={saveError}
+            notice={messages[feedbackKey]?.text && <Message actionKey={feedbackKey} />} />
+        </> : <DiffViewer taskName={run.task} files={changes?.files ?? EMPTY_FILES} loading={!changes && !error} error={error}
           selection={selection} feedback={feedback} actions={actions} saveError={saveError}
-          notice={messages[feedbackKey]?.text && <div className="border-b px-5 py-3"><Message actionKey={feedbackKey} /></div>} />
+          notice={messages[feedbackKey]?.text && <div className="border-b px-5 py-3"><Message actionKey={feedbackKey} /></div>} />}
       </DialogContent>
     </Dialog>
   );

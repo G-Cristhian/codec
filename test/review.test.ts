@@ -1,10 +1,11 @@
+import { markTestsDone, rerunTests, sendTestsBack, testsOutput, waitForTests } from "../src/test-runs.js";
 import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addProject } from "../src/registry.js";
 import { MAX_FILE_DIFF_LINES, MAX_TOTAL_DIFF_LINES, applyChanges, discardChanges, runChanges, sendFeedback } from "../src/review.js";
-import { cleanRun, readRunStatus, listRuns, startRun, stopRun } from "../src/runs.js";
+import { cleanRun, readRunStatus, recordReview, recordTests, listRuns, startRun, stopRun } from "../src/runs.js";
 import { laneOf, projectView } from "../src/dashboard.js";
 import { addMember, addTeam } from "../src/org.js";
 import { listMessages } from "../src/messages.js";
@@ -36,7 +37,8 @@ require("child_process").execFileSync("git", ["commit", "-qm", "Fixture changes"
 
 describe("review changes", () => {
   beforeEach(() => useIsolatedHome("true"));
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(listRuns().map((run) => waitForTests(run.runId)));
     for (const run of listRuns({ state: "running" })) stopRun(run.runId);
     cleanupTemps();
   });
@@ -213,7 +215,8 @@ git commit -qm 'Fixture rename'`);
 
 describe("review line feedback", () => {
   beforeEach(() => useIsolatedHome("true"));
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(listRuns().map((run) => waitForTests(run.runId)));
     for (const run of listRuns({ state: "running" })) stopRun(run.runId);
     cleanupTemps();
   });
@@ -357,7 +360,8 @@ function projectSnapshot(repo: string) {
 
 describe("review decisions", () => {
   beforeEach(() => useIsolatedHome("true"));
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(listRuns().map((run) => waitForTests(run.runId)));
     for (const run of listRuns({ state: "running" })) stopRun(run.runId);
     cleanupTemps();
   });
@@ -397,8 +401,8 @@ printf '\\000\\001\\377' > binary.dat`, task);
     expect(git(run.worktree, "rev-parse", "HEAD")).toBe(head);
     expect(git(repo, "rev-parse", run.branch)).toBe(branch);
     expect(git(run.worktree, "status", "--porcelain")).toBe(worktreeStatus);
-    expect(updated.reviewed).toEqual({ action: "applied", at: expect.any(String), commit: git(repo, "rev-parse", "HEAD").trim(), hunks: 7, total: 7 });
-    expect(laneOf(updated)).toBe("done");
+    expect(updated.reviewed).toEqual({ action: "applied", at: expect.any(String), commit: git(repo, "rev-parse", "HEAD").trim(), hunks: 7, total: 7, tests: { state: "queued" } });
+    expect(laneOf(updated)).toBe("inReview");
     expect(readRunStatus(run.runId)?.reviewed).toEqual(updated.reviewed);
     expect(readEvents().filter((event) => event.kind === "run.apply")).toMatchObject([{ runId: run.runId, hunks: 7, total: 7 }]);
     expect(() => applyChanges(run.runId, { head: changes.head, hunks: allIds(changes) })).toThrowError(expect.objectContaining(unavailable));
@@ -592,5 +596,105 @@ printf '\\000\\002\\377' > binary.dat`);
     expect(() => discardChanges(run.runId)).toThrowError(expect.objectContaining(unavailable));
     expect(() => applyChanges(run.runId, { head: changes.head, hunks: allIds(changes) })).toThrowError(expect.objectContaining(unavailable));
     expect(existsSync(run.worktree)).toBe(true);
+  });
+});
+
+describe("review test routing", () => {
+  beforeEach(() => useIsolatedHome("true"));
+  afterEach(async () => {
+    await Promise.all(listRuns().map((run) => waitForTests(run.runId)));
+    for (const run of listRuns({ state: "running" })) stopRun(run.runId);
+    cleanupTemps();
+  });
+  async function failed(member: string | undefined = "web/helper", task = "Improve the page\nPrivate task details") {
+    addProject(makeRepo("site"));
+    addTeam({ name: "web", projects: ["site"] });
+    addMember("web", { name: "helper", tool: "claude" });
+    if (member === "coordinator") setupCoordinator({ tool: "claude" });
+    process.env.CODEC_AGENT_COMMAND = "echo saved > page.ts";
+    process.env.CODEC_TEST_COMMAND = "printf 'FAIL test/page.test.ts > Page > renders\\npage.ts:12\\nFull diagnostic output\\n'; exit 1";
+    const run = await waitFor(startRun({ project: "site", ...(member ? { member } : { agent: "claude" }), task }).runId);
+    const changes = await runChanges(run.runId);
+    const queued = applyChanges(run.runId, { head: changes.head, hunks: ["0:0"] });
+    expect(queued.reviewed).toMatchObject({ tests: { state: "queued" } });
+    await waitForTests(run.runId);
+    return readRunStatus(run.runId)!;
+  }
+  const boardRun = (runId: string) => Object.values(projectView("site").lanes).flat().find((r) => r.runId === runId)!;
+
+  it.each(["web/helper", "coordinator"])("sends full test output to stopped %s through its waiting inbox, then follows the receiving task", async (member) => {
+    const run = await failed(member);
+    const result = sendTestsBack(run.runId);
+    expect(result).toEqual({ delivered: false, messageId: expect.any(String) });
+    const message = listMessages().find((m) => m.id === result.messageId)!;
+    const commit = run.reviewed?.action === "applied" ? run.reviewed.commit.slice(0, 7) : "";
+    expect(message).toMatchObject({ from: "owner", to: member, body: `Tests failed after keeping your changes for "Improve the page" (commit ${commit}).\n\nFailed tests:\n- Page > renders — test/page.test.ts\n\nChanged files mentioned in the failures:\npage.ts\n\nTest output:\n\`\`\`\nFAIL test/page.test.ts > Page > renders\npage.ts:12\nFull diagnostic output\n\n\`\`\`` });
+    expect(message.deliveredAt).toBeUndefined();
+    expect(boardRun(run.runId)).toMatchObject({ lane: "working", testsFollowup: { waiting: true, finished: false } });
+    expect(projectView("site").messages.find((m) => m.id === message.id)?.waiting).toBe(true);
+    expect(() => sendTestsBack(run.runId)).toThrowError(expect.objectContaining({ code: "tests_unavailable", status: 409 }));
+    process.env.CODEC_AGENT_COMMAND = "sleep 0.2";
+    const receiver = startRun({ project: "site", member, task: "Fix the failing test" });
+    expect(listMessages().find((m) => m.id === message.id)).toMatchObject({ runId: receiver.runId, deliveredAt: expect.any(String) });
+    expect(boardRun(run.runId)).toMatchObject({ lane: "working", testsFollowup: { waiting: false, finished: false } });
+    await waitFor(receiver.runId);
+    expect(boardRun(run.runId)).toMatchObject({ lane: "done", testsFollowup: { waiting: false, finished: true } });
+    expect(readEvents().find((event) => event.kind === "run.sendBack")).toMatchObject({ runId: run.runId, to: member, messageId: message.id });
+  });
+  it("delivers to the helper's current task", async () => {
+    const run = await failed();
+    process.env.CODEC_AGENT_COMMAND = "sleep 30";
+    const receiver = startRun({ project: "site", member: "web/helper", task: "Fix tests" });
+    const result = sendTestsBack(run.runId);
+    expect(result.delivered).toBe(true);
+    expect(readFileSync(join(receiver.worktree, "messages.md"), "utf8")).toContain(testsOutput(run.runId, true));
+    expect(boardRun(run.runId).lane).toBe("working");
+  });
+  it("trims task headings and long output, retaining its end inside a safe fence", async () => {
+    const run = await failed("web/helper", "A".repeat(120) + "\nHidden line");
+    const output = "start\n" + "x".repeat(110_000) + "\n```\nend";
+    writeFileSync(join(process.env.CODEC_HOME!, "runs", run.runId, "tests.log"), output);
+    sendTestsBack(run.runId);
+    const body = listMessages()[0].body;
+    expect(body).toContain('"' + "A".repeat(100) + '"');
+    expect(body).not.toContain("Hidden line");
+    expect(body).not.toContain("start\n");
+    expect(body).toContain(S.tests.messageTrimmed);
+    expect(body).toContain("````\n" + output.slice(-100_000) + "\n````");
+  });
+  it("refuses to send back for a quick helper", async () => {
+    const run = await failed("");
+    expect(() => sendTestsBack(run.runId)).toThrowError(expect.objectContaining({ code: "tests_unavailable", status: 409 }));
+    expect(listMessages()).toEqual([]);
+  });
+  it("reruns after send-back, clearing it, and can mark failed tests done", async () => {
+    const run = await failed();
+    sendTestsBack(run.runId);
+    const queued = rerunTests(run.runId);
+    expect(queued.reviewed).toMatchObject({ tests: { state: "queued" } });
+    expect(queued.reviewed?.action === "applied" && queued.reviewed.tests?.sentBack).toBeUndefined();
+    expect(laneOf(queued)).toBe("inReview");
+    expect(() => rerunTests(run.runId)).toThrowError(expect.objectContaining({ code: "tests_unavailable" }));
+    await waitForTests(run.runId);
+    const done = markTestsDone(run.runId);
+    expect(done.reviewed).toMatchObject({ tests: { closedAt: expect.any(String) } });
+    expect(laneOf(done)).toBe("done");
+  });
+  it.each(["error", "interrupted"] as const)("can rerun or close %s results", async (state) => {
+    const run = await failed();
+    recordTests(run.runId, (tests) => ({ ...tests, state }));
+    expect(laneOf(markTestsDone(run.runId))).toBe("done");
+    process.env.CODEC_TEST_COMMAND = "true";
+    rerunTests(run.runId);
+    await waitForTests(run.runId);
+    expect(laneOf(readRunStatus(run.runId)!)).toBe("done");
+    expect(() => rerunTests(run.runId)).toThrowError(expect.objectContaining({ code: "tests_unavailable" }));
+    expect(() => markTestsDone(run.runId)).toThrowError(expect.objectContaining({ code: "tests_unavailable" }));
+  });
+  it("keeps old applied records without tests in Done", async () => {
+    const run = await failed();
+    if (run.reviewed?.action !== "applied") throw new Error("Expected review");
+    const { tests: ignored, ...oldReview } = run.reviewed;
+    expect(laneOf(recordReview(run.runId, oldReview))).toBe("done");
   });
 });

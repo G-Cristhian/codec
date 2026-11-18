@@ -27,6 +27,8 @@ function call(
   }>((resolve, reject) => {
     const req = request(
       {
+        // Large asset assertions can outlast an idle keep-alive socket under suite load.
+        agent: false,
         host: "127.0.0.1",
         port: d.port,
         path,

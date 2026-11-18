@@ -499,6 +499,7 @@ describe("review changes panel", () => {
     await userEvent.click(screen.getByTestId("confirm-submit"));
     await screen.findByText(action === "apply" ? S.diffViewer.applySuccess : S.diffViewer.discardSuccess);
     expect(calls.filter((call) => call.path === `runs/run-demo/${action}`)).toHaveLength(1);
+    if (action === "apply") await userEvent.click(screen.getByRole("button", { name: S.diffViewer.close }));
     await userEvent.click(screen.getByTestId("task-review"));
     await screen.findByText("+after");
     expect(screen.queryByRole("button", { name: /Send feedback/ })).toBeNull();
@@ -708,23 +709,30 @@ describe("review changes panel", () => {
     expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
   });
 
-  it.each(["#/run/run-demo", "#/project/site"])("sends only pinned head and checked ids, closes, shows a message and refreshes at %s", async (route) => {
+  it.each(["#/run/run-demo", "#/project/site"])("sends only pinned head and checked ids, stays open through testing and lane changes at %s", async (route) => {
     await open(route);
     await userEvent.click(screen.getByRole("checkbox"));
     const before = calls.filter((call) => call.path === "state").length;
     handler = (request) => {
       if (request !== "runs/run-demo/apply") return;
-      data.run = { ...data.run!, reviewed: { action: "applied", at: "now", commit: "saved", hunks: 3, total: 4 }, lane: "done" };
-      data.project.lanes.inReview = [];
-      data.project.lanes.done = [data.run];
+      data.run = { ...data.run!, reviewed: { action: "applied", at: "now", commit: "saved", hunks: 3, total: 4, tests: { state: "queued" } }, lane: "inReview" };
+      data.project.lanes.inReview = [data.run];
       return response(data.run);
     };
     await userEvent.click(screen.getByRole("button", { name: S.diffViewer.apply }));
     await screen.findByText(S.diffViewer.applySuccess);
-    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(await screen.findByText(S.tests.queued)).toBeTruthy();
     expect(calls.find((call) => call.path === "runs/run-demo/apply")?.body).toEqual({ head: "fixture-head", hunks: ["0:0", "1:0", "3:0"] });
     await waitFor(() => expect(calls.filter((call) => call.path === "state").length).toBeGreaterThan(before));
-    await userEvent.click(screen.getByTestId("task-review"));
+    const dialog = screen.getByRole("dialog");
+    data.run = { ...data.run!, reviewed: { ...data.run!.reviewed as Extract<NonNullable<Run["reviewed"]>, { action: "applied" }>, tests: { state: "passed" } }, lane: "done" };
+    data.project.lanes.inReview = [];
+    data.project.lanes.done = [data.run];
+    await screen.findByText(S.tests.passed, {}, { timeout: 5000 });
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(await screen.findByText(S.tests.passedMessage)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: S.tests.showChanges }));
     await screen.findByText("Applied 3 of 4 hunks");
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.queryByRole("button", { name: S.diffViewer.apply })).toBeNull();
@@ -2280,5 +2288,111 @@ describe("message limit settings and holds", () => {
     expect(rows.map(helperStatus)).toEqual([["needsYou", S.tasks.needsYou], ["needsYou", S.tasks.needsYou]]);
     await mount("#/helpers");
     for (const row of screen.getAllByTestId("helper-row")) expect(within(row).getByText(S.tasks.needsYou)).toBeTruthy();
+  });
+});
+
+describe("test results after keeping changes", () => {
+  type Tests = NonNullable<Extract<NonNullable<Run["reviewed"]>, { action: "applied" }>["tests"]>;
+  const base = "runs/run-demo/tests";
+  function result(tests: Tests, lane: Run["lane"] = "inReview", who: Partial<Run> = {}) {
+    data.run = { ...data.run!, ...who, reviewed: { action: "applied", at: "now", commit: "abcdef0", hunks: 4, total: 4, tests }, lane };
+    data.project.lanes = { working: [], needsYou: [], inReview: [], done: [] };
+    data.project.lanes[lane!] = [data.run];
+    return data.run;
+  }
+  const failed: Tests = { state: "failed", failures: [{ name: "Cart > adds items", file: "test/cart.test.ts" }], changedFiles: ["src/cart.ts"], outputFile: "tests.log" };
+  async function open(route = "#/project/site") {
+    await mount(route, false);
+    await userEvent.click(screen.getByTestId("task-review"));
+    return screen.getByRole("dialog");
+  }
+  it("shows failure names and files on the card and panel, and lazily loads plain text output", async () => {
+    result(failed);
+    handler = (path) => path === base + "/output" ? new Response("Full test diagnostics\n", { headers: { "Content-Type": "text/plain" } }) : undefined;
+    const dialog = await open();
+    const panel = within(dialog);
+    expect(panel.getByText("1 tests failed")).toBeTruthy();
+    expect(panel.getByText("Cart > adds items")).toBeTruthy();
+    expect(panel.getByText("test/cart.test.ts")).toBeTruthy();
+    expect(screen.getAllByText("Cart > adds items")).toHaveLength(2);
+    expect(screen.getByText(S.tests.failedBadge)).toBeTruthy();
+    expect(panel.getByText(S.tests.changedFiles)).toBeTruthy();
+    expect(panel.getByText("src/cart.ts")).toBeTruthy();
+    for (const label of ["Send back to tester", S.tests.rerun, S.tests.done]) expect(panel.getByRole("button", { name: label })).toBeTruthy();
+    expect(calls.some((call) => call.path === base + "/output")).toBe(false);
+    await userEvent.click(panel.getByText(S.tests.output));
+    expect(await panel.findByText("Full test diagnostics")).toBeTruthy();
+    await userEvent.click(panel.getByRole("button", { name: S.diffViewer.close }));
+    await userEvent.click(screen.getByTestId("task-review"));
+    expect(within(screen.getByRole("dialog")).getByText("Cart > adds items")).toBeTruthy();
+  });
+  it.each([true, false])("sends back and shows delivered=%s feedback across the move to Working", async (delivered) => {
+    result(failed);
+    handler = (path) => {
+      if (path !== base + "/send-back") return;
+      result({ ...failed, sentBack: { at: "now", messageId: "msg", to: "web/tester" } }, "working", { testsFollowup: { waiting: !delivered, finished: false } });
+      return response({ delivered, messageId: "msg" });
+    };
+    const dialog = await open();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Send back to tester" }));
+    expect(await screen.findByText(delivered ? "Sent to tester." : "It will reach tester when it starts its next task.")).toBeTruthy();
+    expect(calls.find((call) => call.path === base + "/send-back")?.body).toEqual({});
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(screen.getByText("Sent back to tester")).toBeTruthy();
+    if (!delivered) expect(screen.getByText(S.conversation.waiting)).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Send back to tester" })).toBeNull();
+  });
+  it.each(["queued", "running"] as const)("shows %s progress and a spinning card badge", async (state) => {
+    result({ state });
+    const dialog = await open();
+    expect(within(dialog).getByText(state === "queued" ? S.tests.queued : S.tests.running)).toBeTruthy();
+    expect(screen.getByText(S.tests.testing).querySelector(".animate-spin")).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: S.tests.rerun })).toBeNull();
+  });
+  it("keeps results after closing while tests run, then reopening from Done", async () => {
+    result({ state: "running" });
+    await open();
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.close }));
+    result({ state: "passed" }, "done");
+    await screen.findByText(S.tests.passedBadge, {}, { timeout: 5000 });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText(S.tests.passedMessage)).toBeTruthy();
+    await userEvent.click(screen.getByTestId("task-review"));
+    expect(within(screen.getByRole("dialog")).getByText(S.tests.passed)).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: S.tests.showChanges }));
+    await screen.findByText("+after");
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+  it.each(["skipped", "error", "interrupted"] as const)("shows the %s explanation", async (state) => {
+    const note = state === "error" ? S.tests.startError : S.tests.interrupted;
+    result({ state, note }, state === "skipped" ? "done" : "inReview");
+    const dialog = await open();
+    expect(within(dialog).getByText(state === "skipped" ? S.tests.skipped : note)).toBeTruthy();
+    if (state !== "skipped") expect(within(dialog).getByText(S.tests.unparsed)).toBeTruthy();
+    if (state !== "error") expect(within(dialog).queryByRole("button", { name: "Send back to tester" })).toBeNull();
+  });
+  it("offers rerun and done for quick helpers without a send-back button", async () => {
+    result(failed, "inReview", { team: undefined, member: undefined });
+    const dialog = await open();
+    expect(within(dialog).queryByRole("button", { name: /Send back/ })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: S.tests.rerun })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: S.tests.done })).toBeTruthy();
+  });
+  it.each(["", "/done"] as const)("posts the %s test action and updates results", async (suffix) => {
+    result(failed);
+    handler = (path) => path === base + suffix ? response(result(suffix ? { ...failed, closedAt: "now" } : { state: "queued" }, suffix ? "done" : "inReview")) : undefined;
+    const dialog = await open();
+    await userEvent.click(within(dialog).getByRole("button", { name: suffix ? S.tests.done : S.tests.rerun }));
+    await waitFor(() => expect(calls.some((call) => call.path === base + suffix)).toBe(true));
+    if (!suffix) expect(await within(dialog).findByText(S.tests.queued)).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+  });
+  it("shows plain text state errors without losing the results", async () => {
+    result(failed);
+    handler = (path) => path === base + "/send-back" ? new Response(S.errors.tests_unavailable, { status: 409, headers: { "Content-Type": "text/plain" } }) : undefined;
+    const dialog = await open();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Send back to tester" }));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", S.errors.tests_unavailable);
+    expect(within(dialog).getByText("Cart > adds items")).toBeTruthy();
   });
 });

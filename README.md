@@ -87,7 +87,7 @@ running until you press Ctrl+C. Open the link in a browser to:
   task and live output, stop it, or clean its worktree;
 - add or remove projects.
 
-In **Review changes**, tick the hunks you want and press **Apply selected**. Codec saves those changes in your project folder as one commit and moves the task to **Done**. Unchecked changes remain in the helper's workspace and branch. **Discard all** removes the workspace and moves the task to **Done**, keeping the helper's work recoverable on its branch.
+In **Review changes**, tick the hunks you want and press **Apply selected**. Codec saves those changes in your project folder as one commit and runs the project’s tests in the background; passing tests move the task to **Done**. If tests fail, you can see the failed tests and files and send the output back to the helper with one click; the task moves to **Working**, and a stopped helper receives the message when it starts its next task. Unchecked changes remain in the helper's workspace and branch. **Discard all** removes the workspace and moves the task to **Done**, keeping the helper's work recoverable on its branch.
 Click a diff line to leave a comment, then **Send feedback** to send all your notes as one message to the team helper (waiting in its inbox until its next task if it isn't working), while the task stays **In review**.
 
 The page refreshes itself every 2 seconds. It is a view over the same `~/.codec`

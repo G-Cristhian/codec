@@ -1,9 +1,10 @@
+import { waitForTests } from "../src/test-runs.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { request } from "http";
 import { join } from "path";
 import { existsSync, writeFileSync } from "fs";
 import { addProject } from "../src/registry.js";
-import { cleanRun, getRunStatus, listRuns, startRun, stopRun, type RunStatus } from "../src/runs.js";
+import { cleanRun, getRunStatus, recordReview, recordTests, listRuns, startRun, stopRun, type RunStatus } from "../src/runs.js";
 import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src/dashboard.js";
 import { cleanupTemps, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
 import { S, wording } from "../src/strings.js";
@@ -63,6 +64,7 @@ describe("dashboard", () => {
   });
   afterEach(async () => {
     await d.close();
+    await Promise.all(listRuns().map((run) => waitForTests(run.runId)));
     for (const r of listRuns({ state: "running" })) stopRun(r.runId);
     cleanupTemps();
   });
@@ -265,8 +267,48 @@ describe("dashboard", () => {
     const body = action === "apply" ? { head: changes.head, hunks: ["0:0"] } : {};
     const result = await call(d, "POST", base + "/" + action, { body });
     expect(result.status, result.body).toBe(200);
-    expect(result.json).toMatchObject({ runId: run.runId, lane: "done", reviewed: { action: action === "apply" ? "applied" : "discarded" } });
+    expect(result.json).toMatchObject({ runId: run.runId, lane: action === "apply" ? "inReview" : "done", reviewed: { action: action === "apply" ? "applied" : "discarded" } });
     expect((await call(d, "POST", base + "/" + action, { body })).status).toBe(409);
+  });
+
+  it.each([["GET", "/tests/output"], ["POST", "/tests"], ["POST", "/tests/send-back"], ["POST", "/tests/done"]])("authenticates %s %s and refuses unavailable test states as plain text", async (method, suffix) => {
+    addProject(makeRepo("alpha"));
+    process.env.CODEC_AGENT_COMMAND = "echo saved > notes.txt";
+    const run = await waitFor(startRun({ project: "alpha", agent: "claude", task: "Write notes" }).runId);
+    const path = `/api/runs/${run.runId}${suffix}`;
+    for (const token of [null, "wrong"]) expect((await call(d, method, path, { token, body: method === "POST" ? {} : undefined })).status).toBe(401);
+    if (method === "POST") expect((await call(d, method, path, { token: null, cookie: `codec_token_${d.port}=${d.token}`, body: {} })).status).toBe(401);
+    const result = await call(d, method, path, { body: method === "POST" ? {} : undefined });
+    expect(result.status).toBe(409);
+    expect(result.headers["content-type"]).toContain("text/plain");
+    expect(result.body).toBe(S.errors.tests_unavailable);
+    recordReview(run.runId, { action: "applied", at: "now", commit: run.baseSha, hunks: 1, total: 1, tests: { state: "passed" } });
+    expect((await call(d, method, path, { body: method === "POST" ? {} : undefined })).status).toBe(409);
+  });
+
+  it("serves test output, sends failures back, reruns, and marks done through authenticated routes", async () => {
+    addProject(makeRepo("alpha"));
+    addTeam({ name: "web", projects: ["alpha"] });
+    addMember("web", { name: "helper", tool: "claude" });
+    process.env.CODEC_AGENT_COMMAND = "echo saved > notes.txt";
+    process.env.CODEC_TEST_COMMAND = "printf 'not ok 1 - renders\\n'; exit 1";
+    const run = await waitFor(startRun({ project: "alpha", member: "web/helper", task: "Write notes" }).runId);
+    const base = `/api/runs/${run.runId}`;
+    const changes = (await call(d, "GET", base + "/changes")).json;
+    await call(d, "POST", base + "/apply", { body: { head: changes.head, hunks: ["0:0"] } });
+    await waitForTests(run.runId);
+    const output = await call(d, "GET", base + "/tests/output");
+    expect(output.status).toBe(200);
+    expect(output.headers["content-type"]).toContain("text/plain");
+    expect(output.body).toBe("not ok 1 - renders\n");
+    expect((await call(d, "POST", base + "/tests/send-back", { body: {} })).json).toMatchObject({ delivered: false });
+    expect((await call(d, "GET", base)).json.lane).toBe("working");
+    expect((await call(d, "POST", base + "/tests/send-back", { body: {} })).status).toBe(409);
+    expect((await call(d, "POST", base + "/tests", { body: {} })).json).toMatchObject({ lane: "inReview", reviewed: { tests: { state: "queued" } } });
+    await waitForTests(run.runId);
+    expect((await call(d, "POST", base + "/tests/done", { body: {} })).json.lane).toBe("done");
+    recordTests(run.runId, (tests) => ({ ...tests, state: "interrupted", closedAt: undefined }));
+    expect((await call(d, "POST", base + "/tests/send-back", { body: {} })).status).toBe(409);
   });
 
   describe("project conversations", () => {
