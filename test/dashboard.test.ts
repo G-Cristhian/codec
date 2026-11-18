@@ -9,8 +9,9 @@ import { cleanupTemps, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "
 import { S, wording } from "../src/strings.js";
 import { formatTimeLimit } from "../src/limits.js";
 import { addMember, addTeam } from "../src/org.js";
+import { setupCoordinator } from "../src/coordinator.js";
 import { listMessages, postMessage } from "../src/messages.js";
-import { inboxFile, writeJsonAtomic } from "../src/store.js";
+import { coordinatorInboxFile, inboxFile, writeJsonAtomic } from "../src/store.js";
 
 const FAKE = `sleep 1; echo "fake agent says hi"; echo "task: $(cat "$CODEC_TASK_FILE")"; echo saved > notes.txt`;
 
@@ -210,27 +211,32 @@ describe("dashboard", () => {
     });
 
     it("includes both directions for every project helper, oldest first, without marking messages read", async () => {
+      setupCoordinator({ tool: "claude" });
+      addMember("red", { name: "pm", tool: "claude" });
       const owner = postMessage({ from: "owner", to: "red/reader", body: "Owner note" });
-      const internal = postMessage({ from: "red/reader", to: "green/reader", body: "Another team" });
-      const outgoing = postMessage({ from: "red/writer", to: "blue/reader", body: "Outgoing" });
-      const incoming = postMessage({ from: "blue/reader", to: "red/reader", body: "Incoming" });
+      const internal = postMessage({ from: "red/reader", to: "red/writer", body: "Same team" });
+      const outgoing = postMessage({ from: "red/pm", to: "coordinator", body: "Outgoing" });
+      const incoming = postMessage({ from: "coordinator", to: "red/reader", body: "Incoming" });
       const excluded = postMessage({ from: "owner", to: "blue/reader", body: "Only beta" });
       const at = (day: number) => `2026-11-0${day}T12:00:00.000Z`;
       writeJsonAtomic(inboxFile("red", "reader"), [{ ...owner, sentAt: at(4) }, { ...incoming, sentAt: at(1) }]);
-      writeJsonAtomic(inboxFile("green", "reader"), [{ ...internal, sentAt: at(2), deliveredAt: at(2) }]);
-      writeJsonAtomic(inboxFile("blue", "reader"), [{ ...outgoing, sentAt: at(3) }, { ...excluded, sentAt: at(5) }]);
+      writeJsonAtomic(inboxFile("red", "writer"), [{ ...internal, sentAt: at(2), deliveredAt: at(2) }]);
+      writeJsonAtomic(coordinatorInboxFile(), [{ ...outgoing, sentAt: at(3) }]);
+      writeJsonAtomic(inboxFile("blue", "reader"), [{ ...excluded, sentAt: at(5) }]);
 
       const result = await call(d, "GET", "/api/projects/alpha");
       expect(result.status).toBe(200);
       expect(result.json.messages).toEqual([
-        { id: incoming.id, senderName: "blue/reader", senderKind: "helper", recipientName: "red/reader", body: "Incoming", sentAt: at(1), waiting: true },
-        { id: internal.id, senderName: "red/reader", senderKind: "helper", recipientName: "green/reader", body: "Another team", sentAt: at(2), waiting: false },
-        { id: outgoing.id, senderName: "red/writer", senderKind: "helper", recipientName: "blue/reader", body: "Outgoing", sentAt: at(3), waiting: true },
+        { id: incoming.id, senderName: S.coordinator.name, senderKind: "coordinator", recipientName: "red/reader", body: "Incoming", sentAt: at(1), waiting: true },
+        { id: internal.id, senderName: "red/reader", senderKind: "helper", recipientName: "red/writer", body: "Same team", sentAt: at(2), waiting: false },
+        { id: outgoing.id, senderName: "red/pm", senderKind: "helper", recipientName: S.coordinator.name, body: "Outgoing", sentAt: at(3), waiting: true },
         { id: owner.id, senderName: S.conversation.you, senderKind: "owner", recipientName: "red/reader", body: "Owner note", sentAt: at(4), waiting: true },
       ]);
       expect(result.json.helpers).toEqual([
+        { ref: "coordinator", name: S.coordinator.name, running: false },
         { ref: "red/reader", name: "red/reader", running: false },
         { ref: "red/writer", name: "red/writer", running: false },
+        { ref: "red/pm", name: "red/pm", running: false },
         { ref: "green/reader", name: "green/reader", running: false },
       ]);
       expect(listMessages().every((message) => !message.read)).toBe(true);

@@ -10,7 +10,7 @@ import { cleanupTemps, useIsolatedHome } from "./helpers.js";
 
 beforeEach(() => useIsolatedHome("true"));
 afterEach(cleanupTemps);
-const params = { name: "website", member: "tester", team: "web", project: "site", count: 2, list: "tester, writer", path: "/selected/project", field: "description" };
+const params = { name: "website", member: "tester", team: "web", project: "site", count: 2, list: "tester, writer", path: "/selected/project", field: "description", from: "web/tester", to: "ops/reader" };
 
 describe("coded errors", () => {
   for (const code of Object.keys(S.errors) as ErrorCode[]) {

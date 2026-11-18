@@ -1,4 +1,4 @@
-/** One coordinator for the install; teams continue to message each other directly. */
+/** One coordinator for the install; cross-team helper messages go through it via PM helpers. */
 import { CodecError } from "./errors.js";
 import { checkTimeLimit } from "./limits.js";
 import { postMessage } from "./messages.js";

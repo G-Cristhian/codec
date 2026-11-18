@@ -32,7 +32,7 @@ Requires Node 20.19+ or 22.12+, git, and the `claude` and/or `codex` CLI for rea
 | `codec run <project> --member coordinator --task "<text>"` | Start the coordinator on any registered project, using its saved tool, model and time limit. Only one coordinator task can run at a time. |
 | `codec assign <role> "<task>" [--project <name>]` | Inside a coordinator task, give work to the first free helper with that role on the chosen project. Defaults to the coordinator's current project. |
 | `codec status [--project <name>] [--json]` | Every run across all projects: project, agent, state, start time, worktree. |
-| `codec message <team/helper> "<text>"` | From inside a helper task, send a message to another helper. It arrives now if they are working, or waits in their inbox for their next task. |
+| `codec message <team/helper> "<text>"` | From inside a helper task, send a message to a helper on your own team. The coordinator can message any team's helpers. It arrives now if they are working, or waits in their inbox for their next task. |
 | `codec message coordinator "<text>"` | From inside a PM helper's task, send direction to the coordinator. Other helpers get “Pass this along through your PM.” |
 | `codec message owner "<text>"` | Inside a coordinator task, report to the owner in every project's conversation feed. |
 | `codec report progress\|stuck\|done ["<note>"]` | From inside a helper task, report progress, ask for a person, or say the work is finished. Stuck needs a note and moves the task to Needs you. |
@@ -50,8 +50,9 @@ died without reporting, e.g. after a reboot), `stopped`.
 Set up the coordinator once, here or on the Helpers page. Its settings live in
 `<codecHome>/coordinator.json`. It takes direction from you through the conversation
 feed and from helpers whose member name contains “pm” (case-insensitive).
-Helpers still message each other directly, within or across teams. “All helpers”
-in a project's conversation means that project's team helpers; choose Coordinator
+Helpers message each other directly only within their own team. For another team,
+PM helpers message the coordinator; other helpers pass the message to their PM.
+“All helpers” in a project's conversation means that project's team helpers; choose Coordinator
 to message it. Your conversation with the coordinator appears on every project.
 For assignments, role names match first, then role descriptions if no name matches;
 general helpers do not match. Helpers are chosen in team order, then member order.

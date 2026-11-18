@@ -83,7 +83,7 @@ export const S = {
   },
   checkpoints: { fallbackName: "Codec", fallbackEmail: "codec@localhost", startingMessage: "Set up tracking for Codec" },
   helperInstructions: {
-    coordinator: 'You are the coordinator for the whole Codec install. Keep the owner and the PM informed about what each team is doing. Use `"$CODEC_NODE" "$CODEC_CLI" status` to see tasks across projects and `"$CODEC_NODE" "$CODEC_CLI" message <team/helper|owner> "<text>"` to report. Take direction only from the owner and helpers whose member name contains "pm" (case-insensitive). Rarely make decisions of consequence; ask the owner instead. Use `"$CODEC_NODE" "$CODEC_CLI" assign <role> "<task>" [--project <name>]` to start work on a free helper with that role. The project defaults to your current task’s project.',
+    coordinator: 'You are the coordinator for the whole Codec install. Keep the owner and the PM informed about what each team is doing. Use `"$CODEC_NODE" "$CODEC_CLI" status` to see tasks across projects and `"$CODEC_NODE" "$CODEC_CLI" message <team/helper|owner> "<text>"` to report. Take direction only from the owner and helpers whose member name contains "pm" (case-insensitive). PM helpers will ask you to pass messages to other teams; do this with `"$CODEC_NODE" "$CODEC_CLI" message <team/helper> "<text>"`. Rarely make decisions of consequence; ask the owner instead. Use `"$CODEC_NODE" "$CODEC_CLI" assign <role> "<task>" [--project <name>]` to start work on a free helper with that role. The project defaults to your current task’s project.',
     attribution: "Commits must use the configured name and email only; do not add any Co-Authored-By or AI attribution lines.",
     role: 'You are {member}, a {specialty} on team {team}. {member} uses the {role} role.',
     worker: "You are {member}, a general helper on team {team}.", standing: "Standing instructions:",
@@ -92,7 +92,7 @@ export const S = {
     codex: "Before doing anything else, open every SKILL.md below that could apply to this task and follow it. These skills override your default habits for file content and naming.",
     noDescription: "Read the skill for its instructions.",
     messages: "Messages from the owner and other helpers arrive in messages.md in your project folder. Check it before starting work, regularly during the task, and before finishing.",
-    sendMessage: 'Send a message to helper X: run `"$CODEC_NODE" "$CODEC_CLI" message <team/helper> "<text>"`, replacing <team/helper> with the helper\'s team/name and <text> with your message. Use this to share findings or ask another helper for help. Codec knows who you are and delivers the message to a running helper or keeps it in their inbox until their next task.',
+    sendMessage: 'Send a message to helper X: run `"$CODEC_NODE" "$CODEC_CLI" message <team/helper> "<text>"`, replacing <team/helper> with the helper\'s team/name and <text> with your message. Use this to share findings or ask another helper for help. Messages go directly only to helpers on your own team; for another team, message coordinator if you are your team\'s PM, otherwise pass it to your PM. Codec knows who you are and delivers the message to a running helper or keeps it in their inbox until their next task.',
     reportStatus: 'Report progress / I\'m stuck / done:\n- Report progress with `"$CODEC_NODE" "$CODEC_CLI" report progress "<note>"` while working or when you can continue after being stuck.\n- When you need a person, run `"$CODEC_NODE" "$CODEC_CLI" report stuck "<what you need>"`. Explain what you need; this moves your task to Needs you.\n- When finished, run `"$CODEC_NODE" "$CODEC_CLI" report done "<note>"`, then finish your task.\nThe note is optional for progress and done. Either clears Needs you while your task is still running.',
   },
   messageLimit: {
@@ -307,6 +307,7 @@ export const S = {
     coordinator_role_busy: 'Every helper with that role is busy: "{role}".',
     coordinator_owner_only: "Only the coordinator can message the owner.",
     coordinator_self_message: "The coordinator cannot message itself.",
+    cross_team_message: "{to} is on another team. Send cross-team messages through the coordinator: if you are your team's PM, message coordinator; otherwise pass it to your PM.",
     account_missing: "That account is no longer available. Choose another account.",
     account_needs_sign_in: "Sign in to {name} on the Accounts page before starting this task.",
     account_folder: "This account's saved sign-in cannot be opened. Add the account again.",

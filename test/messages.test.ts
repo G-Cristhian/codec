@@ -74,7 +74,7 @@ describe("helper messages", () => {
 
   it.each(["red/reader", "red/writer"])("delivers the inbox before %s starts and gives it message instructions", async (member) => {
     const first = send("Read this before working.", member);
-    const second = send("Keep the line breaks.\n\nAnd {literal braces}.", member, "blue/reader");
+    const second = send("Keep the line breaks.\n\nAnd {literal braces}.", member, member === "red/reader" ? "red/writer" : "red/reader");
     process.env.CODEC_AGENT_COMMAND = 'cat messages.md > "$CODEC_RUN_DIR/seen-messages.md"; cat "$CODEC_RUN_DIR/instructions.md" > "$CODEC_RUN_DIR/seen-instructions.md"';
     const run = start(member);
     expect((await waitFor(run.runId)).state).toBe("done");

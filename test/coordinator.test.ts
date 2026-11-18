@@ -10,7 +10,7 @@ import { listMessages, markRead, postMessage, receiveMessages } from "../src/mes
 import { addMember, addSpecialist, addTeam } from "../src/org.js";
 import { addProject } from "../src/registry.js";
 import { getRunStatus, listRuns, runOutput, startRun, stopRun } from "../src/runs.js";
-import { coordinatorFile, coordinatorInboxFile, readJson } from "../src/store.js";
+import { coordinatorFile, coordinatorInboxFile, inboxFile, messageLimitsFile, readJson } from "../src/store.js";
 import { S, wording } from "../src/strings.js";
 import { cleanupTemps, cli, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
 
@@ -199,14 +199,56 @@ describe("coordinator messages", () => {
     expect(() => postMessage({ from: "coordinator", to: "coordinator", body: "Hello" })).toThrow(S.errors.coordinator_self_message);
   });
 
-  it("keeps a cross-team exchange as exactly one direct message, without coordinator involvement", () => {
+  it.each(["red/worker", "red/team-PmLead"])("rejects a direct cross-team message from %s and explains the coordinator route without storing or counting it", (from) => {
     setupCoordinator({ tool: "claude" });
     team("red");
     team("blue");
-    const direct = postMessage({ from: "red/worker", to: "blue/worker", body: "Check this directly" });
+    const to = "blue/worker";
+    const error = "blue/worker is on another team. Send cross-team messages through the coordinator: if you are your team's PM, message coordinator; otherwise pass it to your PM.";
+    expect(wording(S.errors.cross_team_message, { to })).toBe(error);
+    expect(() => postMessage({ from, to, body: "Check this directly" })).toThrowError(expect.objectContaining({
+      name: "CodecError", code: "cross_team_message", message: error, params: { from, to }, status: 400,
+    }));
+    expect(listMessages()).toEqual([]);
+    expect(existsSync(inboxFile("blue", "worker"))).toBe(false);
+    expect(existsSync(coordinatorInboxFile())).toBe(false);
+    expect(existsSync(messageLimitsFile())).toBe(false);
+  });
+
+  it("keeps same-team helper messages direct without coordinator involvement", () => {
+    team();
+    const direct = postMessage({ from: "red/worker", to: "red/team-PmLead", body: "Check this directly" });
     expect(listMessages()).toEqual([direct]);
     expect(listMessages({ helper: "coordinator" })).toEqual([]);
     expect(existsSync(coordinatorInboxFile())).toBe(false);
+  });
+
+  it.each(["owner", "coordinator"])("allows %s to message helpers on any team", (from) => {
+    setupCoordinator({ tool: "claude" });
+    for (const name of ["red", "blue"]) {
+      team(name);
+      const to = `${name}/worker`;
+      const message = postMessage({ from, to, body: "Please check this" });
+      expect(listMessages({ to })).toEqual([message]);
+      expect(message).toMatchObject({ from, to, body: "Please check this" });
+    }
+    expect(listMessages()).toHaveLength(2);
+  });
+
+  it("routes a PM's cross-team request through the coordinator to the other team's helper", () => {
+    setupCoordinator({ tool: "claude" });
+    team("red");
+    team("blue");
+    const request = postMessage({ from: "red/team-PmLead", to: "coordinator", body: "Ask blue to check this" });
+    expect(request.declined).toBeUndefined();
+    expect(listMessages({ to: "coordinator" })).toEqual([request]);
+    const forwarded = postMessage({ from: "coordinator", to: "blue/worker", body: "Please check this for red" });
+    expect(listMessages({ to: "blue/worker" })).toEqual([forwarded]);
+    expect(listMessages()).toHaveLength(2);
+    expect(readJson(messageLimitsFile(), {})).toEqual({
+      "coordinator|red/team-PmLead": { count: 1, limit: 10 },
+      "blue/worker|coordinator": { count: 1, limit: 10 },
+    });
   });
 });
 
@@ -299,7 +341,9 @@ wait "$first" && wait "$second"`;
     process.env.CODEC_AGENT_COMMAND = `CODEC_AGENT_COMMAND=true ${command} assign Builder "--help"`;
     const run = start();
     expect((await waitFor(run.runId)).state).toBe("done");
-    expect(listRuns().find((task) => task.member === "first")?.task).toBe("--help");
+    const assigned = listRuns().find((task) => task.member === "first")!;
+    expect(assigned.task).toBe("--help");
+    await waitFor(assigned.runId);
   });
 });
 

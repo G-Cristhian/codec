@@ -6,7 +6,7 @@ import { listMessages, type MessageRecord } from "../src/messages.js";
 import { addMember, addSpecialist, addTeam } from "../src/org.js";
 import { addProject } from "../src/registry.js";
 import { cleanRun, getRunStatus, listRuns, runOutput, startRun, stopRun, type RunRecord } from "../src/runs.js";
-import { inboxFile, readJson } from "../src/store.js";
+import { coordinatorInboxFile, inboxFile, messageLimitsFile, readJson } from "../src/store.js";
 import { S, wording } from "../src/strings.js";
 import { cleanupTemps, cli, makeRepo, useIsolatedHome, waitFor } from "./helpers.js";
 
@@ -144,6 +144,7 @@ until [ -f "$CODEC_RUN_DIR/exit" ]; do sleep 0.05; done`;
     expect((await waitFor(run.runId)).state).toBe("done");
     const instructions = runOutput(run.runId);
     expect(instructions).toContain(S.helperInstructions.messages);
+    expect(instructions).toContain(S.helperInstructions.sendMessage);
     expect(instructions).toContain(`${command} message <team/helper> "<text>"`);
     expect(instructions).toContain(`${command} report progress "<note>"`);
     expect(instructions).toContain(`${command} report stuck "<what you need>"`);
@@ -152,6 +153,20 @@ until [ -f "$CODEC_RUN_DIR/exit" ]; do sleep 0.05; done`;
 });
 
 describe("helper command errors", () => {
+  it.each(["red/writer", "red/pm"])("rejects a direct cross-team message from %s through the real CLI with friendly text", async (member) => {
+    addMember("red", { name: "pm", tool: "claude" });
+    addTeam({ name: "blue", projects: ["alpha"] });
+    addMember("blue", { name: "reader", tool: "codex" });
+    process.env.CODEC_AGENT_COMMAND = `${command} message blue/reader "Please check this"`;
+    const run = start(member);
+    expect(await waitFor(run.runId)).toMatchObject({ state: "failed", exitCode: 1 });
+    expect(runOutput(run.runId)).toContain(`codec: ${wording(S.errors.cross_team_message, { to: "blue/reader" })}\n`);
+    expect(listMessages()).toEqual([]);
+    expect(existsSync(inboxFile("blue", "reader"))).toBe(false);
+    expect(existsSync(coordinatorInboxFile())).toBe(false);
+    expect(existsSync(messageLimitsFile())).toBe(false);
+  });
+
   it.each([undefined, "run-ffffffff", "../outside", "run-"])("rejects both commands outside a helper task (%s)", (runId) => {
     for (const args of [["message", "red/reader", "Hello"], ["report", "progress"]]) {
       const result = cli(args, { CODEC_RUN_ID: runId });
