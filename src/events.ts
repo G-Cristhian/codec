@@ -14,6 +14,9 @@ import { eventsFile } from "./store.js";
 import { redactValue } from "./secrets.js";
 
 export type EventKind =
+  | "connection.save"
+  | "connection.revoke"
+  | "connection.cleanup_failed"
   | "project.add"
   | "project.remove"
   | "project.edit"

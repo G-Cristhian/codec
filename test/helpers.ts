@@ -3,6 +3,21 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { getRunStatus, type RunStatus } from "../src/runs.js";
+import { setKeychainForTests, type Keychain } from "../src/keychain.js";
+import { setGitHubFetchForTests } from "../src/connections.js";
+
+export function fakeKeychain(): Keychain & { secrets: Map<string, string> } {
+  const secrets = new Map<string, string>();
+  return { secrets, available: () => true, set: (account, secret) => { secrets.set(account, secret); },
+    get: (account) => secrets.get(account), delete: (account) => { secrets.delete(account); } };
+}
+
+function isolateConnections(): void {
+  setKeychainForTests(fakeKeychain());
+  setGitHubFetchForTests(async () => { throw new Error("Install a GitHub fetch fake in this test."); });
+}
+// Importing test helpers is safe even before an isolated home is created.
+isolateConnections();
 
 const temps: string[] = [];
 
@@ -38,6 +53,7 @@ export function makeRepo(name = "repo"): string {
 
 /** Point codec at an isolated data folder and a fake agent. */
 export function useIsolatedHome(fakeAgent: string): string {
+  isolateConnections();
   const home = tempDir("codec-home-");
   process.env.CODEC_HOME = home;
   process.env.CODEC_AGENT_COMMAND = fakeAgent;

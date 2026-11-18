@@ -12,6 +12,7 @@ import { logEvent } from "./events.js";
 import { checkMessageLimit } from "./message-limits.js";
 import { projectsFile, readJson, withLock, writeJsonAtomic } from "./store.js";
 import type { ProjectArea } from "./planner.js";
+import { removeProjectConnections } from "./connections.js";
 
 export interface Project {
   name: string;
@@ -117,5 +118,6 @@ export function removeProject(name: string): Project {
     return p;
   });
   logEvent("project.remove", { project: name });
+  removeProjectConnections(name);
   return removed;
 }

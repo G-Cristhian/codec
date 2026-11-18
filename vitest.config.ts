@@ -6,5 +6,5 @@ export default defineConfig({
   resolve: {
     alias: { "@": fileURLToPath(new URL("./ui/src", import.meta.url)) },
   },
-  test: { testTimeout: 30_000, include: ["test/**/*.test.ts"] },
+  test: { testTimeout: 30_000, include: ["test/**/*.test.ts"], setupFiles: ["./test/helpers.ts"] },
 });

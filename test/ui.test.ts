@@ -243,6 +243,56 @@ describe("project connections", () => {
     expect(fields("github")[0].value).toBe("");
   });
 
+  it("shows the checking state, then the connected login and masked hint, and revokes successfully", async () => {
+    const token = "ghp_fakeUiTokenOnly1234";
+    let finish!: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => { finish = resolve; });
+    handler = (path) => path.includes("/connections/") ? pending : undefined;
+    await open();
+    await connect("github");
+    fireEvent.change(fields("github")[0], { target: { value: token } });
+    await userEvent.click(within(card("github")).getByRole("button", { name: S.connections.save }));
+    const busy = within(card("github")).getByRole("button", { name: S.connections.checkingToken }) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(fields("github")[0].value).toBe("");
+    expect(fields("github")[0].disabled).toBe(true);
+    const connected = { id: "github" as const, connected: true, login: "octocat", hint: "ghp_••••••1234" };
+    data.project.connections[0] = connected;
+    await act(async () => { finish(response(connected)); });
+    await waitFor(() => expect(within(card("github")).getByText("Connected as octocat")).toBeTruthy());
+    const hint = within(card("github")).getByText(connected.hint);
+    expect(hint.className).toContain("font-mono");
+    expect(hint.className).toContain("text-muted-foreground");
+    expect(fields("github")).toHaveLength(0);
+    expect(card("github").outerHTML).not.toContain(token);
+    expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(token);
+    handler = (path) => {
+      if (!path.includes("/connections/")) return undefined;
+      data.project.connections[0] = { id: "github", connected: false };
+      return response(data.project.connections[0]);
+    };
+    await userEvent.click(within(card("github")).getByRole("button", { name: S.connections.revoke }));
+    await userEvent.click(screen.getByTestId("confirm-submit"));
+    await waitFor(() => expect(within(card("github")).getByRole("button", { name: S.connections.connect })).toBeTruthy());
+    expect(within(card("github")).queryByText(connected.hint)).toBeNull();
+    expect(requests().at(-1)?.[1]?.method).toBe("DELETE");
+    await connect("github");
+    expect(fields("github")[0].value).toBe("");
+  });
+
+  it.each([
+    [400, "invalid_github_token"], [502, "github_unreachable"], [409, "keychain_unavailable"],
+  ] as const)("shows GitHub error %i inside the card and clears the draft token", async (status, code) => {
+    handler = (path) => path.includes("/connections/") ? response({ code, error: S.errors[code] }, status) : undefined;
+    await open();
+    await connect("github");
+    fireEvent.change(fields("github")[0], { target: { value: "private-token" } });
+    await userEvent.click(within(card("github")).getByRole("button", { name: S.connections.save }));
+    await waitFor(() => expect(within(card("github")).getByRole("alert").textContent).toBe(S.errors[code]));
+    expect(fields("github")[0].value).toBe("");
+    expect(within(card("github")).getByRole("button", { name: S.connections.save })).toBeTruthy();
+  });
+
   it.each(["github", "canvas"] as const)("shows connected %s without inputs and confirms before DELETE", async (id) => {
     data.project.connections.find((connection) => connection.id === id)!.connected = true;
     unavailable();

@@ -54,16 +54,16 @@ export function readJson<T>(file: string, fallback: T): T {
  * A crash mid-write can never leave a truncated file, and two processes
  * writing at once can't interleave bytes (from the hive's task registry).
  */
-export function writeJsonAtomic(file: string, data: unknown): void {
-  writeTextAtomic(file, JSON.stringify(data, null, 2) + "\n");
+export function writeJsonAtomic(file: string, data: unknown, mode?: number): void {
+  writeTextAtomic(file, JSON.stringify(data, null, 2) + "\n", mode);
 }
 
 /** The same atomic replacement for plain-text files. Callers hold the relevant lock. */
-export function writeTextAtomic(file: string, text: string): void {
+export function writeTextAtomic(file: string, text: string, mode?: number): void {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${randomBytes(3).toString("hex")}.tmp`;
   try {
-    writeFileSync(tmp, text);
+    writeFileSync(tmp, text, { mode });
     renameSync(tmp, file);
   } finally {
     rmSync(tmp, { force: true });

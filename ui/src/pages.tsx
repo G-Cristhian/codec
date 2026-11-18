@@ -437,7 +437,7 @@ function ConnectionForm({ project, id, actionKey, close, showError }: {
         <p id={fieldId + "-token-hint"} className="hint">{S.connections[id].tokenHint}</p>
       </div>
       <div className="button-row">
-        <Submit id={fieldId + "-save"} actionKey={actionKey}>{S.connections.save}</Submit>
+        <Submit id={fieldId + "-save"} actionKey={actionKey}>{id === "github" && pending[actionKey] ? S.connections.checkingToken : S.connections.save}</Submit>
         <Button type="button" variant="outline" disabled={!!pending[actionKey]} onClick={close}>{S.connections.cancel}</Button>
       </div>
     </form>
@@ -477,7 +477,8 @@ function ConnectionCard({ project, connection, open, changeOpen }: {
         </div>
         {connected ? <div className="flex items-center gap-2">
           <CheckCircle2 size={16} className="text-green-600 dark:text-green-400" aria-hidden="true" />
-          <span>{S.connections.connected}</span>
+          <span>{connection.login ? fmt(S.connections.connectedAs, { login: connection.login }) : S.connections.connected}</span>
+          {connection.hint && <span className="font-mono text-muted-foreground">{connection.hint}</span>}
           <Button variant="ghost" size="sm" disabled={!!pending[actionKey]} onClick={revoke}>{S.connections.revoke}</Button>
         </div> : <Button variant="outline" size="sm" aria-expanded={open} aria-controls={"connection-" + id + "-content"}
           onClick={() => { setError(""); changeOpen(true); }}>{S.connections.connect}</Button>}

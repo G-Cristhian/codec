@@ -1,5 +1,5 @@
 import { waitForTests } from "../src/test-runs.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { request } from "http";
 import { join } from "path";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
@@ -7,6 +7,10 @@ import { addProject } from "../src/registry.js";
 import { cleanRun, getRunStatus, recordReview, recordTests, listRuns, startRun, stopRun, type RunStatus } from "../src/runs.js";
 import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src/dashboard.js";
 import { cleanupTemps, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
+import { setGitHubFetchForTests } from "../src/connections.js";
+import { readEvents } from "../src/events.js";
+import { keychainUnavailable, setKeychainForTests } from "../src/keychain.js";
+import { fakeKeychain } from "./helpers.js";
 import { S, wording } from "../src/strings.js";
 import { formatTimeLimit } from "../src/limits.js";
 import { addMember, addTeam } from "../src/org.js";
@@ -72,7 +76,7 @@ describe("dashboard", () => {
     cleanupTemps();
   });
 
-  it("connection routes require header auth and refuse valid requests without writing anything", async () => {
+  it("connection routes require header auth, reject invalid input, and keep Canvas unavailable", async () => {
     addProject(makeRepo("alpha"));
     const home = process.env.CODEC_HOME!; // Set by useIsolatedHome in beforeEach.
     const listing = () => readdirSync(home, { recursive: true }).map(String).sort();
@@ -94,7 +98,7 @@ describe("dashboard", () => {
       const unknown = await call(d, method, "/api/projects/alpha/connections/unknown", { body });
       expect(unknown.status).toBe(404);
       expect(unknown.json.code).toBe("connection_not_found");
-      for (const id of ["github", "canvas"]) {
+      for (const id of ["canvas"]) {
         const result = await call(d, method, `/api/projects/alpha/connections/${id}`, {
           ...(method === "PUT" ? { body: { ...body, ...(id === "canvas" ? { instanceUrl: "https://school.example" } : {}) } } : {}),
         });
@@ -120,6 +124,61 @@ describe("dashboard", () => {
     ]);
     expect(listing()).toEqual(before);
     for (const [path, content] of contents) expect(readFileSync(join(home, path))).toEqual(content);
+  });
+
+  it("saves and revokes GitHub with header auth, updates the project view, and never logs the token", async () => {
+    addProject(makeRepo("alpha"));
+    const token = "ghp_fakeDashboardToken1234";
+    const chain = fakeKeychain();
+    setKeychainForTests(chain);
+    const github = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ login: "octocat" }), { headers: { "X-OAuth-Scopes": "repo" } }));
+    setGitHubFetchForTests(github);
+    const saved = await call(d, "PUT", "/api/projects/alpha/connections/github", { body: { token } });
+    expect(saved.status).toBe(200);
+    expect(saved.json).toEqual({ id: "github", connected: true, hint: "ghp_••••••1234", login: "octocat" });
+    expect(saved.body).not.toContain(token);
+    expect(chain.secrets.get("alpha/github")).toBe(token);
+    expect(github).toHaveBeenCalledTimes(1);
+    const project = await call(d, "GET", "/api/projects/alpha");
+    expect(project.json.connections).toEqual([saved.json, { id: "canvas", connected: false }]);
+    expect(project.body).not.toContain(token);
+    const revoked = await call(d, "DELETE", "/api/projects/alpha/connections/github");
+    expect(revoked.status).toBe(200);
+    expect(revoked.json).toEqual({ id: "github", connected: false });
+    expect(chain.secrets.size).toBe(0);
+    expect((await call(d, "GET", "/api/projects/alpha")).json.connections[0]).toEqual(revoked.json);
+    const missing = await call(d, "DELETE", "/api/projects/alpha/connections/github");
+    expect(missing.status).toBe(404);
+    expect(missing.json.code).toBe("connection_not_found");
+    expect(readEvents().filter((event) => event.kind.startsWith("connection."))).toEqual([
+      { ts: expect.any(String), kind: "connection.save", project: "alpha", id: "github", login: "octocat" },
+      { ts: expect.any(String), kind: "connection.revoke", project: "alpha", id: "github", login: "octocat" },
+    ]);
+    const home = process.env.CODEC_HOME!;
+    for (const relative of readdirSync(home, { recursive: true })) {
+      const file = join(home, String(relative));
+      if (statSync(file).isFile()) expect(readFileSync(file, "utf8"), String(relative)).not.toContain(token);
+    }
+  });
+
+  it.each([
+    [401, "invalid_github_token", 400],
+    [500, "github_unreachable", 502],
+    [0, "keychain_unavailable", 409],
+  ] as const)("returns a safe connection error for %i", async (githubStatus, code, status) => {
+    addProject(makeRepo("alpha"));
+    const token = "ghp_fakeDashboardFailure1234";
+    const chain = fakeKeychain();
+    if (!githubStatus) chain.set = () => { throw keychainUnavailable(); };
+    setKeychainForTests(chain);
+    setGitHubFetchForTests(async () => new Response(githubStatus ? token : "{}", { status: githubStatus || 200 }));
+    const result = await call(d, "PUT", "/api/projects/alpha/connections/github", { body: { token } });
+    expect(result.status).toBe(status);
+    expect(result.json).toEqual({ code, error: S.errors[code] });
+    expect(result.body).not.toContain(token);
+    expect(JSON.stringify(readEvents())).not.toContain(token);
+    expect(existsSync(join(process.env.CODEC_HOME!, "codec.log"))).toBe(false);
+    expect((await call(d, "GET", "/api/projects/alpha")).json.connections[0].connected).toBe(false);
   });
 
   it("listens on 127.0.0.1 only and prints a tokenised URL", () => {

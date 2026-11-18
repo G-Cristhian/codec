@@ -16,7 +16,7 @@
  *    not enough, so other websites can't forge actions.
  */
 
-import { projectConnections, requireConnection, validateConnectionInput } from "./connections.js";
+import { projectConnections, requireConnection, saveConnection, revokeConnection } from "./connections.js";
 import { CodecError } from "./errors.js";
 import { markTestsDone, rerunTests, sendTestsBack, testsOutput } from "./test-runs.js";
 import { applyChanges, discardChanges, runChanges, sendFeedback } from "./review.js";
@@ -762,8 +762,8 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
       const [, project, , id] = parts;
       if (!getProject(project)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
       requireConnection(id);
-      if (req.method === "PUT") validateConnectionInput(id, await readBody(req));
-      throw new ApiError(409, "connections_unavailable", S.errors.connections_unavailable);
+      const connection = req.method === "PUT" ? await saveConnection(project, id, await readBody(req)) : revokeConnection(project, id);
+      return sendJson(res, 200, connection);
     }
     const body = isGet ? {} : await readBody(req, path === "/api/skills" ? MAX_UPLOAD : MAX_BODY);
 

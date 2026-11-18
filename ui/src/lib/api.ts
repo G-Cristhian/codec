@@ -78,10 +78,10 @@ export async function api<T = unknown>(
 }
 export function saveConnection(project: string, id: ConnectionId, fields: ConnectionInput) {
   const body = id === "canvas" ? { instanceUrl: fields.instanceUrl, token: fields.token } : { token: fields.token };
-  return api(`projects/${enc(project)}/connections/${enc(id)}`, body, undefined, false, "PUT");
+  return api<ProjectConnection>(`projects/${enc(project)}/connections/${enc(id)}`, body, undefined, false, "PUT");
 }
 export function revokeConnection(project: string, id: ConnectionId) {
-  return api(`projects/${enc(project)}/connections/${enc(id)}`, undefined, undefined, false, "DELETE");
+  return api<ProjectConnection>(`projects/${enc(project)}/connections/${enc(id)}`, undefined, undefined, false, "DELETE");
 }
 export type Lane = "working" | "needsYou" | "inReview" | "done";
 export const LANES: [Lane, string][] = [
