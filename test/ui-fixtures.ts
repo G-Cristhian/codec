@@ -96,6 +96,7 @@ export function fixture(): PageData & { project: NonNullable<PageData["project"]
     },
     settings: { identity: { name: "Owner", email: "owner@example.invalid" } },
     project: {
+      connections: [{ id: "github", connected: false }, { id: "canvas", connected: false }],
       project: { name: "site", path: "/tmp/site" },
       messages: [],
       cappedPairs: [],

@@ -1,5 +1,6 @@
 import { useRef, useState, type ReactNode, type MouseEvent } from "react";
 import { Collapsible } from "radix-ui";
+import { CheckCircle2, GitBranch, GraduationCap } from "lucide-react";
 import { AgentForm, HarnessCard } from "./agents";
 import { ProjectList } from "./project-list";
 import { ReviewChanges, TestBadge } from "./diff-viewer";
@@ -9,6 +10,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import {
   S,
   api,
+  saveConnection,
+  revokeConnection,
+  type ConnectionId,
+  type ProjectConnection,
   enc,
   fmt,
   toolName,
@@ -44,6 +49,8 @@ import {
   EmptyState,
   useDialogDone,
   Field,
+  Input,
+  Label,
   FolderPicker,
   Form,
   Hint,
@@ -390,6 +397,113 @@ function TaskForm({ data, name }: { data: PageData; name: string }) {
     </Form>
   );
 }
+function ConnectionForm({ project, id, actionKey, close, showError }: {
+  project: string; id: ConnectionId; actionKey: string; close: () => void; showError: (error: string) => void;
+}) {
+  const [token, setToken] = useState("");
+  const [instanceUrl, setInstanceUrl] = useState("");
+  const { act, pending } = useActions();
+  const fieldId = "connection-" + id;
+  async function submit() {
+    showError("");
+    const fields = id === "canvas" ? { instanceUrl: instanceUrl.trim(), token: token.trim() } : { token: token.trim() };
+    // Clear on every submission, including client validation and failed requests.
+    setToken("");
+    if (!fields.token) return showError(S.connections.tokenRequired);
+    if (id === "canvas") {
+      let url: URL | undefined;
+      try { url = new URL(instanceUrl.trim()); } catch { /* Show the inline hint below. */ }
+      if (!url || url.protocol !== "https:" || !url.hostname) return showError(S.connections.httpsRequired);
+    }
+    await act(actionKey, async () => {
+      try {
+        await saveConnection(project, id, fields);
+        close();
+      } catch (error) { showError(errorText(error)); }
+    }, "");
+  }
+  return (
+    <form className="form" noValidate onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      {id === "canvas" && <div className="field">
+        <Label htmlFor={fieldId + "-url"}>{S.connections.instanceUrl}</Label>
+        <Input id={fieldId + "-url"} type="url" value={instanceUrl} disabled={!!pending[actionKey]}
+          aria-describedby={fieldId + "-url-hint"} onChange={(event) => setInstanceUrl(event.target.value)} />
+        <p id={fieldId + "-url-hint"} className="hint">{S.connections.instanceUrlHint}</p>
+      </div>}
+      <div className="field">
+        <Label htmlFor={fieldId + "-token"}>{S.connections.token}</Label>
+        <Input id={fieldId + "-token"} type="password" autoComplete="off" value={token} disabled={!!pending[actionKey]}
+          aria-describedby={fieldId + "-token-hint"} onChange={(event) => setToken(event.target.value)} />
+        <p id={fieldId + "-token-hint"} className="hint">{S.connections[id].tokenHint}</p>
+      </div>
+      <div className="button-row">
+        <Submit id={fieldId + "-save"} actionKey={actionKey}>{S.connections.save}</Submit>
+        <Button type="button" variant="outline" disabled={!!pending[actionKey]} onClick={close}>{S.connections.cancel}</Button>
+      </div>
+    </form>
+  );
+}
+
+function ConnectionCard({ project, connection, open, changeOpen }: {
+  project: string; connection: ProjectConnection; open: boolean; changeOpen: (open: boolean) => void;
+}) {
+  const { id, connected } = connection;
+  const text = S.connections[id];
+  const Icon = id === "github" ? GitBranch : GraduationCap;
+  const [error, setError] = useState("");
+  const { act, confirm, pending } = useActions();
+  const actionKey = "connection-" + project + "-" + id;
+  function close() { changeOpen(false); setError(""); }
+  function revoke() {
+    confirm({
+      title: fmt(S.connections.revokeTitle, { name: text.name }),
+      effects: [{ what: S.connections.revokeEffect, kind: "lost" }],
+      label: S.connections.revoke,
+      action: async () => {
+        setError("");
+        await act(actionKey, async () => {
+          try { await revokeConnection(project, id); }
+          catch (error) { setError(errorText(error)); }
+        }, "");
+      },
+    });
+  }
+  return (
+    <Card className="panel" data-testid={"connection-" + id}>
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Icon size={20} className="shrink-0" aria-hidden="true" />
+          <div><span className="font-semibold">{text.name}</span><Hint>{text.description}</Hint></div>
+        </div>
+        {connected ? <div className="flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-green-600 dark:text-green-400" aria-hidden="true" />
+          <span>{S.connections.connected}</span>
+          <Button variant="ghost" size="sm" disabled={!!pending[actionKey]} onClick={revoke}>{S.connections.revoke}</Button>
+        </div> : <Button variant="outline" size="sm" aria-expanded={open} aria-controls={"connection-" + id + "-content"}
+          onClick={() => { setError(""); changeOpen(true); }}>{S.connections.connect}</Button>}
+      </div>
+      <Collapsible.Root open={open && !connected} onOpenChange={changeOpen}>
+        <Collapsible.Content id={"connection-" + id + "-content"}>
+          <hr className="my-4" />
+          {open && !connected && <ConnectionForm project={project} id={id} actionKey={actionKey} close={close} showError={setError} />}
+        </Collapsible.Content>
+      </Collapsible.Root>
+      {error && <p className="error" role="alert">{error}</p>}
+    </Card>
+  );
+}
+
+function ProjectConnections({ project, connections }: { project: string; connections: ProjectConnection[] }) {
+  const [open, setOpen] = useState<ConnectionId>();
+  return (
+    <Disclosure id="project-connections" title={S.connections.title}>
+      <Hint>{S.connections.hint}</Hint>
+      {connections.map((connection) => <ConnectionCard key={connection.id} project={project} connection={connection}
+        open={open === connection.id} changeOpen={(value) => setOpen((current) => value ? connection.id : current === connection.id ? undefined : current)} />)}
+    </Disclosure>
+  );
+}
+
 export function ProjectPage({ data, name }: { data: PageData; name: string }) {
   const v: NonNullable<PageData["project"]> & Partial<ProjectConversation> = data.project!;
   const [reviewId, setReviewId] = useState<string>();
@@ -447,6 +561,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
             <AccountSettings data={data} scope="project" name={name} />
           </Card>
         </Disclosure>
+        <ProjectConnections key={name} project={name} connections={v.connections} />
         <Tabs value={tab} onValueChange={changeTab}>
           <TabsList>
             <TabsTrigger value="board">{S.conversation.board}</TabsTrigger>

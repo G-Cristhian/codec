@@ -12,10 +12,11 @@
  *  - a random token is generated at start and printed in the URL. Opening
  *    that URL stores it in an HttpOnly cookie; the page also sends it as the
  *    X-Codec-Token header. Every /api call needs it, and every state-changing
- *    call must be a POST with JSON body AND the header (a cookie alone is not
- *    enough, so other websites can't forge actions).
+ *    call must use the header and JSON when sending a body. A cookie alone is
+ *    not enough, so other websites can't forge actions.
  */
 
+import { projectConnections, requireConnection, validateConnectionInput } from "./connections.js";
 import { CodecError } from "./errors.js";
 import { markTestsDone, rerunTests, sendTestsBack, testsOutput } from "./test-runs.js";
 import { applyChanges, discardChanges, runChanges, sendFeedback } from "./review.js";
@@ -85,6 +86,7 @@ const HOST = "127.0.0.1";
 // All dashboard screens now use the production React bundle.
 const REACT_AT_ROOT = true;
 const LOG_LINES = 200;
+const isConnectionRoute = (path: string) => /^\/api\/projects\/[^/]+\/connections\/[^/]+$/.test(path);
 const MAX_BODY = 64 * 1024;
 const MAX_UPLOAD = 8 * 1024 * 1024; // skill folder upload (base64)
 
@@ -417,7 +419,7 @@ export function projectView(name: string) {
     .filter((member) => member !== undefined);
   if (coordinator) members.unshift({ ref: "coordinator", member: "coordinator", tool: coordinator.tool, label: S.coordinator.name });
   const cappedPairs = cappedMessagePairs().filter((pair) => refs.has(pair.a) || refs.has(pair.b));
-  return { project, lanes, members, helpers, messages, messagesError, cappedPairs };
+  return { project, lanes, members, helpers, messages, messagesError, cappedPairs, connections: projectConnections(name) };
 }
 
 export function runView(ref: string) {
@@ -736,14 +738,15 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
 
     if (!path.startsWith("/api/")) throw new ApiError(404, "not_found", "That page could not be found. Refresh the dashboard and try again.");
 
-    // 3. API auth. Reads: header or cookie. Writes: POST + header + JSON.
+    // 3. API auth. Reads: header or cookie. Writes: header + JSON (DELETE has no body).
+    const connectionWrite = isConnectionRoute(path) && (req.method === "PUT" || req.method === "DELETE");
     if (req.method === "GET") {
       if (!tokenEquals(headerToken, token) && !tokenEquals(cookieToken, token)) {
         throw new ApiError(401, "unauthorized", "Open the dashboard using the link printed by Codec.");
       }
-    } else if (req.method === "POST") {
+    } else if (req.method === "POST" || connectionWrite) {
       if (!tokenEquals(headerToken, token)) throw new ApiError(401, "unauthorized", "Open the dashboard using the link printed by Codec.");
-      if ((req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase() !== "application/json") {
+      if (req.method !== "DELETE" && (req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase() !== "application/json") {
         throw new ApiError(415, "json_required", "That request could not be read. Refresh the dashboard and try again.");
       }
     } else {
@@ -755,6 +758,13 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     try { parts = path.split("/").slice(2).map(decodeURIComponent); }
     catch { throw new ApiError(400, "bad_request", "That address could not be read. Refresh the dashboard and try again."); }
     const isGet = req.method === "GET";
+    if (connectionWrite) {
+      const [, project, , id] = parts;
+      if (!getProject(project)) throw new ApiError(404, "project_not_found", S.errors.project_not_found);
+      requireConnection(id);
+      if (req.method === "PUT") validateConnectionInput(id, await readBody(req));
+      throw new ApiError(409, "connections_unavailable", S.errors.connections_unavailable);
+    }
     const body = isGet ? {} : await readBody(req, path === "/api/skills" ? MAX_UPLOAD : MAX_BODY);
 
     // GET  /api/state
@@ -956,7 +966,16 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
 
   const server = createServer((req, res) => {
     handle(req, res).catch((e: unknown) => {
-      const { status, body } = friendlyError(e, (req.url ?? "/").split("?")[0]);
+      const route = (req.url ?? "/").split("?")[0];
+      // Connection requests never enter the file logger, including parse/auth failures.
+      // Return only fixed messages: neither request bodies nor error causes escape.
+      if (isConnectionRoute(route)) {
+        const code = e instanceof CodecError ? e.code : "unknown_error";
+        if (!res.headersSent) sendJson(res, e instanceof CodecError ? e.status : 500, { code, error: S.errors[code] });
+        else res.end();
+        return;
+      }
+      const { status, body } = friendlyError(e, route);
       if (!res.headersSent && body.code === "tests_unavailable") send(res, status, body.error, "text/plain; charset=utf-8");
       else if (!res.headersSent) sendJson(res, status, body);
       else res.end();

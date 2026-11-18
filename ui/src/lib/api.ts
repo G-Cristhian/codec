@@ -1,3 +1,5 @@
+import type { ConnectionId, ConnectionInput, ProjectConnection } from "../../../src/connections";
+export type { ConnectionId, ProjectConnection };
 import { S } from "../../../src/strings";
 export { S };
 export type { DiffFile, DiffLine, RunChanges, FeedbackResult } from "../../../src/review";
@@ -24,11 +26,12 @@ export async function api<T = unknown>(
   body?: unknown,
   signal?: AbortSignal,
   plainText = false,
+  method = body === undefined ? "GET" : "POST",
 ): Promise<T> {
   let response: Response;
   try {
     response = await fetch("/api/" + path, {
-      method: body === undefined ? "GET" : "POST",
+      method,
       credentials: "same-origin",
       signal,
       headers: {
@@ -72,6 +75,13 @@ export async function api<T = unknown>(
     throw e;
   }
   return data;
+}
+export function saveConnection(project: string, id: ConnectionId, fields: ConnectionInput) {
+  const body = id === "canvas" ? { instanceUrl: fields.instanceUrl, token: fields.token } : { token: fields.token };
+  return api(`projects/${enc(project)}/connections/${enc(id)}`, body, undefined, false, "PUT");
+}
+export function revokeConnection(project: string, id: ConnectionId) {
+  return api(`projects/${enc(project)}/connections/${enc(id)}`, undefined, undefined, false, "DELETE");
 }
 export type Lane = "working" | "needsYou" | "inReview" | "done";
 export const LANES: [Lane, string][] = [
@@ -243,6 +253,7 @@ export interface Skills {
   };
 }
 export interface ProjectView {
+  connections: ProjectConnection[];
   project: { name: string; path: string; messageLimit?: number };
   members: {
     ref: string;

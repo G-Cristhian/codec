@@ -138,6 +138,155 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+describe("project connections", () => {
+  const card = (id: "github" | "canvas") => screen.getByTestId("connection-" + id);
+  const fields = (id: "github" | "canvas") => Array.from(card(id).querySelectorAll("input"));
+  const requests = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/connections/"));
+  async function open() {
+    await mount("#/project/site", false);
+    await userEvent.click(screen.getByTestId("project-connections"));
+  }
+  async function connect(id: "github" | "canvas") {
+    await userEvent.click(within(card(id)).getByRole("button", { name: S.connections.connect }));
+  }
+  function unavailable() {
+    handler = (path) => path.includes("/connections/") ? response({ code: "connections_unavailable", error: S.errors.connections_unavailable }, 409) : undefined;
+  }
+
+  it("renders below settings and above the tabs with both integration cards", async () => {
+    await open();
+    const disclosure = screen.getByTestId("project-connections");
+    expect(screen.getByTestId("project-account-settings").compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(disclosure.compareDocumentPosition(screen.getByRole("tab", { name: S.conversation.board })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(S.connections.hint).className).toBe("hint");
+    for (const id of ["github", "canvas"] as const) {
+      const integration = card(id);
+      expect(integration.classList.contains("panel")).toBe(true);
+      expect(within(integration).getByText(S.connections[id].name).className).toContain("font-semibold");
+      expect(within(integration).getByText(S.connections[id].description)).toBeTruthy();
+      expect(within(integration).getByRole("button", { name: S.connections.connect }).dataset).toMatchObject({ variant: "outline", size: "sm" });
+      expect(integration.querySelector("svg")?.getAttribute("width")).toBe("20");
+      expect(integration.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      expect(fields(id)).toHaveLength(0);
+    }
+  });
+
+  it.each(["github", "canvas"] as const)("opens the inline %s form, then Cancel closes and clears every field", async (id) => {
+    await open();
+    await connect(id);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(card(id).querySelector("hr")).toBeTruthy();
+    const inputs = fields(id);
+    expect(inputs.map((input) => input.type)).toEqual(id === "github" ? ["password"] : ["url", "password"]);
+    expect(within(card(id)).getByLabelText(S.connections.token)).toBe(inputs.at(-1));
+    expect(inputs.at(-1)?.autocomplete).toBe("off");
+    expect(within(card(id)).getByText(S.connections[id].tokenHint)).toBeTruthy();
+    if (id === "canvas") {
+      expect(within(card(id)).getByLabelText(S.connections.instanceUrl)).toBe(inputs[0]);
+      expect(within(card(id)).getByText(S.connections.instanceUrlHint)).toBeTruthy();
+    }
+    for (const input of inputs) fireEvent.change(input, { target: { value: input.type === "url" ? "https://school.example" : "private-token" } });
+    await userEvent.click(within(card(id)).getByRole("button", { name: S.connections.cancel }));
+    expect(fields(id)).toHaveLength(0);
+    await connect(id);
+    expect(fields(id).every((input) => input.value === "")).toBe(true);
+    expect(requests()).toHaveLength(0);
+  });
+
+  it.each(["github", "canvas"] as const)("rejects a blank %s token without a request", async (id) => {
+    await open();
+    await connect(id);
+    fireEvent.change(within(card(id)).getByLabelText(S.connections.token), { target: { value: "   " } });
+    await userEvent.click(within(card(id)).getByRole("button", { name: S.connections.save }));
+    expect(within(card(id)).getByRole("alert").textContent).toBe(S.connections.tokenRequired);
+    expect(requests()).toHaveLength(0);
+  });
+
+  it.each(["http://school.example", "not-a-url", "https://"])("rejects Canvas address %s without a request", async (url) => {
+    await open();
+    await connect("canvas");
+    fireEvent.change(fields("canvas")[0], { target: { value: url } });
+    fireEvent.change(fields("canvas")[1], { target: { value: "private-token" } });
+    await userEvent.click(within(card("canvas")).getByRole("button", { name: S.connections.save }));
+    expect(within(card("canvas")).getByRole("alert").textContent).toBe(S.connections.httpsRequired);
+    expect(fields("canvas")[1].value).toBe("");
+    expect(requests()).toHaveLength(0);
+  });
+
+  it.each(["github", "canvas"] as const)("sends only the expected %s fields using PUT, clears the token, and shows the refusal in the card", async (id) => {
+    unavailable();
+    await open();
+    await connect(id);
+    if (id === "canvas") fireEvent.change(fields(id)[0], { target: { value: "https://school.example" } });
+    fireEvent.change(within(card(id)).getByLabelText(S.connections.token), { target: { value: "private-token" } });
+    await userEvent.click(within(card(id)).getByRole("button", { name: S.connections.save }));
+    await waitFor(() => expect(within(card(id)).getByRole("alert").textContent).toBe(S.errors.connections_unavailable));
+    expect(requests()).toHaveLength(1);
+    const [path, options] = requests()[0];
+    expect(path).toBe(`/api/projects/site/connections/${id}`);
+    expect(options?.method).toBe("PUT");
+    expect(JSON.parse(String(options?.body))).toEqual(id === "github" ? { token: "private-token" } : { instanceUrl: "https://school.example", token: "private-token" });
+    expect((within(card(id)).getByLabelText(S.connections.token) as HTMLInputElement).value).toBe("");
+    expect(card(id).textContent).not.toContain("private-token");
+    expect(JSON.stringify({ ...localStorage })).not.toContain("private-token");
+    expect(JSON.stringify({ ...sessionStorage })).not.toContain("private-token");
+  });
+
+  it("clears and closes a successful form", async () => {
+    handler = (path) => path.includes("/connections/") ? response({}) : undefined;
+    await open();
+    await connect("github");
+    fireEvent.change(fields("github")[0], { target: { value: "private-token" } });
+    await userEvent.click(within(card("github")).getByRole("button", { name: S.connections.save }));
+    await waitFor(() => expect(fields("github")).toHaveLength(0));
+    await connect("github");
+    expect(fields("github")[0].value).toBe("");
+  });
+
+  it.each(["github", "canvas"] as const)("shows connected %s without inputs and confirms before DELETE", async (id) => {
+    data.project.connections.find((connection) => connection.id === id)!.connected = true;
+    unavailable();
+    await open();
+    expect(within(card(id)).getByText(S.connections.connected)).toBeTruthy();
+    expect(fields(id)).toHaveLength(0);
+    expect(within(card(id)).queryByRole("button", { name: S.connections.connect })).toBeNull();
+    const check = card(id).querySelector("svg.lucide-circle-check");
+    expect(check?.getAttribute("width")).toBe("16");
+    expect(check?.getAttribute("aria-hidden")).toBe("true");
+    expect(check?.getAttribute("class")).toContain("text-green-600 dark:text-green-400");
+    const revoke = within(card(id)).getByRole("button", { name: S.connections.revoke });
+    expect(revoke.dataset).toMatchObject({ variant: "ghost", size: "sm" });
+    await userEvent.click(revoke);
+    expect(screen.getByTestId("confirm-dialog").textContent).toContain(`Revoke the ${S.connections[id].name} connection?`);
+    expect(screen.getByTestId("confirm-dialog").textContent).toContain(S.connections.revokeEffect);
+    expect(requests()).toHaveLength(0);
+    await userEvent.click(screen.getByTestId("confirm-cancel"));
+    expect(requests()).toHaveLength(0);
+    await userEvent.click(revoke);
+    await userEvent.click(screen.getByTestId("confirm-submit"));
+    await waitFor(() => expect(screen.queryByTestId("confirm-dialog")).toBeNull());
+    expect(requests()).toHaveLength(1);
+    expect(requests()[0][0]).toBe(`/api/projects/site/connections/${id}`);
+    expect(requests()[0][1]?.method).toBe("DELETE");
+    expect(requests()[0][1]?.body).toBeUndefined();
+    expect(within(card(id)).getByRole("alert").textContent).toBe(S.errors.connections_unavailable);
+    expect(within(card(id)).getByText(S.connections.connected)).toBeTruthy();
+  });
+
+  it("keeps just one form open and clears the previous draft when switching", async () => {
+    await open();
+    await connect("canvas");
+    fireEvent.change(fields("canvas")[0], { target: { value: "https://school.example" } });
+    fireEvent.change(fields("canvas")[1], { target: { value: "private-token" } });
+    await connect("github");
+    expect(fields("canvas")).toHaveLength(0);
+    expect(fields("github")).toHaveLength(1);
+    await connect("canvas");
+    expect(fields("github")).toHaveLength(0);
+    expect(fields("canvas").map((input) => input.value)).toEqual(["", ""]);
+  });
+});
+
 describe("project conversation", () => {
   const note = (id: string, extra: Partial<ConversationMessage> = {}): ConversationMessage => ({
     id, senderName: "web/tester", senderKind: "helper", recipientName: "web/tester",
