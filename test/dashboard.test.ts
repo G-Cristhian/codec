@@ -2,7 +2,7 @@ import { waitForTests } from "../src/test-runs.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { request } from "http";
 import { join } from "path";
-import { existsSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { addProject } from "../src/registry.js";
 import { cleanRun, getRunStatus, recordReview, recordTests, listRuns, startRun, stopRun, type RunStatus } from "../src/runs.js";
 import { agentMemoryBytes, laneOf, startDashboard, type Dashboard } from "../src/dashboard.js";
@@ -27,14 +27,17 @@ function call(
   d: Dashboard,
   method: string,
   path: string,
-  opts: { token?: string | null; host?: string; body?: unknown; cookie?: string; type?: string } = {},
+  opts: { token?: string | null; host?: string; body?: unknown; rawBody?: string; cookie?: string; type?: string } = {},
 ): Promise<Res> {
   const headers: Record<string, string> = { Host: opts.host ?? `127.0.0.1:${d.port}` };
   const token = opts.token === undefined ? d.token : opts.token;
   if (token) headers["X-Codec-Token"] = token;
   if (opts.cookie) headers.Cookie = opts.cookie;
-  const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body);
-  if (payload !== undefined) headers["Content-Type"] = opts.type ?? "application/json";
+  const payload = opts.rawBody ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body));
+  if (payload !== undefined) {
+    headers["Content-Type"] = opts.type ?? "application/json";
+    headers["Content-Length"] = String(Buffer.byteLength(payload));
+  }
   return new Promise((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port: d.port, method, path, headers }, (res) => {
       let body = "";
@@ -67,6 +70,56 @@ describe("dashboard", () => {
     await Promise.all(listRuns().map((run) => waitForTests(run.runId)));
     for (const r of listRuns({ state: "running" })) stopRun(r.runId);
     cleanupTemps();
+  });
+
+  it("connection routes require header auth and refuse valid requests without writing anything", async () => {
+    addProject(makeRepo("alpha"));
+    const home = process.env.CODEC_HOME!; // Set by useIsolatedHome in beforeEach.
+    const listing = () => readdirSync(home, { recursive: true }).map(String).sort();
+    const before = listing();
+    const files = before.filter((path) => statSync(join(home, path)).isFile());
+    const contents = files.map((path) => [path, readFileSync(join(home, path))] as const);
+    const body = { token: "private-test-token" };
+    for (const method of ["PUT", "DELETE"]) {
+      for (const token of [null, "wrong"]) {
+        const result = await call(d, method, "/api/projects/alpha/connections/github", { token, body });
+        expect(result.status, `${method}: ${result.body}`).toBe(401);
+      }
+      expect((await call(d, method, "/api/projects/alpha/connections/github", {
+        token: null, cookie: `codec_token_${d.port}=${d.token}`, body,
+      })).status).toBe(401);
+      const missing = await call(d, method, "/api/projects/missing/connections/github", { body });
+      expect(missing.status).toBe(404);
+      expect(missing.json.code).toBe("project_not_found");
+      const unknown = await call(d, method, "/api/projects/alpha/connections/unknown", { body });
+      expect(unknown.status).toBe(404);
+      expect(unknown.json.code).toBe("connection_not_found");
+      for (const id of ["github", "canvas"]) {
+        const result = await call(d, method, `/api/projects/alpha/connections/${id}`, {
+          ...(method === "PUT" ? { body: { ...body, ...(id === "canvas" ? { instanceUrl: "https://school.example" } : {}) } } : {}),
+        });
+        expect(result.status).toBe(409);
+        expect(result.json).toEqual({ code: "connections_unavailable", error: S.errors.connections_unavailable });
+        expect(result.body).not.toContain(body.token);
+      }
+    }
+    for (const fields of [{ token: " " }, { token: "private token" }, { ...body, instanceUrl: "http://school.example" }]) {
+      const result = await call(d, "PUT", "/api/projects/alpha/connections/canvas", { body: fields });
+      expect(result.status).toBe(400);
+      expect(result.json.code).toBe("invalid_connection");
+      expect(result.body).not.toContain("private");
+    }
+    expect((await call(d, "PUT", "/api/projects/alpha/connections/github", { body, type: "text/plain" })).status).toBe(415);
+    expect((await call(d, "PUT", "/api/projects/alpha/connections/github", { body: [] })).status).toBe(400);
+    const malformed = await call(d, "PUT", "/api/projects/alpha/connections/github", { rawBody: '{"token":"private-test-token"' });
+    expect(malformed.status).toBe(400);
+    expect(malformed.json.code).toBe("bad_json");
+    expect(malformed.body).not.toContain(body.token);
+    expect((await call(d, "GET", "/api/projects/alpha")).json.connections).toEqual([
+      { id: "github", connected: false }, { id: "canvas", connected: false },
+    ]);
+    expect(listing()).toEqual(before);
+    for (const [path, content] of contents) expect(readFileSync(join(home, path))).toEqual(content);
   });
 
   it("listens on 127.0.0.1 only and prints a tokenised URL", () => {
