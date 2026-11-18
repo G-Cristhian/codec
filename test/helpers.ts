@@ -41,6 +41,7 @@ export function useIsolatedHome(fakeAgent: string): string {
   const home = tempDir("codec-home-");
   process.env.CODEC_HOME = home;
   process.env.CODEC_AGENT_COMMAND = fakeAgent;
+  process.env.CODEC_TEST_COMMAND = "true";
   return home;
 }
 

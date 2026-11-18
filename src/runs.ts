@@ -19,6 +19,7 @@
  * so restarting codec (or the whole terminal) loses nothing.
  */
 
+import { recoverTestRun } from "./test-runs.js";
 import { S, wording } from "./strings.js";
 import { checkpointIdentity, identityEnvironment } from "./settings.js";
 import { CodecError } from "./errors.js";
@@ -75,8 +76,21 @@ export interface HelperStatus {
   at: string;
 }
 
+export interface RunTests {
+  state: "queued" | "running" | "passed" | "failed" | "error" | "skipped" | "interrupted";
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode?: number;
+  failures?: { name: string; file?: string }[];
+  changedFiles?: string[];
+  outputFile?: string;
+  note?: string;
+  sentBack?: { at: string; messageId: string; to: string };
+  closedAt?: string;
+}
+
 export type RunReview =
-  | { action: "applied"; at: string; commit: string; hunks: number; total: number }
+  | { action: "applied"; at: string; commit: string; hunks: number; total: number; tests?: RunTests }
   | { action: "discarded"; at: string };
 
 export interface RunRecord {
@@ -522,7 +536,9 @@ function startAccountRun(input: StartInput): RunStatus {
 
 function readRecord(runId: string): RunRecord | undefined {
   try {
-    return readJson<RunRecord | undefined>(recordFile(runId), undefined);
+    const record = readJson<RunRecord | undefined>(recordFile(runId), undefined);
+    if (record) recoverTestRun(record);
+    return record;
   } catch {
     return undefined;
   }
@@ -593,6 +609,19 @@ function updateRecord(runId: string, patch: Partial<RunRecord>): RunRecord {
 /** Store the owner's decision without overwriting concurrent run metadata. */
 export function recordReview(runId: string, reviewed: RunReview): RunStatus {
   updateRecord(runId, { reviewed });
+  return readRunStatus(runId)!;
+}
+
+/** Update only test metadata, under the same lock as other run writes. */
+export function recordTests(runId: string, update: (tests: RunTests) => RunTests): RunStatus {
+  withLock(`run-${runId}`, () => {
+    const record = readRecord(runId);
+    if (record?.reviewed?.action !== "applied" || !record.reviewed.tests) {
+      throw new CodecError("tests_unavailable", S.errors.tests_unavailable, {}, 409);
+    }
+    record.reviewed.tests = update(record.reviewed.tests);
+    writeJsonAtomic(recordFile(runId), record);
+  });
   return readRunStatus(runId)!;
 }
 

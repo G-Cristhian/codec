@@ -17,6 +17,7 @@
  */
 
 import { CodecError } from "./errors.js";
+import { markTestsDone, rerunTests, sendTestsBack, testsOutput } from "./test-runs.js";
 import { applyChanges, discardChanges, runChanges, sendFeedback } from "./review.js";
 import { S, wording } from "./strings.js";
 import { checkpointIdentity, getSettings, saveSettings, saveAccountSettings } from "./settings.js";
@@ -98,7 +99,32 @@ export type Lane = "working" | "needsYou" | "inReview" | "done";
  *  inReview  finished OK and the worktree still exists
  *  done      reviewed, no changes, or worktree cleaned
  */
-export function laneOf(run: RunStatus): Lane {
+type TestFollowup = { waiting: boolean; finished: boolean };
+type BoardRun = RunStatus & { testsFollowup?: TestFollowup };
+
+/** Resolve inbox delivery and receiving task state once per assembled view. */
+export function withTestFollowups(runs: RunStatus[]): BoardRun[] {
+  if (!runs.some((r) => r.reviewed?.action === "applied" && r.reviewed.tests?.sentBack)) return runs;
+  const messages = new Map(listMessages().map((message) => [message.id, message]));
+  const states = new Map(runs.map((run) => [run.runId, run.state]));
+  return runs.map((run) => {
+    const sent = run.reviewed?.action === "applied" && run.reviewed.tests?.sentBack;
+    if (!sent) return run;
+    const message = messages.get(sent.messageId);
+    const state = message?.runId ? states.get(message.runId) : undefined;
+    return { ...run, testsFollowup: { waiting: !message?.deliveredAt,
+      finished: !!message?.deliveredAt && state !== undefined && state !== "running" } };
+  });
+}
+
+export function laneOf(run: BoardRun): Lane {
+  const tests = run.reviewed?.action === "applied" ? run.reviewed.tests : undefined;
+  if (tests) {
+    if (tests.closedAt) return "done";
+    if (tests.sentBack) return run.testsFollowup?.finished ? "done" : "working";
+    if (tests.state === "passed" || tests.state === "skipped") return "done";
+    return "inReview";
+  }
   if (run.reviewed) return "done";
   if (run.state === "running") return (run.helperStatus?.state === "stuck" || isHelperHeld(helperRef(run))) ? "needsYou" : "working";
   const cleaned = !!run.cleanedAt || !existsSync(run.worktree);
@@ -190,7 +216,7 @@ function runStateText(r: RunStatus): string {
   return { running: S.tasks.working, done: S.wording.finished }[r.state];
 }
 
-function runSummary(r: RunStatus) {
+function runSummary(r: BoardRun) {
   return {
     account: r.account ?? { id: builtinId(r.agent), name: S.accounts.computer },
     limitHit: !!r.limitHit,
@@ -202,6 +228,7 @@ function runSummary(r: RunStatus) {
     held: isHelperHeld(helperRef(r)),
     reviewStatus: r.reviewStatus,
     reviewed: r.reviewed,
+    testsFollowup: r.testsFollowup,
     area: r.area,
     stateText: runStateText(r),
     lostAt: r.lostAt,
@@ -260,7 +287,7 @@ export function teamsView() {
 
 function memberPage(team: string, member: string) {
   const v = memberView(team, member, listRuns({ state: "running" }));
-  const runs = listRuns()
+  const runs = withTestFollowups(listRuns())
     .filter((r) => r.team === team && r.member === member)
     .reverse()
     .map(runSummary);
@@ -304,7 +331,7 @@ function skillsView() {
 }
 
 export function homeView() {
-  const runs = listRuns();
+  const runs = withTestFollowups(listRuns());
   const running = runs.filter((r) => r.state === "running");
   const projects = listProjects().map((p: Project) => {
     const lanes = emptyCounts();
@@ -365,7 +392,7 @@ export function projectView(name: string) {
   const project = listProjects().find((p) => p.name === name);
   if (!project) throw new CodecError("project_not_found", `no project named "${name}"`, {}, 404);
   const lanes: Record<Lane, ReturnType<typeof runSummary>[]> = { working: [], needsYou: [], inReview: [], done: [] };
-  const runs = listRuns();
+  const runs = withTestFollowups(listRuns());
   for (const r of runs.filter((run) => run.project === name).reverse()) lanes[laneOf(r)].push(runSummary(r));
   const running = new Set(runs.filter((run) => run.state === "running").map(helperRef));
   const helpers = projectHelpers(name).map((helper) => ({ ...helper, running: running.has(helper.ref) }));
@@ -394,7 +421,9 @@ export function projectView(name: string) {
 }
 
 export function runView(ref: string) {
-  const r = findRunOr404(ref);
+  const found = findRunOr404(ref);
+  const r = found.reviewed?.action === "applied" && found.reviewed.tests?.sentBack
+    ? withTestFollowups(listRuns()).find((run) => run.runId === found.runId) ?? found : found;
   return {
     ...runSummary(r),
     worktree: r.worktree,
@@ -810,7 +839,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
     if (!isGet && a === "folders" && b === "choose" && n === 2) return sendJson(res, 200, await chooseFolderNatively(s(body.path)?.trim(), opts.folderPicker));
     if (isGet && a === "remove-preview" && n === 1) return sendJson(res, 200, removePreview(url.searchParams.get("kind") ?? "", url.searchParams.get("name") ?? ""));
     if (isGet && a === "projects" && n === 1) return sendJson(res, 200, listProjects());
-    if (isGet && a === "runs" && n === 1) return sendJson(res, 200, listRuns({ project: url.searchParams.get("project") ?? undefined }).map(runSummary));
+    if (isGet && a === "runs" && n === 1) return sendJson(res, 200, withTestFollowups(listRuns()).filter((run) => !url.searchParams.get("project") || run.project === url.searchParams.get("project")).map(runSummary));
     if (isGet && a === "state" && n === 1) return sendJson(res, 200, homeView());
     if (isGet && a === "teams" && n === 1) return sendJson(res, 200, teamsView());
     if (isGet && a === "specialists" && n === 1) return sendJson(res, 200, specialistsView());
@@ -860,6 +889,12 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
 
     if (isGet && a === "projects" && b && parts.length === 2) return sendJson(res, 200, projectView(b));
     if (isGet && a === "runs" && b && parts.length === 2) return sendJson(res, 200, runView(b));
+    if (a === "runs" && b && c === "tests") {
+      if (isGet && n === 4 && parts[3] === "output") return send(res, 200, testsOutput(b), "text/plain; charset=utf-8");
+      if (!isGet && n === 3) return sendJson(res, 200, runSummary(rerunTests(b)));
+      if (!isGet && n === 4 && parts[3] === "send-back") return sendJson(res, 200, sendTestsBack(b));
+      if (!isGet && n === 4 && parts[3] === "done") return sendJson(res, 200, runSummary(markTestsDone(b)));
+    }
     if (isGet && a === "runs" && b && c === "changes" && n === 3) return sendJson(res, 200, await runChanges(b));
     if (!isGet && a === "runs" && b && c === "feedback" && n === 3) return sendJson(res, 200, await sendFeedback(b, body));
     if (!isGet && a === "projects" && parts.length === 1) {
@@ -922,7 +957,8 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
   const server = createServer((req, res) => {
     handle(req, res).catch((e: unknown) => {
       const { status, body } = friendlyError(e, (req.url ?? "/").split("?")[0]);
-      if (!res.headersSent) sendJson(res, status, body);
+      if (!res.headersSent && body.code === "tests_unavailable") send(res, status, body.error, "text/plain; charset=utf-8");
+      else if (!res.headersSent) sendJson(res, status, body);
       else res.end();
     });
   });

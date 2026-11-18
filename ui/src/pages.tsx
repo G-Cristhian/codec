@@ -1,8 +1,8 @@
-import { useState, type ReactNode, type MouseEvent } from "react";
+import { useRef, useState, type ReactNode, type MouseEvent } from "react";
 import { Collapsible } from "radix-ui";
 import { AgentForm, HarnessCard } from "./agents";
 import { ProjectList } from "./project-list";
-import { ReviewChanges } from "./diff-viewer";
+import { ReviewChanges, TestBadge } from "./diff-viewer";
 import { ConversationFeed, useConversationTab, type ProjectConversation } from "./conversation-feed";
 import { Badge } from "./components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
@@ -392,6 +392,11 @@ function TaskForm({ data, name }: { data: PageData; name: string }) {
 }
 export function ProjectPage({ data, name }: { data: PageData; name: string }) {
   const v: NonNullable<PageData["project"]> & Partial<ProjectConversation> = data.project!;
+  const [reviewId, setReviewId] = useState<string>();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const reviewTrigger = useRef<HTMLButtonElement | null>(null);
+  const reviewRun = Object.values(v.lanes).flat().find((run) => run.runId === reviewId);
+
   const { tab, changeTab, unread } = useConversationTab(v.messagesError ? undefined : v.messages);
   const [compose, setCompose] = useState(
     !LANES.some(([lane]) => v.lanes[lane].length),
@@ -434,6 +439,8 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
           </Remove>
         </PageIntro>
         <Message actionKey={"project-" + name} />
+        {reviewRun && <ReviewChanges key={reviewRun.runId} run={reviewRun} actionKey={"project-" + name}
+          controlledOpen={reviewOpen} onOpenChange={setReviewOpen} returnFocus={() => reviewTrigger.current?.focus()} />}
         <Disclosure id="project-account-settings" title={S.messageLimit.settings}>
           <Card className="panel">
             <MessageLimitSettings key={name} scope="project" name={name} limit={v.project.messageLimit} />
@@ -510,10 +517,13 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
                                   </Hint>
                                 )}
                                 <StatusBadge run={r} />
+                                <TestBadge run={r} />
                                 <Hint>{when(r.startedAt)}</Hint>
                               </Card>
                             </a>
-                            {(lane === "inReview" || lane === "done") && <ReviewChanges run={r} small actionKey={"project-" + name} />}
+                            {(lane === "inReview" || lane === "done" || r.reviewed?.action === "applied") &&
+                              (r.reviewStatus === "ready" || r.reviewStatus === "no_changes" || r.reviewed?.action === "applied" && r.reviewed.tests) &&
+                              <Button variant="outline" size="sm" data-testid="task-review" ref={(node) => { if (r.runId === reviewId) reviewTrigger.current = node; }} onClick={(event) => { reviewTrigger.current = event.currentTarget; setReviewId(r.runId); setReviewOpen(true); }}>{S.diffViewer.button}</Button>}
                           </div>
                         ))
                       ) : (
@@ -609,6 +619,7 @@ export function TaskPage({ data }: { data: PageData }) {
         title={
           <>
             {S.tasks.details} <StatusBadge run={r} />
+            <TestBadge run={r} />
           </>
         }
       >

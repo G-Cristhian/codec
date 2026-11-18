@@ -1,3 +1,4 @@
+import { queueTests } from "./test-runs.js";
 import { spawn, spawnSync } from "child_process";
 import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -320,7 +321,7 @@ export function applyChanges(runId: string, selection: { head?: unknown; hunks?:
       }
       const reviewed = { action: "applied" as const, at: new Date().toISOString(),
         commit: projectGit(["rev-parse", "HEAD"]).stdout.trim(), ...counts };
-      const updated = recordReview(runId, reviewed);
+      const updated = queueTests(run, { ...reviewed, tests: { state: "queued" } });
       logEvent("run.apply", { runId, project: run.project, ...reviewed });
       return updated;
     } finally { rmSync(temp, { recursive: true, force: true }); }

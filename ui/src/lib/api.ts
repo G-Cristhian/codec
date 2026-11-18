@@ -23,6 +23,7 @@ export async function api<T = unknown>(
   path: string,
   body?: unknown,
   signal?: AbortSignal,
+  plainText = false,
 ): Promise<T> {
   let response: Response;
   try {
@@ -41,6 +42,11 @@ export async function api<T = unknown>(
   } catch (cause) {
     if (signal?.aborted) throw cause;
     throw new RequestError(S.common.networkError);
+  }
+  if (plainText || response.headers.get("Content-Type")?.startsWith("text/plain")) {
+    const text = await response.text();
+    if (!response.ok) throw new RequestError(text);
+    return text as T;
   }
   let data: T & {
     error?: string;
@@ -102,6 +108,7 @@ export interface Run {
   cleanedAt?: string;
   reviewStatus?: string;
   reviewed?: import("../../../src/runs").RunReview;
+  testsFollowup?: { waiting: boolean; finished: boolean };
   area?: TaskArea;
   model?: string;
   actualModel?: string;
