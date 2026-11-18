@@ -17,6 +17,7 @@
  */
 
 import { CodecError } from "./errors.js";
+import { runChanges } from "./review.js";
 import { S, wording } from "./strings.js";
 import { checkpointIdentity, getSettings, saveSettings, saveAccountSettings } from "./settings.js";
 import { accountStore, addAccount, builtinId, getAccount, removeAccount, resolveAccount, setAccountChoice, setDefaultAccount } from "./accounts.js";
@@ -857,6 +858,7 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
 
     if (isGet && a === "projects" && b && parts.length === 2) return sendJson(res, 200, projectView(b));
     if (isGet && a === "runs" && b && parts.length === 2) return sendJson(res, 200, runView(b));
+    if (isGet && a === "runs" && b && c === "changes" && n === 3) return sendJson(res, 200, await runChanges(b));
     if (!isGet && a === "projects" && parts.length === 1) {
       return sendJson(res, 201, addProjectFromRequest(body));
     }

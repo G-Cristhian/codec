@@ -597,6 +597,16 @@ function reviewStatusOf(rec: RunRecord, state: RunState): RunStatus["reviewStatu
   return Number(checkpoints.out) > 0 ? "ready" : "no_changes";
 }
 
+/** Inspect a task without recovery, record updates, or process termination. */
+export function readRunStatus(runId: string): RunStatus | undefined {
+  if (!/^run-[a-f0-9]{8}$/.test(runId)) return undefined;
+  const rec = readRecord(runId);
+  if (!rec) return undefined;
+  const exitCode = readExitCode(runId);
+  const state = deriveState(rec, exitCode);
+  return { ...rec, state, exitCode, reviewStatus: reviewStatusOf(rec, state) };
+}
+
 export function getRunStatus(runId: string): RunStatus | undefined {
   let rec = readRecord(runId);
   if (!rec) return undefined;

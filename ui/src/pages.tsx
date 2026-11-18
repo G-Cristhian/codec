@@ -2,6 +2,7 @@ import { useState, type ReactNode, type MouseEvent } from "react";
 import { Collapsible } from "radix-ui";
 import { AgentForm, HarnessCard } from "./agents";
 import { ProjectList } from "./project-list";
+import { ReviewChanges } from "./diff-viewer";
 import { ConversationFeed, useConversationTab, type ProjectConversation } from "./conversation-feed";
 import { Badge } from "./components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
@@ -489,28 +490,30 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
                     <div className="lane-tasks">
                       {v.lanes[lane].length ? (
                         v.lanes[lane].map((r) => (
-                          <a
-                            className="card-link"
-                            key={r.runId}
-                            href={"#/run/" + enc(r.runId)}
-                            data-testid="task-open"
-                            data-key={r.runId}
-                          >
-                            <Card className="task-card">
-                              <strong>{whoText(r)}</strong>
-                              <p className="line-clamp-3">{r.task}</p>
-                              {r.specialist && (
-                                <Hint>
-                                  {fmt(S.wording.teamRole, {
-                                    team: r.team,
-                                    role: r.specialist,
-                                  })}
-                                </Hint>
-                              )}
-                              <StatusBadge run={r} />
-                              <Hint>{when(r.startedAt)}</Hint>
-                            </Card>
-                          </a>
+                          <div key={r.runId} className="space-y-2">
+                            <a
+                              className="card-link"
+                              href={"#/run/" + enc(r.runId)}
+                              data-testid="task-open"
+                              data-key={r.runId}
+                            >
+                              <Card className="task-card">
+                                <strong>{whoText(r)}</strong>
+                                <p className="line-clamp-3">{r.task}</p>
+                                {r.specialist && (
+                                  <Hint>
+                                    {fmt(S.wording.teamRole, {
+                                      team: r.team,
+                                      role: r.specialist,
+                                    })}
+                                  </Hint>
+                                )}
+                                <StatusBadge run={r} />
+                                <Hint>{when(r.startedAt)}</Hint>
+                              </Card>
+                            </a>
+                            {(lane === "inReview" || lane === "done") && <ReviewChanges run={r} small />}
+                          </div>
                         ))
                       ) : (
                         <Hint>{S.common.empty}</Hint>
@@ -634,6 +637,7 @@ export function TaskPage({ data }: { data: PageData }) {
             </Button>
           )
         )}
+        <ReviewChanges run={r} />
       </PageIntro>
       <Message actionKey={key} />
       {r.limitHit && (

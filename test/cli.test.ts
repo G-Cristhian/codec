@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { writeFileSync } from "fs";
+import { join } from "path";
 import { cleanupTemps, cli, makeRepo, useIsolatedHome } from "./helpers.js";
 
 /**
@@ -13,6 +15,8 @@ describe("codec CLI (restart recovery)", () => {
   const status = () => JSON.parse(cli(["status", "--json"]).stdout) as Array<Record<string, unknown>>;
 
   it("keeps runs visible and tracked across separate codec processes", async () => {
+    // Hold both fake helpers until the status assertions, even on a busy test host.
+    process.env.CODEC_AGENT_COMMAND = 'while [ -d "$CODEC_HOME" ] && [ ! -f "$CODEC_HOME/release-cli" ]; do sleep 0.05; done; echo done';
     expect(cli(["project", "add", makeRepo("alpha")]).code).toBe(0);
     expect(cli(["project", "add", makeRepo("beta"), "--name", "beta"]).code).toBe(0);
     expect(cli(["project", "list"]).stdout).toMatch(/alpha[\s\S]*beta/);
@@ -31,6 +35,7 @@ describe("codec CLI (restart recovery)", () => {
     const table = cli(["status"]).stdout;
     expect(table).toContain("2 run(s), 2 running");
 
+    writeFileSync(join(process.env.CODEC_HOME!, "release-cli"), "done\n");
     await new Promise((r) => setTimeout(r, 3500));
     runs = status();
     expect(runs.map((r) => r.state)).toEqual(["done", "done"]);
