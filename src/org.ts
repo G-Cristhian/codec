@@ -304,6 +304,14 @@ export interface MemberInput {
   skills?: string[];
 }
 
+/** First free numbered name in this team, shared by clones and plain workers. */
+function nextMemberName(team: Team, prefix: string): string {
+  for (let n = 1; ; n++) {
+    const name = `${prefix}-${n}`;
+    if (!team.members.some((member) => member.name === name)) return name;
+  }
+}
+
 export function addMember(teamName: string, input: MemberInput): Member {
   const skills = checkSkills(input.skills);
   const timeLimitMinutes = checkTimeLimit(input.timeLimitMinutes);
@@ -318,24 +326,11 @@ export function addMember(teamName: string, input: MemberInput): Member {
       if (input.tool && input.tool !== spec.tool) {
         throw new CodecError("role_tool_mismatch", `a clone uses its specialist's tool (${spec.tool}) — edit the specialist to change it`, { name: spec.name, tool: spec.tool === "claude" ? S.setup.claude : S.setup.codex });
       }
-      let name = input.name?.trim();
-      if (!name) {
-        // tester-1, tester-2, ... first free number in this team
-        for (let n = 1; ; n++) if (!team.members.some((x) => x.name === `${spec.name}-${n}`)) {
-          name = `${spec.name}-${n}`;
-          break;
-        }
-      }
+      const name = input.name?.trim() || nextMemberName(team, spec.name);
       m = { name: checkName("member", name, team.members.map((m) => m.name)), kind: "clone", specialist: spec.name, skills, addedAt: new Date().toISOString() };
     } else {
       const tool = checkTool(input.tool ?? "");
-      let name = input.name?.trim();
-      if (!name) {
-        for (let n = 1; ; n++) if (!team.members.some((x) => x.name === `${tool}-worker-${n}`)) {
-          name = `${tool}-worker-${n}`;
-          break;
-        }
-      }
+      const name = input.name?.trim() || nextMemberName(team, `${tool}-worker`);
       m = {
         name: checkName("member", name, team.members.map((m) => m.name)),
         kind: "worker",
@@ -474,7 +469,9 @@ export function removeSkillEverywhere(name: string): { specialists: string[]; me
     specs.forEach((s) => (s.skills = s.skills.filter((x) => x !== name)));
     saveSpecialists(specs);
     const teams = loadTeams();
-    teams.forEach((t) => t.members.forEach((m) => (m.skills = m.skills.filter((x) => x !== name))));
+    for (const team of teams) {
+      for (const member of team.members) member.skills = member.skills.filter((skill) => skill !== name);
+    }
     saveTeams(teams);
     return h;
   });

@@ -32,7 +32,7 @@ export function accountFolder(id: string): string {
   if (!/^account-[a-f0-9]{24}$/.test(id)) throw new CodecError("account_missing", S.errors.account_missing, {}, 404);
   return resolve(codecHome(), "accounts", id);
 }
-export function secureAccountFolder(id: string): string {
+function secureAccountFolder(id: string): string {
   const root = resolve(codecHome(), "accounts");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   if (lstatSync(root).isSymbolicLink()) throw new CodecError("account_folder", S.errors.account_folder);
@@ -86,7 +86,7 @@ export function setDefaultAccount(kind: Agent, id: string): void {
     const saved = accountStore(); saved.defaults[kind] = id; writeJsonAtomic(file(), saved);
   });
 }
-export const choiceKey = (scope: AccountScope, name: string) => `${scope}:${name}`;
+const choiceKey = (scope: AccountScope, name: string) => `${scope}:${name}`;
 export function setAccountChoice(scope: AccountScope, name: string, kind: Agent, id?: string): void {
   withLock("accounts", () => {
     if (id && getAccount(id).kind !== kind) throw new CodecError("account_kind", S.errors.account_kind);

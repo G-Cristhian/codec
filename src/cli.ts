@@ -184,13 +184,41 @@ function stateLabel(r: RunStatus): string {
   return r.state;
 }
 
+/** Helper text is positional, including quoted text that starts with a dash. */
+function parseCommand(argv: string[]): Parsed {
+  if (argv[0] === "message" || argv[0] === "report") return { positional: argv, flags: {} };
+  if (argv[0] !== "assign") return parse(argv);
+  const options = parse(argv.slice(3));
+  return { positional: argv.slice(0, 3).concat(options.positional), flags: options.flags };
+}
+
+function specialistFields(flags: Parsed["flags"]) {
+  const instructionsFile = str(flags, "instructions-file");
+  return {
+    specialty: str(flags, "specialty"),
+    tool: str(flags, "tool"),
+    model: str(flags, "model"),
+    instructions: instructionsFile ? readFileSync(instructionsFile, "utf-8") : str(flags, "instructions"),
+    skills: list(flags, "skills"),
+    timeLimitMinutes: timeLimit(flags),
+  };
+}
+
+function statusRow(r: RunStatus): string[] {
+  return [
+    r.runId,
+    r.project,
+    who(r),
+    r.agent,
+    stateLabel(r),
+    formatTimeLimit(r.timeLimitMinutes),
+    localTime(r.startedAt),
+    r.cleanedAt ? "(cleaned)" : r.worktree,
+  ];
+}
+
 export function main(argv: string[]): number {
-  // Helper text is positional, including quoted text that starts with a dash.
-  let parsed: Parsed;
-  if (argv[0] === "assign") {
-    const options = parse(argv.slice(3));
-    parsed = { positional: argv.slice(0, 3).concat(options.positional), flags: options.flags };
-  } else parsed = argv[0] === "message" || argv[0] === "report" ? { positional: argv, flags: {} } : parse(argv);
+  const parsed = parseCommand(argv);
   const { positional, flags } = parsed;
   const [cmd, sub, ...rest] = positional;
   const out = (s: string) => process.stdout.write(s + "\n");
@@ -322,24 +350,14 @@ export function main(argv: string[]): number {
     }
 
     case "specialist": {
-      const fields = () => ({
-        specialty: str(flags, "specialty"),
-        tool: str(flags, "tool"),
-        model: str(flags, "model"),
-        instructions: str(flags, "instructions-file")
-          ? readFileSync(str(flags, "instructions-file")!, "utf-8")
-          : str(flags, "instructions"),
-        skills: list(flags, "skills"),
-        timeLimitMinutes: timeLimit(flags),
-      });
       if (sub === "add") {
         const sp = addSpecialist({
           name: need(rest[0], "codec specialist add <name> --specialty <text> --tool claude|codex"),
-          ...fields(),
+          ...specialistFields(flags),
         });
         out(`added specialist ${sp.name} (${sp.specialty}, ${sp.tool})`);
       } else if (sub === "edit") {
-        const sp = editSpecialist(need(rest[0], "codec specialist edit <name> [options]"), fields());
+        const sp = editSpecialist(need(rest[0], "codec specialist edit <name> [options]"), specialistFields(flags));
         out(`updated specialist ${sp.name}`);
       } else if (sub === "list") {
         const specs = listSpecialists().map((sp) => ({ ...sp, clones: clonesOf(sp.name) }));
@@ -435,16 +453,7 @@ export function main(argv: string[]): number {
       out(
         table([
           ["RUN", "PROJECT", "WHO", "AGENT", "STATE", "TIME LIMIT", "STARTED", "WORKTREE"],
-          ...runs.map((r) => [
-            r.runId,
-            r.project,
-            who(r),
-            r.agent,
-            stateLabel(r),
-            formatTimeLimit(r.timeLimitMinutes),
-            localTime(r.startedAt),
-            r.cleanedAt ? "(cleaned)" : r.worktree,
-          ]),
+          ...runs.map(statusRow),
         ]),
       );
       const running = runs.filter((r) => r.state === "running").length;

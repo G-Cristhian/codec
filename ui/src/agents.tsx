@@ -45,7 +45,7 @@ const ACCESS: { value: Access; label: string; hint: string }[] = [
   { value: "read", label: S.agents.accessRead, hint: S.agents.accessReadHint },
   { value: "custom", label: S.agents.accessCustom, hint: S.agents.accessCustomHint },
 ];
-export const accessText = (a?: Access) => ACCESS.find((x) => x.value === (a ?? "full"))!.label;
+const accessText = (a?: Access) => ACCESS.find((x) => x.value === (a ?? "full"))!.label;
 
 interface McpRow {
   name: string;
@@ -76,46 +76,50 @@ function fromRow(r: McpRow) {
 
 function McpEditor({ rows, setRows }: { rows: McpRow[]; setRows: (rows: McpRow[]) => void }) {
   const change = (i: number, patch: Partial<McpRow>) => setRows(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  function renderRow(r: McpRow, i: number) {
+    return (
+      <div className="mcp-row" key={i} data-testid="mcp-row">
+        <div className="mcp-row-head">
+          <Input
+            aria-label={S.agents.mcpName}
+            placeholder={S.agents.mcpName + " (github)"}
+            data-testid="mcp-name"
+            value={r.name}
+            onChange={(e) => change(i, { name: e.target.value })}
+          />
+          <select
+            className="native-select"
+            aria-label={S.agents.mcpType}
+            data-testid="mcp-type"
+            value={r.type}
+            onChange={(e) => change(i, { type: e.target.value as McpRow["type"] })}
+          >
+            <option value="stdio">{S.agents.mcpLocal}</option>
+            <option value="http">{S.agents.mcpRemote}</option>
+          </select>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={S.agents.mcpRemove} title={S.agents.mcpRemove} onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+            <Trash2 aria-hidden="true" />
+          </Button>
+        </div>
+        {r.type === "http" ? (
+          <Input aria-label={S.agents.mcpUrl} placeholder="https://…" data-testid="mcp-url" value={r.url} onChange={(e) => change(i, { url: e.target.value })} />
+        ) : (
+          <>
+            <Input aria-label={S.agents.mcpCommand} placeholder={S.agents.mcpCommand + " (npx)"} data-testid="mcp-command" value={r.command} onChange={(e) => change(i, { command: e.target.value })} />
+            <textarea className="textarea" rows={2} aria-label={S.agents.mcpArgs} placeholder={S.agents.mcpArgs} data-testid="mcp-args" value={r.args} onChange={(e) => change(i, { args: e.target.value })} />
+          </>
+        )}
+        <textarea className="textarea mono" rows={2} aria-label={S.agents.mcpEnv} placeholder={S.agents.mcpEnv} data-testid="mcp-env" value={r.env} onChange={(e) => change(i, { env: e.target.value })} />
+        <Hint>{S.agents.mcpEnvHint}</Hint>
+      </div>
+    );
+  }
+
   return (
     <fieldset className="mcp-editor">
       <legend>{S.agents.mcp}</legend>
       <Hint>{S.agents.mcpHint}</Hint>
-      {rows.map((r, i) => (
-        <div className="mcp-row" key={i} data-testid="mcp-row">
-          <div className="mcp-row-head">
-            <Input
-              aria-label={S.agents.mcpName}
-              placeholder={S.agents.mcpName + " (github)"}
-              data-testid="mcp-name"
-              value={r.name}
-              onChange={(e) => change(i, { name: e.target.value })}
-            />
-            <select
-              className="native-select"
-              aria-label={S.agents.mcpType}
-              data-testid="mcp-type"
-              value={r.type}
-              onChange={(e) => change(i, { type: e.target.value as McpRow["type"] })}
-            >
-              <option value="stdio">{S.agents.mcpLocal}</option>
-              <option value="http">{S.agents.mcpRemote}</option>
-            </select>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={S.agents.mcpRemove} title={S.agents.mcpRemove} onClick={() => setRows(rows.filter((_, j) => j !== i))}>
-              <Trash2 aria-hidden="true" />
-            </Button>
-          </div>
-          {r.type === "http" ? (
-            <Input aria-label={S.agents.mcpUrl} placeholder="https://…" data-testid="mcp-url" value={r.url} onChange={(e) => change(i, { url: e.target.value })} />
-          ) : (
-            <>
-              <Input aria-label={S.agents.mcpCommand} placeholder={S.agents.mcpCommand + " (npx)"} data-testid="mcp-command" value={r.command} onChange={(e) => change(i, { command: e.target.value })} />
-              <textarea className="textarea" rows={2} aria-label={S.agents.mcpArgs} placeholder={S.agents.mcpArgs} data-testid="mcp-args" value={r.args} onChange={(e) => change(i, { args: e.target.value })} />
-            </>
-          )}
-          <textarea className="textarea mono" rows={2} aria-label={S.agents.mcpEnv} placeholder={S.agents.mcpEnv} data-testid="mcp-env" value={r.env} onChange={(e) => change(i, { env: e.target.value })} />
-          <Hint>{S.agents.mcpEnvHint}</Hint>
-        </div>
-      ))}
+      {rows.map(renderRow)}
       <Button
         type="button"
         variant="outline"
@@ -244,30 +248,32 @@ export function AgentForm({ data, team, member }: { data: PageData; team: string
   const [template, setTemplate] = useState("");
   const role = roles.find((r) => r.name === template);
   const key = member ? "agent-edit-" + team + "-" + member.member : "agent-add-" + team;
+  async function saveAgent(f: HTMLFormElement) {
+    const access = formValue(f, "agent-access") as Access;
+    const tool = formValue(f, "agent-tool");
+    const body: Record<string, unknown> = {
+      timeLimitMinutes: limitValue(f, "agent-limit"),
+      skills: selected(f, "agent-skill"),
+      instructions: formValue(f, "agent-instructions"),
+      access,
+      mcp: JSON.parse(formValue(f, "agent-mcp") || "[]"),
+    };
+    if (!member?.specialist) {
+      Object.assign(body, { tool, model: formValue(f, "agent-model").trim(), specialty: formValue(f, "agent-job").trim() });
+    }
+    if (tool === "claude") body.isolated = (f.elements.namedItem("agent-isolated") as HTMLInputElement | null)?.checked === true;
+    if (access === "custom") Object.assign(body, { allow: formValue(f, "agent-allow"), deny: formValue(f, "agent-deny") });
+    if (!member) body.name = formValue(f, "agent-name").trim() || undefined;
+    await api("teams/" + enc(team) + "/members" + (member ? "/" + enc(member.member) + "/edit" : ""), body);
+  }
+
   return (
     <Form
       id={member ? "agent-edit-form" : "agent-add-form"}
       itemKey={member?.member ?? team}
       actionKey={key}
       success={member ? S.common.saved : S.common.added}
-      onSubmit={async (f) => {
-        const access = formValue(f, "agent-access") as Access;
-        const tool = formValue(f, "agent-tool");
-        const body: Record<string, unknown> = {
-          timeLimitMinutes: limitValue(f, "agent-limit"),
-          skills: selected(f, "agent-skill"),
-          instructions: formValue(f, "agent-instructions"),
-          access,
-          mcp: JSON.parse(formValue(f, "agent-mcp") || "[]"),
-        };
-        if (!member?.specialist) {
-          Object.assign(body, { tool, model: formValue(f, "agent-model").trim(), specialty: formValue(f, "agent-job").trim() });
-        }
-        if (tool === "claude") body.isolated = (f.elements.namedItem("agent-isolated") as HTMLInputElement | null)?.checked === true;
-        if (access === "custom") Object.assign(body, { allow: formValue(f, "agent-allow"), deny: formValue(f, "agent-deny") });
-        if (!member) body.name = formValue(f, "agent-name").trim() || undefined;
-        await api("teams/" + enc(team) + "/members" + (member ? "/" + enc(member.member) + "/edit" : ""), body);
-      }}
+      onSubmit={saveAgent}
     >
       {!member && roles.length > 0 && (
         <div className="field">

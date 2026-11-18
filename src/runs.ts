@@ -65,8 +65,8 @@ import {
 
 import { AGENTS, type Agent } from "./tools.js";
 import type { TaskArea } from "./planner.js";
-import { claudeMcpConfig, claudePermissions, codexOverrides, codexSandbox, type Access } from "./harness.js";
-export { AGENTS, type Agent };
+import { claudeMcpConfig, claudePermissions, codexOverrides, codexSandbox, type Access, type Harness } from "./harness.js";
+export { type Agent };
 export type RunState = "running" | "done" | "failed" | "stopped" | "timed_out";
 
 export interface HelperStatus {
@@ -306,6 +306,36 @@ export function startRun(input: StartInput): RunStatus {
   return withLock("accounts", () => startAccountRun(input));
 }
 
+function prepareRunHarness(agent: Agent, harness: Harness | undefined, dir: string): CommandHarness | undefined {
+  let commandHarness: CommandHarness | undefined;
+  if (harness) {
+    commandHarness = { access: harness.access };
+    if (agent === "claude") {
+      commandHarness.isolated = harness.isolated;
+      if (harness.mcp.length || harness.isolated) {
+        // MCP env values can be tokens: keep the file private to the owner.
+        writeFileSync(join(dir, "mcp.json"), JSON.stringify(claudeMcpConfig(harness), null, 2), { mode: 0o600 });
+        commandHarness.mcp = true;
+      }
+    } else {
+      const pairs = codexOverrides(harness);
+      // A sandboxed Codex agent still needs to write Codec's inbox to message and report.
+      if (codexSandbox(harness.access) === "workspace-write") pairs.push(["sandbox_workspace_write.writable_roots", JSON.stringify([codecHome()])]);
+      pairs.forEach(([, value], i) => writeFileSync(join(dir, `codex-${i}.toml`), value, { mode: 0o600 }));
+      commandHarness.codexKeys = pairs.map(([key]) => key);
+    }
+  }
+  if (agent === "claude") {
+    const permissions = harness ? claudePermissions(harness) : undefined;
+    writeJsonAtomic(join(dir, "claude-settings.json"), {
+      includeCoAuthoredBy: false,
+      attribution: { commit: "", pr: "" },
+      ...(permissions ? { permissions } : {}),
+    });
+  }
+  return commandHarness;
+}
+
 function startAccountRun(input: StartInput): RunStatus {
   if (!input.task || !input.task.trim()) throw new CodecError("missing_task", "--task is required");
   const requestedLimit = checkTimeLimit(input.timeLimitMinutes);
@@ -368,33 +398,7 @@ function startAccountRun(input: StartInput): RunStatus {
 
   mkdirSync(dir, { recursive: true });
   // A team agent brings its own harness; quick helpers and the coordinator keep full access.
-  const harness = who?.harness;
-  let commandHarness: CommandHarness | undefined;
-  if (harness) {
-    commandHarness = { access: harness.access };
-    if (agent === "claude") {
-      commandHarness.isolated = harness.isolated;
-      if (harness.mcp.length || harness.isolated) {
-        // MCP env values can be tokens: keep the file private to the owner.
-        writeFileSync(join(dir, "mcp.json"), JSON.stringify(claudeMcpConfig(harness), null, 2), { mode: 0o600 });
-        commandHarness.mcp = true;
-      }
-    } else {
-      const pairs = codexOverrides(harness);
-      // A sandboxed Codex agent still needs to write Codec's inbox to message and report.
-      if (codexSandbox(harness.access) === "workspace-write") pairs.push(["sandbox_workspace_write.writable_roots", JSON.stringify([codecHome()])]);
-      pairs.forEach(([, value], i) => writeFileSync(join(dir, `codex-${i}.toml`), value, { mode: 0o600 }));
-      commandHarness.codexKeys = pairs.map(([key]) => key);
-    }
-  }
-  if (agent === "claude") {
-    const permissions = harness ? claudePermissions(harness) : undefined;
-    writeJsonAtomic(join(dir, "claude-settings.json"), {
-      includeCoAuthoredBy: false,
-      attribution: { commit: "", pr: "" },
-      ...(permissions ? { permissions } : {}),
-    });
-  }
+  const commandHarness = prepareRunHarness(agent, who?.harness, dir);
   let skills: GivenSkill[];
   try {
     skills = who ? injectSkills(worktree, agent, who.skills) : projectSkills(worktree, agent);
@@ -572,32 +576,41 @@ export function reportHelperStatus(state: string, note = ""): HelperStatus {
   });
 }
 
+/** Merge wrapper results into the latest record while holding the run's lock. */
+function updateRecord(runId: string, patch: Partial<RunRecord>): RunRecord {
+  return withLock(`run-${runId}`, () => {
+    const updated = { ...readRecord(runId)!, ...patch };
+    writeJsonAtomic(recordFile(runId), updated);
+    return updated;
+  });
+}
+
+function reviewStatusOf(rec: RunRecord, state: RunState): RunStatus["reviewStatus"] {
+  if (state === "running" || rec.cleanedAt || !existsSync(rec.worktree)) return undefined;
+  // Always recheck: a helper or the owner can leave work after the process exits.
+  const status = git(rec.worktree, ["status", "--porcelain", "--untracked-files=normal"]);
+  if (!status.ok) return "unavailable";
+  if (status.out) return "unsaved";
+  if (state !== "done") return undefined;
+  const checkpoints = git(rec.worktree, ["rev-list", "--count", `${rec.baseSha}..HEAD`]);
+  if (!checkpoints.ok) return "unavailable";
+  return Number(checkpoints.out) > 0 ? "ready" : "no_changes";
+}
+
 export function getRunStatus(runId: string): RunStatus | undefined {
   let rec = readRecord(runId);
   if (!rec) return undefined;
   if (!rec.limitHit && existsSync(join(runDir(runId), "limit_hit"))) {
-    rec = withLock(`run-${runId}`, () => {
-      const updated = { ...readRecord(runId)!, limitHit: true };
-      writeJsonAtomic(recordFile(runId), updated);
-      return updated;
-    });
+    rec = updateRecord(runId, { limitHit: true });
   }
   const attribution = readJson<{ coAuthorStripped?: number }>(join(runDir(runId), "attribution.json"), {});
   if (attribution.coAuthorStripped && attribution.coAuthorStripped !== rec.coAuthorStripped) {
-    rec = withLock(`run-${runId}`, () => {
-      const updated = { ...readRecord(runId)!, ...attribution };
-      writeJsonAtomic(recordFile(runId), updated);
-      return updated;
-    });
+    rec = updateRecord(runId, attribution);
   }
   // The standalone wrapper writes this result even while Codec is closed.
   const checkpoint = readJson<{ autoSaved?: boolean; checkpointError?: "checkpoint_save_failed" }>(join(runDir(runId), "checkpoint.json"), {});
   if ((checkpoint.autoSaved && !rec.autoSaved) || (checkpoint.checkpointError && !rec.checkpointError)) {
-    rec = withLock(`run-${runId}`, () => {
-      const updated = { ...readRecord(runId)!, ...checkpoint };
-      writeJsonAtomic(recordFile(runId), updated);
-      return updated;
-    });
+    rec = updateRecord(runId, checkpoint);
   }
   if (!rec.actualModel) {
     let model: string | undefined;
@@ -648,17 +661,7 @@ export function getRunStatus(runId: string): RunStatus | undefined {
     exitCode = readExitCode(runId);
     state = deriveState(rec, exitCode);
   }
-  let reviewStatus: RunStatus["reviewStatus"];
-  if (state !== "running" && !rec.cleanedAt && existsSync(rec.worktree)) {
-    // Always recheck: a helper or the owner can leave work after the process exits.
-    const status = git(rec.worktree, ["status", "--porcelain", "--untracked-files=normal"]);
-    if (!status.ok) reviewStatus = "unavailable";
-    else if (status.out) reviewStatus = "unsaved";
-    else if (state === "done") {
-      const checkpoints = git(rec.worktree, ["rev-list", "--count", `${rec.baseSha}..HEAD`]);
-      reviewStatus = !checkpoints.ok ? "unavailable" : Number(checkpoints.out) > 0 ? "ready" : "no_changes";
-    }
-  }
+  const reviewStatus = reviewStatusOf(rec, state);
   return { ...rec, state, exitCode, reviewStatus };
 }
 

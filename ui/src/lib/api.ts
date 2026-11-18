@@ -146,7 +146,7 @@ export interface McpServer {
   /** Names only; saved values never come back to the page. */
   env?: Record<string, string>;
 }
-export interface Harness {
+interface Harness {
   access: Access;
   allow: string[];
   deny: string[];
@@ -258,7 +258,7 @@ export interface PageData {
   member?: Member;
   chat?: ChatView;
 }
-export interface ChatSummary {
+interface ChatSummary {
   id: string;
   title: string;
   tool: string;
@@ -357,6 +357,12 @@ export const sourceText = (s: Skill, project?: string) =>
           project: s.project || project || S.tasks.project,
         })
       : S.members.own;
+export const laneTone = (lane: Lane | "idle") => {
+  if (lane === "needsYou") return "needs";
+  if (lane === "inReview") return "review";
+  if (lane === "idle") return "muted";
+  return lane;
+};
 export const laneHint = (lane: Lane) =>
   ({
     working: S.wording.workingHint,
@@ -364,3 +370,10 @@ export const laneHint = (lane: Lane) =>
     inReview: S.wording.reviewHint,
     done: S.wording.doneHint,
   })[lane];
+
+export function projectTagText(p: { area?: ProjectArea; className?: string }) {
+  if (p.area === "class") return p.className ?? "";
+  if (p.area === "work") return S.tags.work;
+  if (p.area === "personal") return S.tags.personal;
+  return "";
+}
