@@ -14,7 +14,7 @@ import * as store from "../src/store.js";
 import { S } from "../src/strings.js";
 import { cleanupTemps, cli, makeRepo, makeUiBundle, useIsolatedHome, waitFor } from "./helpers.js";
 
-const a = "red/reader", b = "blue/reader", c = "red/writer";
+const a = "red/reader", b = "red/reviewer", c = "red/writer";
 const key = [a, b].sort().join("|");
 const exactNote = "Message limit reached. The owner needs to continue this conversation.";
 const send = (from = a, to = b, body = "Keep talking") => postMessage({ from, to, body });
@@ -32,6 +32,7 @@ beforeEach(() => {
     addMember(name, { name: "reader", tool: "codex" });
   }
   addMember("red", { name: "writer", tool: "claude" });
+  addMember("red", { name: "reviewer", tool: "codex" });
 });
 
 afterEach(async () => {
@@ -75,7 +76,7 @@ describe("message safety cap", () => {
     send();
     expect(laneOf(run)).toBe("needsYou");
     expect(listMessages({ from: "codec", to: b })[0].deliveredAt).toBeUndefined();
-    expect(teamsView()[1].members[0]).toMatchObject({ held: true, working: [] });
+    expect(teamsView().find((team) => team.name === "red")!.members.find((member) => member.member === "reviewer")).toMatchObject({ held: true, working: [] });
     const next = start(b);
     expect(readFileSync(join(next.worktree, "messages.md"), "utf-8")).toContain(exactNote);
     expect(receiveMessages(b, next.runId)).toEqual([]);
@@ -90,7 +91,7 @@ describe("message safety cap", () => {
     expect(state()[key]).toEqual({ count: 0 });
     expect(runs.map(laneOf)).toEqual(["working", "working"]);
     expect(laneOf({ ...runs[0], helperStatus: { state: "stuck", note: "Choose a direction", at: new Date().toISOString() } })).toBe("needsYou");
-    expect(teamsView()[1].members[0]).toMatchObject({ held: false });
+    expect(teamsView().find((team) => team.name === "red")!.members.find((member) => member.member === "reviewer")).toMatchObject({ held: false });
     send();
     expect(state()[key]).toEqual({ count: 1, limit: 2 });
     expect(listMessages({ from: "codec" })).toHaveLength(2);
@@ -160,20 +161,20 @@ describe("limit resolution", () => {
     [undefined, undefined, undefined, 10],
     [undefined, undefined, 3, 3],
     [8, undefined, 2, 8],
-    [8, 4, 2, 4],
+    [8, 4, 2, 8],
     [2, 4, 9, 2],
-  ])("resolves team limits %s/%s and project limit %s to %s", (red, blue, project, expected) => {
+  ])("resolves a helper/coordinator limit from its team (%s), ignoring another team (%s), over project default (%s): %s", (red, blue, project, expected) => {
+    setupCoordinator({ tool: "codex" });
     setTeamMessageLimit("red", red);
     setTeamMessageLimit("blue", blue);
     setProjectMessageLimit("alpha", project);
-    send();
-    expect(state()[key]).toEqual({ count: 1, limit: expected });
+    send("coordinator", a);
+    expect(state()["coordinator|red/reader"]).toEqual({ count: 1, limit: expected });
   });
 
   it("uses the sender's latest running project, otherwise the lowest shared project limit", () => {
     addProject(makeRepo("beta"));
     setTeamProjects("red", ["alpha", "beta"]);
-    setTeamProjects("blue", ["alpha", "beta"]);
     setProjectMessageLimit("alpha", 7);
     setProjectMessageLimit("beta", 3);
     send();
@@ -187,10 +188,9 @@ describe("limit resolution", () => {
     expect(state()[key]).toMatchObject({ limit: 3, count: 3, cappedAt: expect.any(String) });
   });
 
-  it("ignores unshared projects when the sender is not running, and keeps a cap after settings change", () => {
+  it("ignores projects outside the helpers' team when the sender is not running, and keeps a cap after settings change", () => {
     addProject(makeRepo("beta"));
     setTeamProjects("blue", ["beta"]);
-    setProjectMessageLimit("alpha", 1);
     setProjectMessageLimit("beta", 2);
     send();
     expect(state()[key].limit).toBe(10);
@@ -269,7 +269,7 @@ describe("coordinator and CLI", () => {
   it("the real message CLI exits nonzero with the friendly text from a fake helper task", async () => {
     setTeamMessageLimit("red", 1);
     send();
-    process.env.CODEC_AGENT_COMMAND = '"$CODEC_NODE" "$CODEC_CLI" message blue/reader "One more"';
+    process.env.CODEC_AGENT_COMMAND = '"$CODEC_NODE" "$CODEC_CLI" message red/reviewer "One more"';
     const run = start(a);
     expect(await waitFor(run.runId)).toMatchObject({ state: "failed", exitCode: 1 });
     expect(runOutput(run.runId)).toContain(exactNote);
@@ -326,16 +326,18 @@ describe("message limit dashboard API", () => {
   it("shows scoped system rows and capped pairs, then resets both held helpers through the route", async () => {
     addProject(makeRepo("beta"));
     addProject(makeRepo("unrelated"));
-    setTeamProjects("blue", ["beta"]);
+    setTeamProjects("red", ["alpha", "beta"]);
     setTeamMessageLimit("red", 1);
     const runs = [start(a), start(b, "beta")];
     send();
     for (const project of ["alpha", "beta"]) {
       const view = (await call("projects/" + project)).data;
-      expect(view.messages.filter((m: { senderKind: string }) => m.senderKind === "system")).toEqual([
-        expect.objectContaining({ senderName: "Codec", body: exactNote }),
+      expect(view.messages.filter((m: { senderKind: string }) => m.senderKind === "system")
+        .sort((left: { recipientName: string }, right: { recipientName: string }) => left.recipientName.localeCompare(right.recipientName))).toEqual([
+        expect.objectContaining({ senderName: "Codec", body: exactNote, recipientName: a }),
+        expect.objectContaining({ senderName: "Codec", body: exactNote, recipientName: b }),
       ]);
-      expect(view.cappedPairs).toEqual([{ key, a: b, b: a, limit: 1 }]);
+      expect(view.cappedPairs).toEqual([{ key, a, b, limit: 1 }]);
     }
     expect((await call("projects/unrelated")).data).toMatchObject({ messages: [], cappedPairs: [] });
     const path = "projects/alpha/message-limits/reset";

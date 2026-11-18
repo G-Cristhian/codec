@@ -135,8 +135,12 @@ export function postMessage(input: { from: string; to: string; body: string }): 
   }
   if (input.to === "owner") {
     if (input.from !== "coordinator") throw new CodecError("coordinator_owner_only", S.errors.coordinator_owner_only);
-  } else helper(input.to);
-  if (input.from !== "owner") helper(input.from);
+  }
+  const recipient = input.to === "owner" ? undefined : helper(input.to);
+  const sender = input.from === "owner" ? undefined : helper(input.from);
+  if (sender?.team && recipient?.team && sender.team !== recipient.team) {
+    throw new CodecError("cross_team_message", wording(S.errors.cross_team_message, { to: input.to }), { from: input.from, to: input.to }, 400);
+  }
   if (!input.body.trim()) throw new CodecError("missing_message", S.errors.missing_message);
   return withLock("messages", () => postLocked(input));
 }
