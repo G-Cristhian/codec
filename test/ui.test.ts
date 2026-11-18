@@ -348,6 +348,182 @@ describe("review changes panel", () => {
     await screen.findByText("+after");
   }
 
+  async function comment(lineText = "+after", text = "Handle empty input.") {
+    await userEvent.click(screen.getByText(lineText));
+    await userEvent.type(screen.getByRole("textbox", { name: S.diffViewer.comment }), text);
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.saveComment }));
+  }
+
+  it("opens directly below a line and saves, cancels, edits and deletes a comment", async () => {
+    await open();
+    expect(screen.queryByRole("button", { name: /Send feedback/ })).toBeNull();
+    await userEvent.click(screen.getByText("+after"));
+    const box = screen.getByRole("textbox", { name: S.diffViewer.comment }) as HTMLTextAreaElement;
+    expect(box.closest("div")!.previousElementSibling).toBe(screen.getByText("+after").closest("[data-kind]"));
+    expect(document.activeElement).toBe(box);
+    await userEvent.type(box, "  Handle empty input.  ");
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    const note = screen.getByText("Handle empty input.");
+    expect(note.className).toContain("text-muted-foreground");
+    expect(screen.getByText("+after").closest("[data-kind]")!.querySelector("svg")).toBeTruthy();
+    await userEvent.click(screen.getByText("+after"));
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Handle empty input.");
+    await userEvent.clear(screen.getByRole("textbox"));
+    await userEvent.type(screen.getByRole("textbox"), "Cancelled edit");
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.cancelComment }));
+    expect(screen.getByText("Handle empty input.")).toBeTruthy();
+    await userEvent.click(screen.getByText("+after"));
+    await userEvent.clear(screen.getByRole("textbox"));
+    await userEvent.type(screen.getByRole("textbox"), "Add a test.");
+    await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(screen.getByText("Add a test.")).toBeTruthy();
+    await userEvent.click(screen.getByText("+after"));
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.deleteComment }));
+    expect(screen.queryByText("Add a test.")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Send feedback/ })).toBeNull();
+  });
+
+  it.each([[true, "#/run/run-demo"], [false, "#/project/site"]] as const)("batches ids and text, clears comments and shows delivery=%s at %s", async (delivered, route) => {
+    await open(route);
+    const board = structuredClone(data.project.lanes);
+    await comment();
+    await userEvent.click(fileButtons()[2]);
+    await comment("+Read this guide", "Explain setup.");
+    expect(within(fileButtons()[0]).getByText("1 comment")).toBeTruthy();
+    expect(within(fileButtons()[2]).getByText("1 comment")).toBeTruthy();
+    handler = (request) => request === "runs/run-demo/feedback" ? response({ delivered, messageId: "message-1" }) : undefined;
+    await userEvent.click(screen.getByRole("button", { name: "Send feedback (2)" }));
+    expect(await screen.findByText(delivered ? "Feedback sent to web/tester." : "Feedback will reach web/tester when it starts its next task.")).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(calls.find((call) => call.path === "runs/run-demo/feedback")?.body).toEqual({ head: "fixture-head", comments: [
+      { line: "2:4", text: "Handle empty input." }, { line: "1:1", text: "Explain setup." },
+    ] });
+    expect(screen.queryByRole("button", { name: /Send feedback/ })).toBeNull();
+    expect(screen.queryByText("Explain setup.")).toBeNull();
+    await userEvent.click(fileButtons()[0]);
+    expect(screen.queryByText("Handle empty input.")).toBeNull();
+    expect(screen.queryByText("1 comment")).toBeNull();
+    expect(data.project.lanes).toEqual(board);
+    expect(data.run!.reviewed).toBeUndefined();
+  });
+
+  it("keeps comments and shows errorText when feedback fails", async () => {
+    await open();
+    await comment();
+    handler = (request) => request === "runs/run-demo/feedback" ? response({ code: "changes_stale", error: "Internal detail" }, 409) : undefined;
+    await userEvent.click(screen.getByRole("button", { name: "Send feedback (1)" }));
+    expect(await within(screen.getByRole("dialog")).findByText(S.errors.changes_stale)).toBeTruthy();
+    expect(screen.getByText("Handle empty input.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Send feedback (1)" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText("Internal detail")).toBeNull();
+  });
+
+  it("disables sending and comment edits until the pending send completes", async () => {
+    await open();
+    await comment();
+    let complete!: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => { complete = resolve; });
+    handler = (request) => request === "runs/run-demo/feedback" ? pending : undefined;
+    await userEvent.click(screen.getByRole("button", { name: "Send feedback (1)" }));
+    expect((screen.getByRole("button", { name: "Send feedback (1)" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByText("+after"));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await act(async () => complete(await response({ delivered: true, messageId: "message-1" })));
+    await screen.findByText("Feedback sent to web/tester.");
+  });
+
+  it.each(["#/run/run-demo", "#/project/site"])("keeps comments across polling and close/reopen at %s", async (route) => {
+    await open(route);
+    await comment();
+    await userEvent.click(screen.getByText("+after"));
+    const box = screen.getByRole("textbox");
+    const before = calls.filter((call) => call.path === "state").length;
+    data.run = { ...data.run!, log: "More activity" };
+    data.project = structuredClone(data.project);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)); });
+    expect(calls.filter((call) => call.path === "state").length).toBeGreaterThan(before);
+    expect(screen.getByRole("textbox")).toBe(box);
+    expect(document.activeElement).toBe(box);
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.close }));
+    await userEvent.click(screen.getByTestId("task-review"));
+    expect(await screen.findByText("Handle empty input.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send feedback (1)" })).toBeTruthy();
+  });
+
+  it("clears unsent comments with a notice when a fresh diff has a different head", async () => {
+    await open();
+    await comment();
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.close }));
+    handler = (request) => request === path ? response({ ...changesFixture(), head: "new-head" }) : undefined;
+    await userEvent.click(screen.getByTestId("task-review"));
+    expect(await screen.findByText(S.diffViewer.commentsCleared)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Send feedback/ })).toBeNull();
+    expect(screen.queryByText("Handle empty input.")).toBeNull();
+  });
+
+  it("ignores hunk checkbox clicks, roves with arrows, opens with Enter, and confines Escape to the editor", async () => {
+    await open();
+    await userEvent.click(screen.getByRole("checkbox"));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    const pane = screen.getByTestId("diff-pane");
+    const lines = pane.querySelectorAll<HTMLElement>('[data-kind][role="button"]');
+    expect([...lines].filter((line) => line.tabIndex === 0)).toHaveLength(1);
+    expect(lines[0].getAttribute("aria-label")).toBe("Comment on line 1 of src/main.ts");
+    lines[0].focus();
+    await userEvent.keyboard("{ArrowDown}{Enter}");
+    expect(screen.getByRole("textbox").closest("div")!.previousElementSibling).toBe(lines[1]);
+    await userEvent.type(screen.getByRole("textbox"), "Draft");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement).toBe(lines[1]);
+    expect([...lines].filter((line) => line.tabIndex === 0)).toHaveLength(1);
+    await userEvent.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(lines[0]);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each(["apply", "discard"] as const)("confirms loss of unsent comments before %s and preserves them on cancel", async (action) => {
+    await open();
+    await comment();
+    const label = action === "apply" ? S.diffViewer.apply : S.diffViewer.discard;
+    await userEvent.click(screen.getByRole("button", { name: label }));
+    expect(await screen.findByText(S.diffViewer.loseCommentsEffect)).toBeTruthy();
+    expect(calls.some((call) => call.path === `runs/run-demo/${action}`)).toBe(false);
+    await userEvent.click(screen.getByTestId("confirm-cancel"));
+    expect(screen.getByText("Handle empty input.")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: label }));
+    await userEvent.click(screen.getByTestId("confirm-submit"));
+    await screen.findByText(action === "apply" ? S.diffViewer.applySuccess : S.diffViewer.discardSuccess);
+    expect(calls.filter((call) => call.path === `runs/run-demo/${action}`)).toHaveLength(1);
+    await userEvent.click(screen.getByTestId("task-review"));
+    await screen.findByText("+after");
+    expect(screen.queryByRole("button", { name: /Send feedback/ })).toBeNull();
+  });
+
+  it.each(["quick", "running", "reviewed"])("hides line feedback for a %s task", async (kind) => {
+    if (kind === "quick") { delete data.run!.member; delete data.run!.team; }
+    if (kind === "running") data.run!.state = "running";
+    if (kind === "reviewed") data.run!.reviewed = { action: "discarded", at: "now" };
+    await open();
+    await userEvent.click(screen.getByText("+after"));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByTestId("diff-pane").querySelector('[data-kind][role="button"]')).toBeNull();
+  });
+
+  it("allows the coordinator to receive line feedback", async () => {
+    delete data.run!.team;
+    data.run!.member = "coordinator";
+    await open();
+    await comment();
+    handler = (request) => request === "runs/run-demo/feedback" ? response({ delivered: false, messageId: "message-1" }) : undefined;
+    await userEvent.click(screen.getByRole("button", { name: "Send feedback (1)" }));
+    expect(await screen.findByText("Feedback will reach coordinator when it starts its next task.")).toBeTruthy();
+  });
+
   for (const route of ["#/run/run-demo", "#/project/site"]) {
     it.each([
       ["ready", "done", "inReview", true],

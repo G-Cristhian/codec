@@ -10,6 +10,8 @@ import { checkpointIdentity, identityEnvironment } from "./settings.js";
 import { redactSecrets } from "./secrets.js";
 import { runsDir, withLock } from "./store.js";
 import { S, wording } from "./strings.js";
+import { helperRef } from "./coordinator.js";
+import { postMessage } from "./messages.js";
 
 export const MAX_FILE_DIFF_LINES = 2_000;
 export const MAX_TOTAL_DIFF_LINES = 10_000;
@@ -39,6 +41,51 @@ export interface RunChanges {
   status: "ready" | "no_changes";
   head: string;
   files: DiffFile[];
+}
+
+export interface FeedbackResult { delivered: boolean; messageId: string }
+
+function feedbackRecipient(runId: string) {
+  const run = readRunStatus(runId);
+  if (!run) throw new CodecError("run_not_found", S.errors.run_not_found, {}, 404);
+  const to = helperRef(run);
+  if (run.state !== "done" || run.reviewStatus !== "ready" || run.reviewed || !to) {
+    throw new CodecError("feedback_unavailable", S.errors.feedback_unavailable, {}, 409);
+  }
+  return { run, to };
+}
+
+/** Resolve line ids against the pinned diff; never trust client-supplied file details. */
+export async function sendFeedback(runId: string, input: { head?: unknown; comments?: unknown }): Promise<FeedbackResult> {
+  feedbackRecipient(runId);
+  const changes = await runChanges(runId);
+  if (changes.head !== input.head) throw new CodecError("changes_stale", S.errors.changes_stale, {}, 409);
+  const invalid = () => new CodecError("invalid_feedback", S.errors.invalid_feedback, {}, 400);
+  if (!Array.isArray(input.comments) || !input.comments.length || input.comments.length > 100) throw invalid();
+  const known = new Map(changes.files.flatMap((file, fileIndex) => file.lines.flatMap((line, lineIndex) =>
+    line.kind === "hunk" ? [] : [[`${fileIndex}:${lineIndex}`, { file, line }] as const])));
+  const comments = new Map<string, string>();
+  for (const comment of input.comments) {
+    if (!comment || typeof comment.line !== "string" || !known.has(comment.line) || comments.has(comment.line) ||
+        typeof comment.text !== "string" || !comment.text.trim() || comment.text.trim().length > 2_000) throw invalid();
+    comments.set(comment.line, comment.text.trim());
+  }
+  // Loading the diff yields; check eligibility again before delivering anything.
+  const { run, to } = feedbackRecipient(runId);
+  const task = redactSecrets(run.task.split(/\r?\n/, 1)[0].trim()).slice(0, 100);
+  const blocks = [wording(comments.size === 1 ? S.diffViewer.feedbackHeaderOne : S.diffViewer.feedbackHeader, { task, n: comments.size })];
+  for (const [id, { file, line }] of known) {
+    const text = comments.get(id);
+    if (text === undefined) continue;
+    const location = wording(line.kind === "remove" ? S.diffViewer.feedbackRemoved :
+      line.kind === "add" ? S.diffViewer.feedbackAdded : S.diffViewer.feedbackUnchanged,
+    { path: file.path, n: (line.kind === "remove" ? line.oldNo : line.newNo ?? line.oldNo) ?? S.diffViewer.unnumbered });
+    blocks.push(wording(S.diffViewer.feedbackComment, {
+      location, line: line.text.replace(/^[+\- ]/, "").slice(0, 200), text,
+    }));
+  }
+  const message = postMessage({ from: "owner", to, body: blocks.join("\n\n") });
+  return { delivered: !!message.deliveredAt, messageId: message.id };
 }
 
 const unavailable = () => new CodecError("changes_unavailable", S.errors.changes_unavailable, {}, 409);
