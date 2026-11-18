@@ -306,6 +306,16 @@ export const S = {
     workspaceUnchecked: "Codec couldn't check the workspace", workspaceUncheckedHelp: "Check that the workspace folder is available, then refresh this page.",
     stopped: "Stopped by you", timedOut: "Stopped: went over its time limit ({limit})", cleaned: "(tidied up)", empty: "No tasks yet. Open a project to give a helper its first task.",
   },
+  diffViewer: {
+    title: "Review changes", button: "Review changes", close: "Close",
+    noChanges: "No changes", noChangesHint: "This helper run made no file edits.",
+    binary: "Binary file",
+    truncated: "This diff is too long to show in full. Open the project folder to see the rest.",
+    loading: "Loading changes…", error: "Changes couldn't be loaded.",
+    fileChanged: "1 file changed", filesChanged: "{n} files changed",
+    files: "Changed files", diff: "Changes in {path}",
+    additions: "+{n}", deletions: "-{n}",
+  },
   wording: {
     nameRules: "Names can only use letters, numbers, dashes (-), dots (.) and underscores (_). No spaces.",
     projectName: "Short name (optional)", roleName: "Short name, e.g. tester", teamName: "Team name, e.g. Website team", helperName: "Name (optional, e.g. tester-2)",
@@ -350,6 +360,7 @@ export const S = {
     setupLogin: "Open {tool} and sign in, then press Check again.",
   },
   errors: {
+    changes_unavailable: "This helper's changes aren't available to review. The task must finish with its changes saved and its project folder still available.",
     invalid_message_limit: "Choose a whole number from 1 to 100, or use the default.",
     message_limit_reached: "Message limit reached. The owner needs to continue this conversation.",
     message_pair_not_found: "That conversation is no longer waiting. Refresh and try again.",

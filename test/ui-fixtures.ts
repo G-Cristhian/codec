@@ -1,5 +1,24 @@
-import type { PageData, Run } from "../ui/src/lib/api";
+import type { PageData, Run, RunChanges } from "../ui/src/lib/api";
 import type { ProjectConversation } from "../ui/src/conversation-feed";
+
+export function changesFixture(): RunChanges {
+  return { status: "ready", files: [
+    { path: "assets/logo.png", change: "added", additions: 0, deletions: 0, binary: true, truncated: false, lines: [] },
+    { path: "docs/guide.md", change: "added", additions: 1, deletions: 0, binary: false, truncated: false,
+      lines: [{ kind: "hunk", text: "@@ -0,0 +1 @@" }, { kind: "add", text: "+Read this guide", newNo: 1 }] },
+    { path: "src/main.ts", change: "modified", additions: 3, deletions: 2, binary: false, truncated: false, lines: [
+      { kind: "hunk", text: "@@ -1,3 +1,4 @@" },
+      { kind: "context", text: " unchanged", oldNo: 1, newNo: 1 },
+      { kind: "remove", text: "-before", oldNo: 2 },
+      { kind: "remove", text: "-older", oldNo: 3 },
+      { kind: "add", text: "+after", newNo: 2 },
+      { kind: "add", text: "+newer", newNo: 3 },
+      { kind: "add", text: "+last", newNo: 4 },
+    ] },
+    { path: "src/zeta.ts", oldPath: "src/old.ts", change: "renamed", additions: 3, deletions: 2, binary: false, truncated: true,
+      lines: [{ kind: "hunk", text: "@@ -1 +1 @@" }, { kind: "add", text: "+Second file", newNo: 1 }] },
+  ] };
+}
 const runFixture: Run = {
   runId: "run-demo",
   project: "site",

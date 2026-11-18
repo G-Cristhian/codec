@@ -1,5 +1,6 @@
 import { S } from "../../../src/strings";
 export { S };
+export type { DiffFile, DiffLine, RunChanges } from "../../../src/review";
 export const enc = encodeURIComponent;
 export const fmt = (text: string, values: Record<string, unknown> = {}) =>
   text.replace(/\{(\w+)\}/g, (_, k: string) => String(values[k] ?? ""));

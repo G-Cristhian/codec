@@ -31,7 +31,7 @@ import {
   weekOf,
 } from "../ui/src/overview";
 import { Markdown } from "../ui/src/chat";
-import { fixture } from "./ui-fixtures";
+import { changesFixture, fixture } from "./ui-fixtures";
 import type { ConversationMessage } from "../ui/src/conversation-feed";
 let data: ReturnType<typeof fixture>;
 let handler:
@@ -82,6 +82,7 @@ beforeEach(() => {
       calls.push({ path, body });
       const custom = handler?.(path, body);
       if (custom) return custom;
+      if (path === "runs/run-demo/changes") return response(changesFixture());
       if (options.method === "POST")
         return response(
           path === "projects/site/runs" ? { runId: "run-demo" } : {},
@@ -337,6 +338,183 @@ describe("project conversation", () => {
     expect(compose().value).toBe("Keep this through retry");
   });
 });
+describe("review changes panel", () => {
+  const path = "runs/run-demo/changes";
+  const fileButtons = () => within(screen.getByLabelText(S.diffViewer.files)).getAllByRole("button");
+  async function open(route = "#/run/run-demo") {
+    await mount(route, false);
+    expect(calls.filter((call) => call.path === path)).toHaveLength(0);
+    await userEvent.click(screen.getByTestId("task-review"));
+    await screen.findByText("+after");
+  }
+
+  for (const route of ["#/run/run-demo", "#/project/site"]) {
+    it.each([
+      ["ready", "done", "inReview", true],
+      ["no_changes", "done", "done", true],
+      [undefined, "running", "working", false],
+      ["unsaved", "done", "needsYou", false],
+      [undefined, "failed", "needsYou", false],
+      ["unavailable", "done", "needsYou", false],
+      [undefined, "done", "done", false],
+    ] as const)(`shows the button only for reviewable tasks at ${route}: %s / %s`, async (reviewStatus, state, lane, visible) => {
+      const run = { ...data.run!, reviewStatus, state, lane };
+      data.run = run;
+      data.project.lanes = { working: [], needsYou: [], inReview: [], done: [], [lane]: [run] };
+      await mount(route, false);
+      expect(!!screen.queryByRole("button", { name: S.diffViewer.button })).toBe(visible);
+      expect(calls.filter((call) => call.path === path)).toHaveLength(0);
+      if (route.startsWith("#/project/")) {
+        const link = screen.getByTestId("task-open");
+        expect(link.tagName).toBe("A");
+        expect(link.getAttribute("href")).toBe("#/run/run-demo");
+        expect(link.getAttribute("data-key")).toBe("run-demo");
+        expect(link.querySelector("button")).toBeNull();
+        if (visible) expect(screen.getByTestId("task-review").parentElement).toBe(link.parentElement);
+      }
+    });
+
+    it(`dismisses by Close, Escape and overlay without writes, navigation or board changes at ${route}`, async () => {
+      const board = structuredClone(data.project.lanes);
+      await open(route);
+      const link = screen.queryByTestId("task-open");
+      for (const method of ["close", "escape", "overlay"]) {
+        const dialog = screen.getByRole("dialog");
+        expect(within(dialog).getAllByRole("button", { name: S.diffViewer.close })).toHaveLength(1);
+        if (method === "close") await userEvent.click(within(dialog).getByRole("button", { name: S.diffViewer.close }));
+        else if (method === "escape") await userEvent.keyboard("{Escape}");
+        else await userEvent.click(document.querySelector('[data-slot="dialog-overlay"]')!);
+        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+        expect(location.hash).toBe(route);
+        expect(vi.mocked(fetch).mock.calls.filter(([, options]) => options?.method === "POST")).toEqual([]);
+        expect(data.project.lanes).toEqual(board);
+        expect(screen.queryByTestId("task-open")).toBe(link);
+        expect(document.activeElement).toBe(screen.getByTestId("task-review"));
+        if (method !== "overlay") {
+          await userEvent.click(screen.getByTestId("task-review"));
+          await screen.findByText("+after");
+        }
+      }
+      expect(calls.filter((call) => call.path === path)).toHaveLength(3);
+    });
+
+    it(`keeps the dialog, selection, focus and both scroll positions through polling at ${route}`, async () => {
+      await open(route);
+      await userEvent.click(fileButtons()[1]);
+      const dialog = screen.getByRole("dialog");
+      const pane = screen.getByTestId("diff-pane");
+      const list = screen.getByLabelText(S.diffViewer.files);
+      const selected = fileButtons()[1];
+      pane.scrollTop = 120;
+      pane.scrollLeft = 80;
+      list.scrollTop = 40;
+      const before = calls.filter((call) => call.path === "state").length;
+      data.run = { ...data.run!, log: "Updated activity" };
+      data.project = structuredClone(data.project);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 2200)); });
+      expect(calls.filter((call) => call.path === "state").length).toBeGreaterThan(before);
+      expect(calls.filter((call) => call.path === path)).toHaveLength(1);
+      expect(screen.getByRole("dialog")).toBe(dialog);
+      expect(screen.getByTestId("diff-pane")).toBe(pane);
+      expect(pane.scrollTop).toBe(120);
+      expect(pane.scrollLeft).toBe(80);
+      expect(screen.getByLabelText(S.diffViewer.files)).toBe(list);
+      expect(list.scrollTop).toBe(40);
+      expect(selected.getAttribute("aria-pressed")).toBe("true");
+      expect(document.activeElement).toBe(selected);
+      expect(screen.getByText("+Second file")).toBeTruthy();
+    });
+
+    it(`opens the no-changes empty state at ${route}`, async () => {
+      data.run!.reviewStatus = "no_changes";
+      data.run!.lane = "done";
+      data.project.lanes.inReview = [];
+      data.project.lanes.done = [data.run!];
+      handler = (request) => request === path ? response({ status: "no_changes", files: [] }) : undefined;
+      await mount(route, false);
+      await userEvent.click(screen.getByTestId("task-review"));
+      const pane = await screen.findByTestId("diff-pane");
+      expect(await within(pane).findByText(S.diffViewer.noChanges)).toBeTruthy();
+      expect(within(pane).getByText(S.diffViewer.noChangesHint)).toBeTruthy();
+      expect(pane.querySelector("svg")).toBeTruthy();
+      expect(pane.querySelector("pre")).toBeNull();
+      expect(within(pane).queryByRole("alert")).toBeNull();
+    });
+  }
+
+  it("orders files by most changes then path, selects the first, and switches files with Tab/Enter", async () => {
+    await open();
+    const buttons = fileButtons();
+    expect(buttons.map((button) => button.title)).toEqual(["src/main.ts", "src/zeta.ts", "docs/guide.md", "assets/logo.png"]);
+    expect(buttons[0].getAttribute("aria-pressed")).toBe("true");
+    expect(buttons[0].className).toContain("bg-accent");
+    expect(within(buttons[0]).getByText("src").className).toContain("text-muted-foreground");
+    expect(within(buttons[0]).getByText("+3").className).toContain("text-green-800");
+    expect(within(buttons[0]).getByText("-2").className).toContain("text-red-800");
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(data.run!.task)).toBeTruthy();
+    expect(within(dialog).getByText("4 files changed")).toBeTruthy();
+    expect(dialog.getAttribute("aria-labelledby")).toBeTruthy();
+    expect(dialog.getAttribute("aria-describedby")).toBeTruthy();
+    buttons[0].focus();
+    await userEvent.keyboard("{Tab}{Enter}");
+    expect(buttons[1].getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("+Second file")).toBeTruthy();
+    expect(screen.queryByText("+after")).toBeNull();
+    expect(screen.getByText(S.diffViewer.truncated)).toBeTruthy();
+    await userEvent.click(buttons[2]);
+    expect(screen.getByText("+Read this guide")).toBeTruthy();
+    await userEvent.click(buttons[3]);
+    expect(screen.getByText(S.diffViewer.binary)).toBeTruthy();
+    expect(screen.getByTestId("diff-pane").querySelector("pre")).toBeNull();
+    expect(buttons[3].querySelector('[data-slot="badge"]')).toBeNull();
+  });
+
+  it.each(["light", "dark"])("uses the exact design line colors and non-wrapping horizontal scrolling in %s mode", async (theme) => {
+    localStorage.setItem("codec-theme", theme);
+    await open();
+    expect(document.documentElement.getAttribute("data-theme")).toBe(theme);
+    const pane = screen.getByTestId("diff-pane");
+    const classes = {
+      add: "bg-green-50 dark:bg-green-950/30 text-green-800 dark:text-green-200",
+      remove: "bg-red-50 dark:bg-red-950/30 text-red-800 dark:text-red-200",
+      context: "text-foreground",
+      hunk: "bg-muted text-muted-foreground italic",
+    };
+    for (const [kind, expected] of Object.entries(classes)) {
+      const line = pane.querySelector(`[data-kind="${kind}"]`)!;
+      for (const token of expected.split(" ")) expect(line.classList.contains(token)).toBe(true);
+    }
+    expect(pane.className).toContain("overflow-x-auto");
+    expect(pane.querySelector("pre")!.className).toContain("whitespace-pre");
+    expect(pane.parentElement!.className).toContain("min-h-0");
+  });
+
+  it("shows loading and a plain friendly error, then fetches again when reopened", async () => {
+    handler = (request) => request === path ? response({ code: "changes_unavailable", error: "Internal detail" }, 409) : undefined;
+    await mount("#/run/run-demo");
+    fireEvent.click(screen.getByTestId("task-review"));
+    expect(screen.getByText(S.diffViewer.loading)).toBeTruthy();
+    expect(await screen.findByText(S.errors.changes_unavailable)).toBeTruthy();
+    expect(screen.getByText(S.diffViewer.error)).toBeTruthy();
+    expect(screen.queryByText("Internal detail")).toBeNull();
+    expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
+    await userEvent.keyboard("{Escape}");
+    handler = undefined;
+    await userEvent.click(screen.getByTestId("task-review"));
+    await screen.findByText("+after");
+    expect(calls.filter((call) => call.path === path)).toHaveLength(2);
+  });
+
+  it("uses singular file count wording", async () => {
+    const changes = changesFixture();
+    changes.files = [changes.files[2]];
+    handler = (request) => request === path ? response(changes) : undefined;
+    await open();
+    expect(screen.getByText(S.diffViewer.fileChanged)).toBeTruthy();
+  });
+});
+
 describe("React screens and routes", () => {
   it.each([
     ["#/projects", S.projects.title],

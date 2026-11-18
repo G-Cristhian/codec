@@ -196,6 +196,34 @@ describe("dashboard", () => {
     expect((await call(d, "POST", "/api/projects/alpha/runs", { body: { agent: "claude" } })).json.code).toBe("missing_task");
   });
 
+  it("reads all changes with GET authentication and friendly missing/unavailable errors", async () => {
+    addProject(makeRepo("alpha"));
+    const run = startRun({ project: "alpha", agent: "claude", task: "Write notes" });
+    const path = `/api/runs/${run.runId}/changes`;
+    const running = await call(d, "GET", path);
+    expect(running.status).toBe(409);
+    expect(running.json).toMatchObject({ code: "changes_unavailable", error: S.errors.changes_unavailable });
+    await waitFor(run.runId);
+    expect((await call(d, "GET", path, { token: null })).status).toBe(401);
+    expect((await call(d, "GET", path, { token: "wrong" })).status).toBe(401);
+    const changes = await call(d, "GET", path);
+    expect(changes.status, changes.body).toBe(200);
+    expect(changes.json).toMatchObject({ status: "ready", files: [{ path: "notes.txt", change: "added", additions: 1, deletions: 0,
+      binary: false, truncated: false, lines: [{ kind: "hunk" }, { kind: "add", text: "+saved", newNo: 1 }] }] });
+    const cookie = await call(d, "GET", path, { token: null, cookie: `codec_token_${d.port}=${d.token}` });
+    expect(cookie.status).toBe(200);
+    expect(cookie.json).toEqual(changes.json);
+    expect((await call(d, "POST", path, { body: {} })).status).toBe(404);
+    const unknown = await call(d, "GET", "/api/runs/run-ffffffff/changes");
+    expect(unknown.status).toBe(404);
+    expect(unknown.json.code).toBe("run_not_found");
+    cleanRun(run.runId);
+    expect((await call(d, "GET", path)).status).toBe(409);
+    process.env.CODEC_AGENT_COMMAND = "true";
+    const empty = await waitFor(startRun({ project: "alpha", agent: "claude", task: "No edits" }).runId);
+    expect((await call(d, "GET", `/api/runs/${empty.runId}/changes`)).json).toEqual({ status: "no_changes", files: [] });
+  });
+
   describe("project conversations", () => {
     beforeEach(() => {
       addProject(makeRepo("alpha"));
