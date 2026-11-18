@@ -433,6 +433,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
             {S.projects.remove}
           </Remove>
         </PageIntro>
+        <Message actionKey={"project-" + name} />
         <Disclosure id="project-account-settings" title={S.messageLimit.settings}>
           <Card className="panel">
             <MessageLimitSettings key={name} scope="project" name={name} limit={v.project.messageLimit} />
@@ -512,7 +513,7 @@ export function ProjectPage({ data, name }: { data: PageData; name: string }) {
                                 <Hint>{when(r.startedAt)}</Hint>
                               </Card>
                             </a>
-                            {(lane === "inReview" || lane === "done") && <ReviewChanges run={r} small />}
+                            {(lane === "inReview" || lane === "done") && <ReviewChanges run={r} small actionKey={"project-" + name} />}
                           </div>
                         ))
                       ) : (
@@ -637,7 +638,7 @@ export function TaskPage({ data }: { data: PageData }) {
             </Button>
           )
         )}
-        <ReviewChanges run={r} />
+        <ReviewChanges run={r} actionKey={key} />
       </PageIntro>
       <Message actionKey={key} />
       {r.limitHit && (

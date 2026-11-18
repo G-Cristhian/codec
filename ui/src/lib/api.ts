@@ -101,6 +101,7 @@ export interface Run {
   lostAt?: string;
   cleanedAt?: string;
   reviewStatus?: string;
+  reviewed?: import("../../../src/runs").RunReview;
   area?: TaskArea;
   model?: string;
   actualModel?: string;

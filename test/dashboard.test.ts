@@ -221,7 +221,35 @@ describe("dashboard", () => {
     expect((await call(d, "GET", path)).status).toBe(409);
     process.env.CODEC_AGENT_COMMAND = "true";
     const empty = await waitFor(startRun({ project: "alpha", agent: "claude", task: "No edits" }).runId);
-    expect((await call(d, "GET", `/api/runs/${empty.runId}/changes`)).json).toEqual({ status: "no_changes", files: [] });
+    expect((await call(d, "GET", `/api/runs/${empty.runId}/changes`)).json).toMatchObject({ status: "no_changes", files: [] });
+  });
+
+  it.each(["apply", "discard"])("requires POST auth and refuses running tasks for %s", async (action) => {
+    addProject(makeRepo("alpha"));
+    process.env.CODEC_AGENT_COMMAND = "sleep 30";
+    const run = startRun({ project: "alpha", agent: "claude", task: "Wait" });
+    const path = `/api/runs/${run.runId}/${action}`;
+    for (const token of [null, "wrong"]) {
+      expect((await call(d, "POST", path, { token, body: {} })).status).toBe(401);
+    }
+    expect((await call(d, "POST", path, { token: null, cookie: `codec_token_${d.port}=${d.token}`, body: {} })).status).toBe(401);
+    const result = await call(d, "POST", path, { body: {} });
+    expect(result.status).toBe(409);
+    expect(result.json).toMatchObject({ code: "changes_unavailable", error: S.errors.changes_unavailable });
+    expect((await call(d, "GET", path)).status).toBe(404);
+  });
+
+  it.each(["apply", "discard"])("returns a reviewed Done summary after %s", async (action) => {
+    addProject(makeRepo("alpha"));
+    process.env.CODEC_AGENT_COMMAND = "echo saved > notes.txt";
+    const run = await waitFor(startRun({ project: "alpha", agent: "claude", task: "Write notes" }).runId);
+    const base = `/api/runs/${run.runId}`;
+    const changes = (await call(d, "GET", base + "/changes")).json;
+    const body = action === "apply" ? { head: changes.head, hunks: ["0:0"] } : {};
+    const result = await call(d, "POST", base + "/" + action, { body });
+    expect(result.status, result.body).toBe(200);
+    expect(result.json).toMatchObject({ runId: run.runId, lane: "done", reviewed: { action: action === "apply" ? "applied" : "discarded" } });
+    expect((await call(d, "POST", base + "/" + action, { body })).status).toBe(409);
   });
 
   describe("project conversations", () => {
