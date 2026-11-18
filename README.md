@@ -77,8 +77,8 @@ running until you press Ctrl+C. Open the link in a browser to:
   elsewhere) in the sidebar;
 - open **Projects**: the project list with progress bars beside a board with
   four lanes: **Working** (running), **Needs you** (failed or stopped),
-  **In review** (finished, worktree still there) and **Done** (worktree
-  cleaned), and the project's helpers in a side panel;
+  **In review** (finished, waiting for review) and **Done** (reviewed, no
+  changes, or worktree cleaned), and the project's helpers in a side panel;
 - open your **Profile** from the button at the bottom of the sidebar. Its
   **Info** tab is where you edit the name and email used for saved checkpoints,
   and see whether Claude and Codex are signed in (with the command to sign in
@@ -86,6 +86,8 @@ running until you press Ctrl+C. Open the link in a browser to:
 - start an agent (claude or codex) on a project, open a run to read its full
   task and live output, stop it, or clean its worktree;
 - add or remove projects.
+
+In **Review changes**, tick the hunks you want and press **Apply selected**. Codec saves those changes in your project folder as one commit and moves the task to **Done**. Unchecked changes remain in the helper's workspace and branch. **Discard all** removes the workspace and moves the task to **Done**, keeping the helper's work recoverable on its branch.
 
 The page refreshes itself every 2 seconds. It is a view over the same `~/.codec`
 data and calls the same code as the commands above, so the CLI and the page can

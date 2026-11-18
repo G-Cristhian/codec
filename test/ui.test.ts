@@ -35,7 +35,7 @@ import { changesFixture, fixture } from "./ui-fixtures";
 import type { ConversationMessage } from "../ui/src/conversation-feed";
 let data: ReturnType<typeof fixture>;
 let handler:
-  | ((path: string, body: Record<string, unknown>) => Response | undefined)
+  | ((path: string, body: Record<string, unknown>) => Response | Promise<Response> | undefined)
   | undefined;
 let calls: { path: string; body: Record<string, unknown> }[];
 function response(value: unknown, status = 200) {
@@ -405,6 +405,8 @@ describe("review changes panel", () => {
       const pane = screen.getByTestId("diff-pane");
       const list = screen.getByLabelText(S.diffViewer.files);
       const selected = fileButtons()[1];
+      await userEvent.click(within(pane).getByRole("checkbox", { name: S.diffViewer.keepHunk }));
+      selected.focus();
       pane.scrollTop = 120;
       pane.scrollLeft = 80;
       list.scrollTop = 40;
@@ -423,6 +425,8 @@ describe("review changes panel", () => {
       expect(selected.getAttribute("aria-pressed")).toBe("true");
       expect(document.activeElement).toBe(selected);
       expect(screen.getByText("+Second file")).toBeTruthy();
+      expect(within(pane).getByRole("checkbox").getAttribute("aria-checked")).toBe("false");
+      expect(screen.getByText("3 of 4 hunks selected")).toBeTruthy();
     });
 
     it(`opens the no-changes empty state at ${route}`, async () => {
@@ -438,6 +442,8 @@ describe("review changes panel", () => {
       expect(within(pane).getByText(S.diffViewer.noChangesHint)).toBeTruthy();
       expect(pane.querySelector("svg")).toBeTruthy();
       expect(pane.querySelector("pre")).toBeNull();
+      expect(screen.queryByRole("button", { name: S.diffViewer.apply })).toBeNull();
+      expect(screen.queryByRole("button", { name: S.diffViewer.discard })).toBeNull();
       expect(within(pane).queryByRole("alert")).toBeNull();
     });
   }
@@ -504,6 +510,126 @@ describe("review changes panel", () => {
     await userEvent.click(screen.getByTestId("task-review"));
     await screen.findByText("+after");
     expect(calls.filter((call) => call.path === path)).toHaveLength(2);
+  });
+
+  it("starts checked, counts across files, disables Apply at zero and resets on reopening", async () => {
+    await open();
+    expect(screen.getByText("4 of 4 hunks selected")).toBeTruthy();
+    const apply = screen.getByRole("button", { name: S.diffViewer.apply }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(false);
+    for (const file of fileButtons()) {
+      await userEvent.click(file);
+      const checkbox = within(screen.getByTestId("diff-pane")).getByRole("checkbox", { name: S.diffViewer.keepHunk });
+      expect(checkbox.getAttribute("aria-checked")).toBe("true");
+      await userEvent.click(checkbox);
+      expect(within(file).getByText("0/1")).toBeTruthy();
+    }
+    expect(screen.getByText("0 of 4 hunks selected")).toBeTruthy();
+    expect(apply.disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.close }));
+    await userEvent.click(screen.getByTestId("task-review"));
+    await screen.findByText("4 of 4 hunks selected");
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it.each(["#/run/run-demo", "#/project/site"])("sends only pinned head and checked ids, closes, shows a message and refreshes at %s", async (route) => {
+    await open(route);
+    await userEvent.click(screen.getByRole("checkbox"));
+    const before = calls.filter((call) => call.path === "state").length;
+    handler = (request) => {
+      if (request !== "runs/run-demo/apply") return;
+      data.run = { ...data.run!, reviewed: { action: "applied", at: "now", commit: "saved", hunks: 3, total: 4 }, lane: "done" };
+      data.project.lanes.inReview = [];
+      data.project.lanes.done = [data.run];
+      return response(data.run);
+    };
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.apply }));
+    await screen.findByText(S.diffViewer.applySuccess);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls.find((call) => call.path === "runs/run-demo/apply")?.body).toEqual({ head: "fixture-head", hunks: ["0:0", "1:0", "3:0"] });
+    await waitFor(() => expect(calls.filter((call) => call.path === "state").length).toBeGreaterThan(before));
+    await userEvent.click(screen.getByTestId("task-review"));
+    await screen.findByText("Applied 3 of 4 hunks");
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: S.diffViewer.apply })).toBeNull();
+    expect(screen.queryByRole("button", { name: S.diffViewer.discard })).toBeNull();
+  });
+
+  it("keeps selection and the diff visible after an apply error", async () => {
+    await open();
+    await userEvent.click(screen.getByRole("checkbox"));
+    handler = (request) => request === "runs/run-demo/apply" ? response({ code: "changes_stale", error: "Internal detail" }, 409) : undefined;
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.apply }));
+    expect(await screen.findByText(S.errors.changes_stale)).toBeTruthy();
+    expect(screen.getByText("+after")).toBeTruthy();
+    expect(screen.getByText("3 of 4 hunks selected")).toBeTruthy();
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("false");
+    expect((screen.getByRole("button", { name: S.diffViewer.apply }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("disables decisions and checkboxes while saving", async () => {
+    await open();
+    let complete!: (value: Response) => void;
+    const pending = new Promise<Response>((resolve) => { complete = resolve; });
+    handler = (request) => request === "runs/run-demo/apply" ? pending : undefined;
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.apply }));
+    expect((screen.getByRole("button", { name: S.diffViewer.apply }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: S.diffViewer.discard }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("checkbox") as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => complete(await response({})));
+    await screen.findByText(S.diffViewer.applySuccess);
+  });
+
+  it("asks before discarding, supports cancel, then closes and shows success", async () => {
+    await open();
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.discard }));
+    expect(await screen.findByText(S.diffViewer.discardTitle)).toBeTruthy();
+    expect(screen.getByText(S.diffViewer.discardEffect)).toBeTruthy();
+    expect(calls.some((call) => call.path === "runs/run-demo/discard")).toBe(false);
+    await userEvent.click(screen.getByTestId("confirm-cancel"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.discard }));
+    handler = (request) => {
+      if (request !== "runs/run-demo/discard") return;
+      data.run = { ...data.run!, reviewed: { action: "discarded", at: "now" }, reviewStatus: undefined, lane: "done" };
+      return response(data.run);
+    };
+    await userEvent.click(screen.getByTestId("confirm-submit"));
+    await screen.findByText(S.diffViewer.discardSuccess);
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(calls.find((call) => call.path === "runs/run-demo/discard")?.body).toEqual({});
+    await waitFor(() => expect(screen.queryByTestId("task-review")).toBeNull());
+  });
+
+  it("shows discard errors in the review panel and preserves selection", async () => {
+    await open();
+    await userEvent.click(screen.getByRole("checkbox"));
+    handler = (request) => request === "runs/run-demo/discard" ? response({ code: "changes_unavailable" }, 409) : undefined;
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.discard }));
+    await userEvent.click(screen.getByTestId("confirm-submit"));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(within(screen.getByRole("dialog")).getByText(S.errors.changes_unavailable)).toBeTruthy();
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByText("3 of 4 hunks selected")).toBeTruthy();
+  });
+
+  it("renders every hidden hunk header as a checked unit and sends those ids too", async () => {
+    const changes = changesFixture();
+    changes.files[2].hunks.push({ id: "2:1", header: "@@ -5000 +5000 @@", firstLine: 5000 });
+    changes.files[2].truncated = true;
+    changes.files[3].lines = [];
+    handler = (request) => request === path ? response(changes) : undefined;
+    await open();
+    expect(screen.getByText("5 of 5 hunks selected")).toBeTruthy();
+    expect(screen.getByText("@@ -5000 +5000 @@")).toBeTruthy();
+    expect(screen.getByText(S.diffViewer.hiddenHunk)).toBeTruthy();
+    expect(screen.getAllByRole("checkbox").map((checkbox) => checkbox.getAttribute("aria-checked"))).toEqual(["true", "true"]);
+    await userEvent.click(fileButtons()[1]);
+    expect(screen.getByText("@@ -1 +1 @@")).toBeTruthy();
+    expect(screen.getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: S.diffViewer.apply }));
+    expect(calls.find((call) => call.path === "runs/run-demo/apply")?.body).toEqual({ head: "fixture-head", hunks: ["0:0", "1:0", "2:0", "2:1", "3:0"] });
   });
 
   it("uses singular file count wording", async () => {

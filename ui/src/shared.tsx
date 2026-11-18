@@ -448,14 +448,18 @@ export function Checks({
     </fieldset>
   );
 }
-function CheckRow({
+export function CheckRow({
   id,
   name,
   checked,
+  onCheckedChange,
+  disabled,
 }: {
   id: string;
   name: string;
   checked: boolean;
+  onCheckedChange?: (checked: boolean) => void;
+  disabled?: boolean;
 }) {
   const uid = useId();
   return (
@@ -465,7 +469,8 @@ function CheckRow({
         id={uid}
         name={id}
         value={name}
-        defaultChecked={checked}
+        {...(onCheckedChange ? { checked, onCheckedChange: (value) => onCheckedChange(value === true) } : { defaultChecked: checked })}
+        disabled={disabled}
         data-testid={id}
         data-key={name}
       >

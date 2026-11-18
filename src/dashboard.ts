@@ -17,7 +17,7 @@
  */
 
 import { CodecError } from "./errors.js";
-import { runChanges } from "./review.js";
+import { applyChanges, discardChanges, runChanges } from "./review.js";
 import { S, wording } from "./strings.js";
 import { checkpointIdentity, getSettings, saveSettings, saveAccountSettings } from "./settings.js";
 import { accountStore, addAccount, builtinId, getAccount, removeAccount, resolveAccount, setAccountChoice, setDefaultAccount } from "./accounts.js";
@@ -96,9 +96,10 @@ export type Lane = "working" | "needsYou" | "inReview" | "done";
  *  working   running without a stuck report or a capped conversation
  *  needsYou  running and stuck or held, or failed or stopped (until its worktree is cleaned)
  *  inReview  finished OK and the worktree still exists
- *  done      finished OK and the worktree is gone; also any cleaned run
+ *  done      reviewed, no changes, or worktree cleaned
  */
 export function laneOf(run: RunStatus): Lane {
+  if (run.reviewed) return "done";
   if (run.state === "running") return (run.helperStatus?.state === "stuck" || isHelperHeld(helperRef(run))) ? "needsYou" : "working";
   const cleaned = !!run.cleanedAt || !existsSync(run.worktree);
   if (cleaned) return "done";
@@ -200,6 +201,7 @@ function runSummary(r: RunStatus) {
     helperStatus: r.helperStatus,
     held: isHelperHeld(helperRef(r)),
     reviewStatus: r.reviewStatus,
+    reviewed: r.reviewed,
     area: r.area,
     stateText: runStateText(r),
     lostAt: r.lostAt,
@@ -899,6 +901,12 @@ export function startDashboard(opts: { port?: number; token?: string; setup?: Se
         throw new CodecError("tool_unavailable", `${label} is not installed or signed in`, { tool: label }, 409);
       }
       return sendJson(res, 201, runSummary(startRun({ project: b, member, agent, task, timeLimitMinutes, area })));
+    }
+    if (!isGet && a === "runs" && b && c === "apply" && parts.length === 3) {
+      return sendJson(res, 200, runSummary(applyChanges(b, body)));
+    }
+    if (!isGet && a === "runs" && b && c === "discard" && parts.length === 3) {
+      return sendJson(res, 200, runSummary(discardChanges(b)));
     }
     if (!isGet && a === "runs" && b && c === "stop" && parts.length === 3) {
       return sendJson(res, 200, runSummary(stopRun(findRunOr404(b).runId)));

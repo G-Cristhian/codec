@@ -75,7 +75,12 @@ export interface HelperStatus {
   at: string;
 }
 
+export type RunReview =
+  | { action: "applied"; at: string; commit: string; hunks: number; total: number }
+  | { action: "discarded"; at: string };
+
 export interface RunRecord {
+  reviewed?: RunReview;
   helperStatus?: HelperStatus;
   /** Home tag chosen when the task was started. */
   area?: TaskArea;
@@ -583,6 +588,12 @@ function updateRecord(runId: string, patch: Partial<RunRecord>): RunRecord {
     writeJsonAtomic(recordFile(runId), updated);
     return updated;
   });
+}
+
+/** Store the owner's decision without overwriting concurrent run metadata. */
+export function recordReview(runId: string, reviewed: RunReview): RunStatus {
+  updateRecord(runId, { reviewed });
+  return readRunStatus(runId)!;
 }
 
 function reviewStatusOf(rec: RunRecord, state: RunState): RunStatus["reviewStatus"] {

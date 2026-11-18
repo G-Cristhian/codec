@@ -22,6 +22,8 @@ export type EventKind =
   | "run.timeout" // time limit reached
   | "run.stop" // user stopped the run
   | "run.lost" // agent died without recording an exit code (killed, reboot)
+  | "run.apply" // selected changes committed to the project branch
+  | "run.discard" // review dismissed, branch kept
   | "run.clean" // worktree removed
   | "skill.add"
   | "skill.remove"
